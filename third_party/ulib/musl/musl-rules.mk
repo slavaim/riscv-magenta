@@ -9,6 +9,8 @@ ifeq ($(ARCH),arm64)
 MUSL_ARCH := aarch64
 else ifeq ($(SUBARCH),x86-64)
 MUSL_ARCH := x86_64
+else ifeq ($(SUBARCH),riscv-rv64)
+MUSL_ARCH := riscv-rv64
 else
 $(error Unsupported architecture $(ARCH) for musl build!)
 endif
@@ -1093,6 +1095,10 @@ LOCAL_SRCS += \
     $(LOCAL_DIR)/src/setjmp/x86_64/longjmp.S \
     $(LOCAL_DIR)/src/setjmp/x86_64/setjmp.S \
     $(LOCAL_DIR)/src/signal/x86_64/restore.S \
+
+else ifeq ($(SUBARCH),riscv-rv64)
+# TO_DO_RISCV
+# LOCAL_SRCS += 
 
 else
 error Unsupported architecture for musl build!

@@ -92,6 +92,10 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/src/x86_64/fuchsia.c \
     $(LOCAL_DIR)/src/x86_64/regname.c \
 
+else ifeq ($(SUBARCH),riscv-rv64)
+# TO_DO_RISCV
+# MODULE_SRCS += \
+
 else
 error Unsupported architecture for ngunwind build!
 endif
