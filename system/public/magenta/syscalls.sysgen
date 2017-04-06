@@ -34,7 +34,7 @@ syscall time_get
     (clock_id: uint32_t)
     returns (mx_time_t);
 
-syscall nanosleep
+syscall nanosleep blocking
     (nanoseconds: mx_time_t)
     returns (mx_status_t);
 
@@ -86,12 +86,12 @@ syscall handle_replace
 
 # Generic object operations
 
-syscall object_wait_one
+syscall object_wait_one blocking
     (handle: mx_handle_t, waitfor: mx_signals_t, timeout: mx_time_t,
         observed: mx_signals_t[1] OUT)
     returns (mx_status_t);
 
-syscall object_wait_many
+syscall object_wait_many blocking
     (items: mx_wait_item_t[count] INOUT, count: uint32_t, timeout: mx_time_t)
     returns (mx_status_t);
 
@@ -236,6 +236,10 @@ syscall task_bind_exception_port
     (object: mx_handle_t, eport: mx_handle_t, key: uint64_t, options: uint32_t)
     returns (mx_status_t);
 
+syscall task_suspend
+    (task_handle: mx_handle_t)
+    returns (mx_status_t);
+
 syscall task_resume
     (task_handle: mx_handle_t, options: uint32_t)
     returns (mx_status_t);
@@ -254,7 +258,7 @@ syscall eventpair_create
     (options: uint32_t, out0: mx_handle_t[1] OUT, out1: mx_handle_t[1] OUT)
     returns (mx_status_t);
 
-syscall futex_wait
+syscall futex_wait blocking
     (value_ptr: mx_futex_t[1] INOUT, current_value: int, timeout: mx_time_t)
     returns (mx_status_t);
 
@@ -282,7 +286,7 @@ syscall waitset_remove
     (waitset_handle: mx_handle_t, cookie: uint64_t)
     returns (mx_status_t);
 
-syscall waitset_wait
+syscall waitset_wait blocking
     (waitset_handle: mx_handle_t, timeout: mx_time_t,
         results: mx_waitset_result_t[count] OUT, count: uint32_t[1] INOUT)
     returns (mx_status_t);
@@ -297,12 +301,16 @@ syscall port_queue
     (handle: mx_handle_t, packet: any[size] IN, size: size_t)
     returns (mx_status_t);
 
-syscall port_wait
+syscall port_wait blocking
     (handle: mx_handle_t, timeout: mx_time_t, packet: any[size] OUT, size: size_t)
     returns (mx_status_t);
 
 syscall port_bind
     (handle: mx_handle_t, key: uint64_t, source: mx_handle_t, signals: mx_signals_t)
+    returns (mx_status_t);
+
+syscall port_cancel
+    (handle: mx_handle_t, source: mx_handle_t, key: uint64_t)
     returns (mx_status_t);
 
 # Memory management
@@ -465,7 +473,7 @@ syscall interrupt_complete
     (handle: mx_handle_t)
     returns (mx_status_t);
 
-syscall interrupt_wait
+syscall interrupt_wait blocking
     (handle: mx_handle_t)
     returns (mx_status_t);
 

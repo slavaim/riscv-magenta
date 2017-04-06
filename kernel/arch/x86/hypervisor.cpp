@@ -16,7 +16,7 @@
 #include <arch/x86/descriptor.h>
 #include <arch/x86/feature.h>
 #include <arch/x86/hypervisor.h>
-#include <arch/x86/hypervisor_host.h>
+#include <arch/x86/hypervisor_state.h>
 #include <arch/x86/idt.h>
 #include <arch/x86/registers.h>
 #include <hypervisor/guest_physical_address_space.h>
@@ -26,6 +26,9 @@
 
 #include "hypervisor_priv.h"
 
+#define VMX_ERR_CHECK(var) \
+    "setna %[" #var "];"     // Check CF and ZF for error.
+
 extern uint8_t _gdt[];
 
 static status_t vmxon(paddr_t pa) {
@@ -33,7 +36,7 @@ static status_t vmxon(paddr_t pa) {
 
     __asm__ volatile (
         "vmxon %[pa];"
-        "setna %[err];"     // Check CF and ZF for error.
+        VMX_ERR_CHECK(err)
         : [err] "=r"(err)
         : [pa] "m"(pa)
         : "cc", "memory");
@@ -46,7 +49,7 @@ static status_t vmxoff() {
 
     __asm__ volatile (
         "vmxoff;"
-        "setna %[err];"     // Check CF and ZF for error.
+        VMX_ERR_CHECK(err)
         : [err] "=r"(err)
         :
         : "cc");
@@ -59,7 +62,7 @@ static status_t vmptrld(paddr_t pa) {
 
     __asm__ volatile (
         "vmptrld %[pa];"
-        "setna %[err];"     // Check CF and ZF for error.
+        VMX_ERR_CHECK(err)
         : [err] "=r"(err)
         : [pa] "m"(pa)
         : "cc", "memory");
@@ -72,7 +75,7 @@ static status_t vmclear(paddr_t pa) {
 
     __asm__ volatile (
         "vmclear %[pa];"
-        "setna %[err];"     // Check CF and ZF for error.
+        VMX_ERR_CHECK(err)
         : [err] "=r"(err)
         : [pa] "m"(pa)
         : "cc", "memory");
@@ -82,28 +85,16 @@ static status_t vmclear(paddr_t pa) {
 
 static uint64_t vmread(uint64_t field) {
     uint8_t err;
-    uint64_t val = 0;
+    uint64_t val;
 
-    __asm__ volatile (
-        "vmread %[val], %[field];"
-        "setna %[err];"     // Check CF and ZF for error.
-        : [err] "=r"(err), [val] "=r"(val)
+    __asm__ volatile(
+        "vmread %[field], %[val];"
+        VMX_ERR_CHECK(err)
+        : [err] "=r"(err), [val] "=m"(val)
         : [field] "r"(field)
-        : "cc", "memory");
+        : "cc");
 
     DEBUG_ASSERT(err == NO_ERROR);
-    return val;
-}
-
-static uint64_t vmread_unchecked(uint64_t field) {
-    uint64_t val = 0;
-
-    __asm__ volatile (
-        "vmread %[val], %[field];"
-        : [val] "=r"(val)
-        : [field] "r"(field)
-        : "cc", "memory");
-
     return val;
 }
 
@@ -112,10 +103,10 @@ static void vmwrite(uint64_t field, uint64_t val) {
 
     __asm__ volatile (
         "vmwrite %[val], %[field];"
-        "setna %[err];"     // Check CF and ZF for error.
+        VMX_ERR_CHECK(err)
         : [err] "=r"(err)
         : [val] "r"(val), [field] "r"(field)
-        : "cc", "memory");
+        : "cc");
 
     DEBUG_ASSERT(err == NO_ERROR);
 }
@@ -143,6 +134,7 @@ VmxInfo::VmxInfo() {
     revision_id = static_cast<uint32_t>(BITS(basic_info, 30, 0));
     region_size = static_cast<uint16_t>(BITS_SHIFT(basic_info, 44, 32));
     write_back = BITS_SHIFT(basic_info, 53, 50) == VMX_MEMORY_TYPE_WRITE_BACK;
+    io_exit_info = BIT_SHIFT(basic_info, 54);
     vmx_controls = BIT_SHIFT(basic_info, 55);
 }
 
@@ -212,8 +204,12 @@ static int vmx_enable(void* arg) {
     VmxonContext* context = static_cast<VmxonContext*>(arg);
     VmxonPerCpu* per_cpu = context->PerCpu();
 
-    // Check that full VMX controls are supported.
+    // Check that we have instruction information when we VM exit on IO.
     VmxInfo vmx_info;
+    if (!vmx_info.io_exit_info)
+        return ERR_NOT_SUPPORTED;
+
+    // Check that full VMX controls are supported.
     if (!vmx_info.vmx_controls)
         return ERR_NOT_SUPPORTED;
 
@@ -350,14 +346,6 @@ AutoVmcsLoad::~AutoVmcsLoad() {
     arch_enable_ints();
 }
 
-status_t VmcsPerCpu::Init(const VmxInfo& vmx_info) {
-    status_t status = PerCpu::Init(vmx_info);
-    if (status != NO_ERROR)
-        return status;
-
-    return msr_bitmaps_page_.Alloc(vmx_info);
-}
-
 static status_t set_vmcs_control(uint32_t controls, uint64_t true_msr, uint64_t old_msr,
                                  uint32_t set) {
     uint32_t allowed_0 = static_cast<uint32_t>(BITS(true_msr, 31, 0));
@@ -435,6 +423,8 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     status = set_vmcs_control(VMCS_32_PROCBASED_CTLS,
                               read_msr(X86_MSR_IA32_VMX_TRUE_PROCBASED_CTLS),
                               read_msr(X86_MSR_IA32_VMX_PROCBASED_CTLS),
+                              // IO instructions cause a VM exit.
+                              VMCS_32_PROCBASED_CTLS_IO_EXITING |
                               // Enable secondary processor-based controls.
                               VMCS_32_PROCBASED_CTLS_PROCBASED_CTLS2);
     if (status != NO_ERROR)
@@ -448,9 +438,13 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
                               // exit. On VM exit CS.L, IA32_EFER.LME, and
                               // IA32_EFER.LMA is set to true.
                               VMCS_32_EXIT_CTLS_64BIT_MODE |
-                              // Load the IA32_PAT MSR on exit.
+                              // Save the guest IA32_PAT MSR on exit.
+                              VMCS_32_EXIT_CTLS_SAVE_IA32_PAT |
+                              // Load the host IA32_PAT MSR on exit.
                               VMCS_32_EXIT_CTLS_LOAD_IA32_PAT |
-                              // Load the IA32_EFER MSR on exit.
+                              // Save the guest IA32_EFER MSR on exit.
+                              VMCS_32_EXIT_CTLS_SAVE_IA32_EFER |
+                              // Load the host IA32_EFER MSR on exit.
                               VMCS_32_EXIT_CTLS_LOAD_IA32_EFER);
     if (status != NO_ERROR)
         return status;
@@ -461,7 +455,11 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
                               read_msr(X86_MSR_IA32_VMX_ENTRY_CTLS),
                               // After VM entry, logical processor is in IA-32e
                               // mode and IA32_EFER.LMA is set to true.
-                              VMCS_32_ENTRY_CTLS_IA32E_MODE);
+                              VMCS_32_ENTRY_CTLS_IA32E_MODE |
+                              // Load the guest IA32_PAT MSR on entry.
+                              VMCS_32_ENTRY_CTLS_LOAD_IA32_PAT |
+                              // Load the guest IA32_EFER MSR on entry.
+                              VMCS_32_ENTRY_CTLS_LOAD_IA32_EFER);
     if (status != NO_ERROR)
         return status;
 
@@ -509,12 +507,17 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     //
     // NOTE: We are pinned to a thread when executing this function, therefore
     // it is acceptable to use per-CPU state.
-    vmwrite(VMCS_16_HOST_CS_SELECTOR, CODE_64_SELECTOR);
-    vmwrite(VMCS_16_HOST_TR_SELECTOR, TSS_SELECTOR(percpu->cpu_num));
     vmwrite(VMCS_64_HOST_IA32_PAT, read_msr(X86_MSR_IA32_PAT));
     vmwrite(VMCS_64_HOST_IA32_EFER, read_msr(X86_MSR_IA32_EFER));
     vmwrite(VMCS_XX_HOST_CR0, x86_get_cr0());
     vmwrite(VMCS_XX_HOST_CR4, x86_get_cr4());
+    vmwrite(VMCS_16_HOST_ES_SELECTOR, 0);
+    vmwrite(VMCS_16_HOST_CS_SELECTOR, CODE_64_SELECTOR);
+    vmwrite(VMCS_16_HOST_SS_SELECTOR, DATA_SELECTOR);
+    vmwrite(VMCS_16_HOST_DS_SELECTOR, 0);
+    vmwrite(VMCS_16_HOST_FS_SELECTOR, 0);
+    vmwrite(VMCS_16_HOST_GS_SELECTOR, 0);
+    vmwrite(VMCS_16_HOST_TR_SELECTOR, TSS_SELECTOR(percpu->cpu_num));
     vmwrite(VMCS_XX_HOST_FS_BASE, read_msr(X86_MSR_IA32_FS_BASE));
     vmwrite(VMCS_XX_HOST_GS_BASE, read_msr(X86_MSR_IA32_GS_BASE));
     vmwrite(VMCS_XX_HOST_TR_BASE, reinterpret_cast<uint64_t>(&percpu->default_tss));
@@ -523,13 +526,14 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     vmwrite(VMCS_XX_HOST_IA32_SYSENTER_ESP, 0);
     vmwrite(VMCS_XX_HOST_IA32_SYSENTER_EIP, 0);
     vmwrite(VMCS_32_HOST_IA32_SYSENTER_CS, 0);
-    vmwrite(VMCS_XX_HOST_RSP, reinterpret_cast<uint64_t>(&host_state_));
+    vmwrite(VMCS_XX_HOST_RSP, reinterpret_cast<uint64_t>(&vmx_state_));
     vmwrite(VMCS_XX_HOST_RIP, reinterpret_cast<uint64_t>(vmx_exit_entry));
 
-    // Setup VMCS guest state.
+    vmx_state_.host_state.star = read_msr(X86_MSR_IA32_STAR);
+    vmx_state_.host_state.lstar = read_msr(X86_MSR_IA32_LSTAR);
+    vmx_state_.host_state.fmask = read_msr(X86_MSR_IA32_FMASK);
 
-    // For now, we're aiming for a basic 64-bit guest that's able to execute a couple of
-    // instructions and exit - we're not there yet.
+    // Setup VMCS guest state.
 
     uint64_t cr0 = X86_CR0_PE | // Enable protected mode
                    X86_CR0_PG | // Enable paging
@@ -545,6 +549,9 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
         return ERR_BAD_STATE;
     }
     vmwrite(VMCS_XX_GUEST_CR4, cr4);
+
+    vmwrite(VMCS_64_GUEST_IA32_PAT, read_msr(X86_MSR_IA32_PAT));
+    vmwrite(VMCS_64_GUEST_IA32_EFER, read_msr(X86_MSR_IA32_EFER));
 
     vmwrite(VMCS_32_GUEST_CS_ACCESS_RIGHTS,
             VMCS_32_GUEST_XX_ACCESS_RIGHTS_TYPE_A |
@@ -597,7 +604,7 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     return NO_ERROR;
 }
 
-void vmx_exit(VmxHostState* host_state) {
+void vmx_exit(VmxState* vmx_state) {
     DEBUG_ASSERT(arch_ints_disabled());
     uint cpu_num = arch_curr_cpu_num();
 
@@ -610,9 +617,15 @@ void vmx_exit(VmxHostState* host_state) {
     // Reload the interrupt descriptor table in order to restore its limit. VMX
     // always restores it with a limit of 0xffff, which is too large.
     idt_load(idt_get_readonly());
+
+    // TODO(abdulla): Optimise this, and don't do it unconditionally.
+    write_msr(X86_MSR_IA32_STAR, vmx_state->host_state.star);
+    write_msr(X86_MSR_IA32_LSTAR, vmx_state->host_state.lstar);
+    write_msr(X86_MSR_IA32_FMASK, vmx_state->host_state.fmask);
+    write_msr(X86_MSR_IA32_KERNEL_GS_BASE, vmx_state->host_state.kernel_gs_base);
 }
 
-static void vmexit_handler(uint64_t reason) {
+static void vmexit_handler(uint64_t reason, uint64_t next_rip) {
     switch (reason) {
     case VMCS_32_EXIT_REASON_EXTERNAL_INTERRUPT:
         dprintf(SPEW, "enabling interrupts for external interrupt\n");
@@ -620,25 +633,37 @@ static void vmexit_handler(uint64_t reason) {
         arch_enable_ints();
         arch_disable_ints();
         break;
+    case VMCS_32_EXIT_REASON_IO_INSTRUCTION:
+        dprintf(SPEW, "handling IO instruction\n");
+        vmwrite(VMCS_XX_GUEST_RIP, next_rip);
+        break;
     }
 }
 
-status_t VmcsPerCpu::Launch(uintptr_t guest_cr3, uintptr_t guest_entry) {
+status_t VmcsPerCpu::Enter(const VmcsContext& context) {
     AutoVmcsLoad vmcs_load(&page_);
-    vmwrite(VMCS_XX_GUEST_CR3, guest_cr3);
-    vmwrite(VMCS_XX_GUEST_RIP, guest_entry);
-
     // FS is used for thread-local storage — save for this thread.
     vmwrite(VMCS_XX_HOST_FS_BASE, read_msr(X86_MSR_IA32_FS_BASE));
     // CR3 is used to maintain the virtual address space — save for this thread.
     vmwrite(VMCS_XX_HOST_CR3, x86_get_cr3());
+    // Kernel GS stores the user-space GS (within the kernel) — as the calling
+    // user-space thread may change, save this every time.
+    vmx_state_.host_state.kernel_gs_base = read_msr(X86_MSR_IA32_KERNEL_GS_BASE);
 
-    status_t status = vmx_launch(&host_state_);
+    if (do_resume_) {
+        dprintf(SPEW, "re-entering guest\n");
+    } else {
+        vmwrite(VMCS_XX_GUEST_CR3, context.cr3());
+        vmwrite(VMCS_XX_GUEST_RIP, context.entry());
+    }
+
+    dprintf(SPEW, "guest rax (pre-enter): %#" PRIx64 "\n", vmx_state_.guest_state.rax);
+    status_t status = vmx_enter(&vmx_state_, do_resume_);
     if (status != NO_ERROR) {
         uint64_t error = vmread(VMCS_32_INSTRUCTION_ERROR);
         dprintf(SPEW, "vmlaunch failed: %#" PRIx64 "\n", error);
     } else {
-        uint64_t reason = vmread_unchecked(VMCS_32_EXIT_REASON);
+        uint64_t reason = vmread(VMCS_32_EXIT_REASON);
         dprintf(SPEW, "vmexit reason: %#" PRIx64 "\n", reason);
         uint64_t qualification = vmread(VMCS_XX_EXIT_QUALIFICATION);
         dprintf(SPEW, "vmexit qualification: %#" PRIx64 "\n", qualification);
@@ -646,14 +671,24 @@ status_t VmcsPerCpu::Launch(uintptr_t guest_cr3, uintptr_t guest_entry) {
         dprintf(SPEW, "vmexit interruption information: %#" PRIx64 "\n", interruption_information);
         uint64_t interruption_error_code = vmread(VMCS_32_INTERRUPTION_ERROR_CODE);
         dprintf(SPEW, "vmexit interruption error code: %#" PRIx64 "\n", interruption_error_code);
+        uint64_t instruction_length = vmread(VMCS_32_INSTRUCTION_LENGTH);
+        dprintf(SPEW, "vmexit instruction length: %#" PRIx64 "\n", instruction_length);
+        uint64_t instruction_information = vmread(VMCS_32_INSTRUCTION_INFORMATION);
+        dprintf(SPEW, "vmexit instruction information: %#" PRIx64 "\n", instruction_information);
 
         uint64_t physical_address = vmread(VMCS_64_GUEST_PHYSICAL_ADDRESS);
         dprintf(SPEW, "guest physical address: %#" PRIx64 "\n", physical_address);
+        uint64_t linear_address = vmread(VMCS_XX_GUEST_LINEAR_ADDRESS);
+        dprintf(SPEW, "guest linear address: %#" PRIx64 "\n", linear_address);
+        uint64_t interruptibility_state = vmread(VMCS_32_GUEST_INTERRUPTIBILITY_STATE);
+        dprintf(SPEW, "guest interruptibility state: %#" PRIx64 "\n", interruptibility_state);
         uint64_t rip = vmread(VMCS_XX_GUEST_RIP);
         dprintf(SPEW, "guest rip: %#" PRIx64 "\n", rip);
 
-        vmexit_handler(reason);
+        do_resume_ = true;
+        vmexit_handler(reason, rip + instruction_length);
     }
+    dprintf(SPEW, "guest rax (post-enter): %#" PRIx64 "\n", vmx_state_.guest_state.rax);
     return status;
 }
 
@@ -724,18 +759,24 @@ status_t VmcsContext::set_cr3(uintptr_t guest_cr3) {
     return NO_ERROR;
 }
 
-static int vmcs_launch(void* arg) {
-    VmcsContext* context = static_cast<VmcsContext*>(arg);
-    VmcsPerCpu* per_cpu = context->PerCpu();
-    return per_cpu->Launch(context->cr3(), context->entry());
-}
-
-status_t VmcsContext::Start(uintptr_t guest_entry) {
-    if (cr3_ == UINTPTR_MAX)
-        return ERR_BAD_STATE;
+status_t VmcsContext::set_entry(uintptr_t guest_entry) {
     if (guest_entry >= gpas_->size())
         return ERR_INVALID_ARGS;
     entry_ = guest_entry;
+    return NO_ERROR;
+}
+
+static int vmcs_launch(void* arg) {
+    VmcsContext* context = static_cast<VmcsContext*>(arg);
+    VmcsPerCpu* per_cpu = context->PerCpu();
+    return per_cpu->Enter(*context);
+}
+
+status_t VmcsContext::Enter() {
+    if (cr3_ == UINTPTR_MAX)
+        return ERR_BAD_STATE;
+    if (entry_ == UINTPTR_MAX)
+        return ERR_BAD_STATE;
     return percpu_exec(vmcs_launch, this);
 }
 
@@ -752,10 +793,15 @@ status_t arch_guest_create(mxtl::RefPtr<VmObject> guest_phys_mem,
     return VmcsContext::Create(guest_phys_mem, context);
 }
 
+status_t arch_guest_enter(const mxtl::unique_ptr<GuestContext>& context) {
+    return context->Enter();
+}
+
 status_t x86_guest_set_cr3(const mxtl::unique_ptr<GuestContext>& context, uintptr_t guest_cr3) {
     return context->set_cr3(guest_cr3);
 }
 
-status_t arch_guest_start(const mxtl::unique_ptr<GuestContext>& context, uintptr_t guest_entry) {
-    return context->Start(guest_entry);
+status_t arch_guest_set_entry(const mxtl::unique_ptr<GuestContext>& context,
+                              uintptr_t guest_entry) {
+    return context->set_entry(guest_entry);
 }

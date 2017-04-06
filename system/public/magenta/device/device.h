@@ -16,7 +16,10 @@
 
 // Watch a directory for changes
 //   in: none
-//   out: handle to channel to get notified on
+//   out: handle to channel to get notified on.
+//        Notification messages will be a string child entry name WITHOUT a
+//        null-terminating character; the length of the string should be
+//        determined by the message length during the channel read.
 #define IOCTL_DEVICE_WATCH_DIR \
     IOCTL(IOCTL_KIND_GET_HANDLE, IOCTL_FAMILY_DEVICE, 1)
 
@@ -61,8 +64,10 @@
 // Indicates if there's data available to read,
 // or room to write, or an error condition.
 #define DEVICE_SIGNAL_READABLE MX_USER_SIGNAL_0
-#define DEVICE_SIGNAL_WRITABLE MX_USER_SIGNAL_1
-#define DEVICE_SIGNAL_ERROR MX_USER_SIGNAL_2
+#define DEVICE_SIGNAL_OOB      MX_USER_SIGNAL_1
+#define DEVICE_SIGNAL_WRITABLE MX_USER_SIGNAL_2
+#define DEVICE_SIGNAL_ERROR    MX_USER_SIGNAL_3
+#define DEVICE_SIGNAL_HANGUP   MX_USER_SIGNAL_4
 
 // ssize_t ioctl_device_bind(int fd, const char* in, size_t in_len);
 IOCTL_WRAPPER_VARIN(ioctl_device_bind, IOCTL_DEVICE_BIND, char);

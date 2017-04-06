@@ -41,7 +41,7 @@ static int callback_thread(void* arg) {
         iotxn_t* txn;
         iotxn_t* temp_txn;
         list_for_every_entry_safe(&temp_list, txn, temp_txn, iotxn_t, node) {
-            txn->ops->complete(txn, txn->status, txn->actual);
+            iotxn_complete(txn, txn->status, txn->actual);
         }
     }
 
@@ -76,7 +76,7 @@ static void clone_complete(iotxn_t* clone, void* cookie) {
     mtx_unlock(&intf->callback_lock);
     completion_signal(&intf->callback_thread_completion);
 
-    clone->ops->release(clone);
+    iotxn_release(clone);
 }
 
 static void usb_interface_iotxn_queue(mx_device_t* device, iotxn_t* txn) {
@@ -84,9 +84,9 @@ static void usb_interface_iotxn_queue(mx_device_t* device, iotxn_t* txn) {
 
     // clone the txn and pass it down to the HCI driver
     iotxn_t* clone;
-    mx_status_t status = txn->ops->clone(txn, &clone, 0);
+    mx_status_t status = iotxn_clone(txn, &clone);
     if (status != NO_ERROR) {
-        txn->ops->complete(txn, status, 0);
+        iotxn_complete(txn, status, 0);
         return;
     }
     usb_protocol_data_t* dest_data = iotxn_pdata(clone, usb_protocol_data_t);
@@ -244,17 +244,25 @@ mx_status_t usb_device_add_interface(usb_device_t* device,
     intf->device.protocol_id = MX_PROTOCOL_USB;
     intf->device.protocol_ops = &_usb_protocol;
 
+    uint8_t usb_class, usb_subclass, usb_protocol;
+    if (interface_desc->bInterfaceClass == 0) {
+        usb_class = device_desc->bDeviceClass;
+        usb_subclass = device_desc->bDeviceSubClass;
+        usb_protocol = device_desc->bDeviceProtocol;
+    } else {
+        // class/subclass/protocol defined per-interface
+        usb_class = interface_desc->bInterfaceClass;
+        usb_subclass = interface_desc->bInterfaceSubClass;
+        usb_protocol = interface_desc->bInterfaceProtocol;
+   }
+
     int count = 0;
     intf->props[count++] = (mx_device_prop_t){ BIND_PROTOCOL, 0, MX_PROTOCOL_USB };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_DEVICE_TYPE, 0, USB_DEVICE_TYPE_INTERFACE };
     intf->props[count++] = (mx_device_prop_t){ BIND_USB_VID, 0, device_desc->idVendor };
     intf->props[count++] = (mx_device_prop_t){ BIND_USB_PID, 0, device_desc->idProduct };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_CLASS, 0, device_desc->bDeviceClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_SUBCLASS, 0, device_desc->bDeviceSubClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_PROTOCOL, 0, device_desc->bDeviceProtocol };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_IFC_CLASS, 0, interface_desc->bInterfaceClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_IFC_SUBCLASS, 0, interface_desc->bInterfaceSubClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_IFC_PROTOCOL, 0, interface_desc->bInterfaceProtocol };
+    intf->props[count++] = (mx_device_prop_t){ BIND_USB_CLASS, 0, usb_class };
+    intf->props[count++] = (mx_device_prop_t){ BIND_USB_SUBCLASS, 0, usb_subclass };
+    intf->props[count++] = (mx_device_prop_t){ BIND_USB_PROTOCOL, 0, usb_protocol };
     intf->device.props = intf->props;
     intf->device.prop_count = count;
 
@@ -298,17 +306,25 @@ mx_status_t usb_device_add_interface_association(usb_device_t* device,
     intf->device.protocol_id = MX_PROTOCOL_USB;
     intf->device.protocol_ops = &_usb_protocol;
 
+    uint8_t usb_class, usb_subclass, usb_protocol;
+    if (assoc_desc->bFunctionClass == 0) {
+        usb_class = device_desc->bDeviceClass;
+        usb_subclass = device_desc->bDeviceSubClass;
+        usb_protocol = device_desc->bDeviceProtocol;
+    } else {
+        // class/subclass/protocol defined per-interface
+        usb_class = assoc_desc->bFunctionClass;
+        usb_subclass = assoc_desc->bFunctionSubClass;
+        usb_protocol = assoc_desc->bFunctionProtocol;
+   }
+
     int count = 0;
     intf->props[count++] = (mx_device_prop_t){ BIND_PROTOCOL, 0, MX_PROTOCOL_USB };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_DEVICE_TYPE, 0, USB_DEVICE_TYPE_INTERFACE };
     intf->props[count++] = (mx_device_prop_t){ BIND_USB_VID, 0, device_desc->idVendor };
     intf->props[count++] = (mx_device_prop_t){ BIND_USB_PID, 0, device_desc->idProduct };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_CLASS, 0, device_desc->bDeviceClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_SUBCLASS, 0, device_desc->bDeviceSubClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_PROTOCOL, 0, device_desc->bDeviceProtocol };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_IFC_CLASS, 0, assoc_desc->bFunctionClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_IFC_SUBCLASS, 0, assoc_desc->bFunctionSubClass };
-    intf->props[count++] = (mx_device_prop_t){ BIND_USB_IFC_PROTOCOL, 0, assoc_desc->bFunctionProtocol };
+    intf->props[count++] = (mx_device_prop_t){ BIND_USB_CLASS, 0, usb_class };
+    intf->props[count++] = (mx_device_prop_t){ BIND_USB_SUBCLASS, 0, usb_subclass };
+    intf->props[count++] = (mx_device_prop_t){ BIND_USB_PROTOCOL, 0, usb_protocol };
     intf->device.props = intf->props;
     intf->device.prop_count = count;
 

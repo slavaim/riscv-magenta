@@ -35,7 +35,7 @@ static void usb_interrupt_callback(iotxn_t* txn, void* cookie) {
     usb_hid_device_t* hid = (usb_hid_device_t*)cookie;
     // TODO use iotxn copyfrom instead of mmap
     void* buffer;
-    txn->ops->mmap(txn, &buffer);
+    iotxn_mmap(txn, &buffer);
 #if USB_HID_DEBUG
     printf("usb-hid: callback request status %d\n", txn->status);
     hexdump(buffer, txn->actual);
@@ -203,7 +203,7 @@ static mx_status_t usb_hid_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
             dev_class = HID_DEV_CLASS_POINTER;
         }
 
-        iotxn_t* usbtxn = usb_alloc_iotxn(endpt->bEndpointAddress, usb_ep_max_packet(endpt), 0);
+        iotxn_t* usbtxn = usb_alloc_iotxn(endpt->bEndpointAddress, usb_ep_max_packet(endpt));
         if (usbtxn == NULL) {
             usb_desc_iter_release(&iter);
             free(usbhid);
@@ -245,6 +245,4 @@ mx_driver_t _driver_usb_hid = {
 MAGENTA_DRIVER_BEGIN(_driver_usb_hid, "usb-hid", "magenta", "0.1", 4)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_USB),
     BI_MATCH_IF(EQ, BIND_USB_CLASS, USB_CLASS_HID),
-    BI_ABORT_IF(NE, BIND_USB_CLASS, 0),
-    BI_MATCH_IF(EQ, BIND_USB_IFC_CLASS, USB_CLASS_HID),
 MAGENTA_DRIVER_END(_driver_usb_hid)

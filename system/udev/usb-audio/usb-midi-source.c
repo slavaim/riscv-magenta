@@ -50,7 +50,7 @@ static void usb_midi_source_read_complete(iotxn_t* txn, void* cookie) {
     usb_midi_source_t* source = (usb_midi_source_t*)cookie;
 
     if (txn->status == ERR_REMOTE_CLOSED) {
-        txn->ops->release(txn);
+        iotxn_release(txn);
         return;
     }
 
@@ -77,10 +77,10 @@ static mx_status_t usb_midi_source_release(mx_device_t* device) {
 
     iotxn_t* txn;
     while ((txn = list_remove_head_type(&source->free_read_reqs, iotxn_t, node)) != NULL) {
-        txn->ops->release(txn);
+        iotxn_release(txn);
     }
     while ((txn = list_remove_head_type(&source->completed_reads, iotxn_t, node)) != NULL) {
-        txn->ops->release(txn);
+        iotxn_release(txn);
     }
     free(source);
     return NO_ERROR;
@@ -141,7 +141,7 @@ static ssize_t usb_midi_source_read(mx_device_t* dev, void* data, size_t len, mx
     iotxn_t* txn = containerof(node, iotxn_t, node);
 
     // MIDI events are 4 bytes. We can ignore the zeroth byte
-    txn->ops->copyfrom(txn, data, 3, 1);
+    iotxn_copyfrom(txn, data, 3, 1);
     status = get_midi_message_length(*((uint8_t *)data));
     list_remove_head(&source->completed_reads);
     list_add_head(&source->free_read_reqs, &txn->node);
@@ -197,7 +197,7 @@ mx_status_t usb_midi_source_create(mx_driver_t* driver, mx_device_t* device, int
         usb_set_interface(device, intf->bInterfaceNumber, intf->bAlternateSetting);
     }
     for (int i = 0; i < READ_REQ_COUNT; i++) {
-        iotxn_t* txn = usb_alloc_iotxn(ep->bEndpointAddress, packet_size, 0);
+        iotxn_t* txn = usb_alloc_iotxn(ep->bEndpointAddress, packet_size);
         if (!txn)
             return ERR_NO_MEMORY;
         txn->length = packet_size;

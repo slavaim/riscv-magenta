@@ -243,6 +243,11 @@ status_t VmAspace::Destroy() {
     return NO_ERROR;
 }
 
+bool VmAspace::is_destroyed() const {
+    AutoLock guard(&lock_);
+    return aspace_destroyed_;
+}
+
 //
 //  Try to pick the spot within specified gap
 //
@@ -524,7 +529,14 @@ void VmAspace::Dump(bool verbose) const {
 }
 
 bool VmAspace::EnumerateChildren(VmEnumerator* ve) {
+    DEBUG_ASSERT(magic_ == MAGIC);
+    DEBUG_ASSERT(ve != nullptr);
     AutoLock a(&lock_);
+    if (root_vmar_ == nullptr || aspace_destroyed_) {
+        // Aspace hasn't been initialized or has already been destroyed.
+        return true;
+    }
+    DEBUG_ASSERT(root_vmar_->IsAliveLocked());
     if (!ve->OnVmAddressRegion(root_vmar_.get(), 0)) {
         return false;
     }

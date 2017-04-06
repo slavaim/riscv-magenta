@@ -221,6 +221,17 @@ constexpr size_t kMaxInputArgs = 8;
 
 constexpr char kAuthors[] = "The Fuchsia Authors";
 
+static bool has_attribute(const char* attr, const std::vector<string>& attrs) {
+    return std::find(attrs.begin(), attrs.end(), attr) != attrs.end();
+}
+
+static void dump_attributes(const std::vector<string>& attrs) {
+    for (auto& a : attrs) {
+        fprintf(stderr, "%s ", a.c_str());
+    }
+    fprintf(stderr, "\n");
+}
+
 struct ArraySpec {
     enum Kind : uint32_t {
         IN,
@@ -238,6 +249,19 @@ struct ArraySpec {
         case OUT: return "OUT";
         default: return "INOUT";
         }
+    }
+
+    bool assign_kind(const std::vector<string>& attrs) {
+        if (has_attribute("IN", attrs)) {
+            kind = ArraySpec::IN;
+        } else if (has_attribute("OUT", attrs)) {
+            kind = ArraySpec::OUT;
+        } else if (has_attribute("INOUT", attrs)) {
+            kind = ArraySpec::INOUT;
+        } else {
+            return false;
+        }
+        return true;
     }
 
     string to_string() const {
@@ -280,6 +304,7 @@ const string map_override(const string& name, const std::map<string, string>& ov
 struct TypeSpec {
     string name;
     string type;
+    std::vector<string> attributes;
     ArraySpec* arr_spec = nullptr;
 
     void debug_dump() const {
@@ -289,6 +314,10 @@ struct TypeSpec {
                 fprintf(stderr, "      [%u] (explicit)\n", arr_spec->count);
             else
                 fprintf(stderr, "      [%s]\n", arr_spec->name.c_str());
+        }
+        if (!attributes.empty()) {
+            fprintf(stderr, "       - ");
+            dump_attributes(attributes);
         }
     }
 
@@ -334,7 +363,7 @@ struct TypeSpec {
         }
     }
 
-    string as_cpp_cast(string arg) const {
+    string as_cpp_cast(const string& arg) const {
         if (!arr_spec) {
             return "static_cast<" + type + ">(" + arg + ")";
         }
@@ -356,21 +385,20 @@ struct Syscall {
     Syscall(const FileCtx& sc_fc, const string& sc_name)
         : fc(sc_fc), name(sc_name) {}
 
-    bool has_attribute(const char* attr) const {
-        return std::find(attributes.begin(), attributes.end(),
-                         attr) != attributes.end();
-    }
-
     bool is_vdso() const {
-        return has_attribute("vdsocall");
+        return has_attribute("vdsocall", attributes);
     }
 
     bool is_noreturn() const {
-        return has_attribute("noreturn");
+        return has_attribute("noreturn", attributes);
     }
 
     bool is_no_wrap() const {
-        return has_attribute("no_wrap");
+        return has_attribute("no_wrap", attributes);
+    }
+
+    bool is_blocking() const {
+        return has_attribute("blocking", attributes);
     }
 
     bool validate() const {
@@ -380,11 +408,13 @@ struct Syscall {
         } else if (ret_spec.size() > kMaxReturnArgs) {
             print_error("invalid number of return arguments");
             return false;
-        } else if (ret_spec.size() == 1) {
-            if (!ret_spec[0].name.empty()) {
-                print_error("single return arguments cannot be named");
-                return false;
-            }
+        } else if (ret_spec.size() == 1 && !ret_spec[0].name.empty()) {
+            print_error("single return arguments cannot be named");
+            return false;
+        } else if (is_blocking() &&
+                   (ret_spec.size() == 0 || ret_spec[0].type != "mx_status_t")) {
+            print_error("blocking must have first return be of type mx_status_t");
+            return false;
         }
         if (arg_spec.size() > kMaxInputArgs) {
             print_error("invalid number of input arguments");
@@ -441,6 +471,8 @@ struct Syscall {
         for (auto& a : arg_spec) {
             a.debug_dump();
         }
+        fprintf(stderr, "- attrs(s)\n");
+        dump_attributes(attributes);
     }
 
     string return_type() const {
@@ -454,11 +486,11 @@ struct Syscall {
         return return_type() == "void";
     }
 
-    bool will_wrap(string type) const {
+    bool will_wrap(const string& type) const {
         return !is_no_wrap() && type.find("reinterpret_cast") != string::npos;
     }
 
-    string maybe_wrap(string type) const {
+    string maybe_wrap(const string& type) const {
         return will_wrap(type) ? "make_user_ptr(" + type + ")" : type;
     }
 };
@@ -482,103 +514,106 @@ bool vet_identifier(const string& iden, const FileCtx& fc) {
     return true;
 }
 
-bool parse_arrayspec(TokenStream& ts, TypeSpec* type_spec) {
+bool parse_param_attributes(TokenStream* ts, std::vector<string>* attrs) {
+    while (ts->peek_next() != ")" && ts->peek_next() != ",") {
+        auto attr = ts->next();
+        attrs->push_back(attr);
+    }
+    return true;
+}
+
+bool parse_arrayspec(TokenStream* ts, TypeSpec* type_spec) {
     std::string name;
     uint32_t count = 0;
 
-    if (ts.next() != "[")
+    if (ts->next() != "[")
         return false;
 
-    if (ts.next().empty())
+    if (ts->next().empty())
         return false;
 
-    auto c = ts.curr()[0];
+    auto c = ts->curr()[0];
 
     if (isalpha(c)) {
-        if (!vet_identifier(ts.curr(), ts.filectx()))
+        if (!vet_identifier(ts->curr(), ts->filectx()))
             return false;
-        name = ts.curr();
+        name = ts->curr();
 
     } else if (isdigit(c)) {
         count = c - '0';
-        if (ts.curr().size() > 1 || count == 0 || count > 9) {
-            ts.filectx().print_error("only 1-9 explicit array count allowed", "");
+        if (ts->curr().size() > 1 || count == 0 || count > 9) {
+            ts->filectx().print_error("only 1-9 explicit array count allowed", "");
             return false;
         }
     } else {
-        ts.filectx().print_error("expected array specifier", "");
+        ts->filectx().print_error("expected array specifier", "");
         return false;
     }
 
     if (name == type_spec->name) {
-        ts.filectx().print_error("invalid name for an array specifier", name);
+        ts->filectx().print_error("invalid name for an array specifier", name);
         return false;
     }
 
-    if (ts.next() != "]") {
-        ts.filectx().print_error("expected", "]");
+    if (ts->next() != "]") {
+        ts->filectx().print_error("expected", "]");
         return false;
     }
 
-    auto attr = ts.next();
-    ArraySpec::Kind kind;
-
-    if (attr == "IN") {
-        kind = ArraySpec::IN;
-    } else if (attr == "OUT") {
-        kind = ArraySpec::OUT;
-    } else if (attr == "INOUT") {
-        kind = ArraySpec::INOUT;
-    } else {
-        ts.filectx().print_error("invalid array attribute", attr);
-        return false;
-    }
-
-    type_spec->arr_spec = new ArraySpec {kind, count, name};
+    type_spec->arr_spec = new ArraySpec {ArraySpec::IN, count, name};
     return true;
 }
 
-bool parse_typespec(TokenStream& ts, TypeSpec* type_spec) {
-    if (ts.peek_next() == ":") {
-        auto name = ts.curr();
-        if (!vet_identifier(name, ts.filectx()))
+bool parse_typespec(TokenStream* ts, TypeSpec* type_spec) {
+    if (ts->peek_next() == ":") {
+        auto name = ts->curr();
+        if (!vet_identifier(name, ts->filectx()))
             return false;
 
         type_spec->name = name;
 
-        ts.next();
-        if (ts.next().empty())
+        ts->next();
+        if (ts->next().empty())
             return false;
     }
 
-    auto type = ts.curr();
-    if (!vet_identifier(type, ts.filectx()))
+    auto type = ts->curr();
+    if (!vet_identifier(type, ts->filectx()))
         return false;
 
     type_spec->type = type;
 
-    if (ts.peek_next() != "[")
-        return true;
+    if (ts->peek_next() == "[" && !parse_arrayspec(ts, type_spec)) {
+        return false;
+    }
 
-    return parse_arrayspec(ts, type_spec);
+    if (!parse_param_attributes(ts, &type_spec->attributes)) {
+        return false;
+    }
+
+    if (type_spec->arr_spec && !type_spec->arr_spec->assign_kind(type_spec->attributes)) {
+        ts->filectx().print_error("expected", "IN, INOUT or OUT");
+        return false;
+    }
+    return true;
 }
 
-bool parse_argpack(TokenStream& ts, std::vector<TypeSpec>* v) {
-    if (ts.curr() != "(") {
-        ts.filectx().print_error("expected", "(");
+bool parse_argpack(TokenStream* ts, std::vector<TypeSpec>* v) {
+    if (ts->curr() != "(") {
+        ts->filectx().print_error("expected", "(");
         return false;
     }
 
     while (true) {
-        if (ts.next() == ")")
+        if (ts->next() == ")")
             break;
 
         if (v->size() > 0) {
-            if (ts.curr() != ",") {
-                ts.filectx().print_error("expected", ", or :");
+            if (ts->curr() != ",") {
+                ts->filectx().print_error("expected", ", or :");
                 return false;
             }
-            ts.next();
+            ts->next();
         }
 
         TypeSpec type_spec;
@@ -624,8 +659,9 @@ const string add_attribute(std::map<string, string> attributes,
 }
 
 bool generate_legacy_header(std::ofstream& os, const Syscall& sc,
-    string function_prefix, std::vector<string> name_prefixes, string no_args_type,
-    bool allow_pointer_wrapping, std::map<string, string> attributes) {
+    const string& function_prefix, const std::vector<string>& name_prefixes,
+    const string& no_args_type, bool allow_pointer_wrapping,
+    const std::map<string, string>& attributes) {
     constexpr uint32_t indent_spaces = 4u;
 
     for (auto name_prefix : name_prefixes) {
@@ -696,14 +732,14 @@ bool generate_rust_bindings(std::ofstream& os, const Syscall& sc) {
 }
 
 bool generate_kernel_header(std::ofstream& os, const Syscall& sc,
-    string name_prefix, std::map<string, string> attributes) {
+    const string& name_prefix, const std::map<string, string>& attributes) {
     return sc.is_vdso()
         ? true
         : generate_legacy_header(os, sc, "", {name_prefix}, "", true, attributes);
 }
 
-string invocation(std::ofstream& os, const string out_var, const string out_type,
-                  const string syscall_name, const Syscall& sc) {
+string invocation(std::ofstream& os, const string& out_var, const string& out_type,
+                  const string& syscall_name, const Syscall& sc) {
     if (sc.is_noreturn()) {
         // no return - no need to set anything. the compiler
         // should know that we're never going anywhere from here
@@ -725,8 +761,8 @@ string invocation(std::ofstream& os, const string out_var, const string out_type
 }
 
 bool generate_kernel_code(std::ofstream& os, const Syscall& sc,
-    const string syscall_prefix, const string return_var, const string return_type,
-    const string arg_prefix) {
+    const string& syscall_prefix, const string& return_var, const string& return_type,
+    const string& arg_prefix) {
 
     if (sc.is_vdso())
         return true;
@@ -739,6 +775,12 @@ bool generate_kernel_code(std::ofstream& os, const Syscall& sc,
 
     // case 0:
     os << "    case " << sc.index << ": {\n" << code_sp;
+
+    // If blocking, open a "while(true)" so we can retry on thread suspend
+    // TODO(teisenbe): Move this to be autogenerated VDSO code instead
+    if (sc.is_blocking()) {
+        os << "while (true) {\n";
+    }
 
     // ret = static_cast<uint64_t>(syscall_whatevs(      )) -closer
     string close_invocation = invocation(os, return_var, return_type, syscall_name, sc);
@@ -758,14 +800,22 @@ bool generate_kernel_code(std::ofstream& os, const Syscall& sc,
     if (sc.is_noreturn()) {
         os << "; // __noreturn__\n" << block_sp << "}\n";
     } else {
-        os << ";\n" << code_sp << "break;\n" << block_sp << "}\n";
+        os << ";\n";
+        // TODO(teisenbe): Move this to be autogenerated VDSO code instead
+        if (sc.is_blocking()) {
+            os << code_sp << block_sp << "if (likely(static_cast<mx_status_t>(" << return_var <<
+               ") != ERR_INTERRUPTED_RETRY)) break;\n";
+            os << code_sp << block_sp << "thread_process_pending_signals();\n";
+            os << code_sp << "}\n";
+        }
+        os << code_sp << "break;\n" << block_sp << "}\n";
     }
 
     return os.good();
 }
 
 bool generate_legacy_assembly_x64(
-    std::ofstream& os, const Syscall& sc, const string syscall_macro, const string name_prefix) {
+    std::ofstream& os, const Syscall& sc, const string& syscall_macro, const string& name_prefix) {
     if (sc.is_vdso())
         return true;
     // SYSCALL_DEF(nargs64, nargs32, n, ret, name, args...) m_syscall nargs64, mx_##name, n
@@ -775,7 +825,7 @@ bool generate_legacy_assembly_x64(
 }
 
 bool generate_legacy_assembly_arm64(
-    std::ofstream& os, const Syscall& sc, const string syscall_macro, const string name_prefix) {
+    std::ofstream& os, const Syscall& sc, const string& syscall_macro, const string& name_prefix) {
     if (sc.is_vdso())
         return true;
     // SYSCALL_DEF(nargs64, nargs32, n, ret, name, args...) m_syscall mx_##name, n
@@ -784,7 +834,7 @@ bool generate_legacy_assembly_arm64(
 }
 
 bool generate_syscall_numbers_header(
-    std::ofstream& os, const Syscall& sc, const string define_prefix) {
+    std::ofstream& os, const Syscall& sc, const string& define_prefix) {
     if (sc.is_vdso())
         return true;
     os << define_prefix << sc.name << " " << sc.index << "\n";
@@ -914,7 +964,7 @@ public:
         return true;
     }
 
-    bool Generate(const std::map<string, string> type_to_filename) {
+    bool Generate(const std::map<string, string>& type_to_filename) {
         for (auto& entry : type_to_filename) {
             if (!generate_one(entry.second, type_to_generator.at(entry.first), entry.first))
                 return false;
@@ -925,7 +975,7 @@ public:
     bool verbose() const { return verbose_; }
 
 private:
-    bool generate_one(const string& output_file, gen generator, const string& type) {
+    bool generate_one(const string& output_file, const gen& generator, const string& type) {
         std::ofstream ofile;
         ofile.open(output_file.c_str(), std::ofstream::out);
 
@@ -983,7 +1033,7 @@ bool process_syscall(SysgenGenerator* parser, TokenStream& ts) {
         }
     }
 
-    if (!parse_argpack(ts, &syscall.arg_spec))
+    if (!parse_argpack(&ts, &syscall.arg_spec))
         return false;
 
     auto return_spec = ts.next();
@@ -991,7 +1041,7 @@ bool process_syscall(SysgenGenerator* parser, TokenStream& ts) {
     if (return_spec == "returns") {
         ts.next();
 
-        if (!parse_argpack(ts, &syscall.ret_spec))
+        if (!parse_argpack(&ts, &syscall.ret_spec))
             return false;
     } else if (return_spec != ";") {
         ts.filectx().print_error("expected", ";");

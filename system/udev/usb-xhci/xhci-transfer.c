@@ -94,9 +94,10 @@ mx_status_t xhci_queue_transfer(xhci_t* xhci, iotxn_t* txn) {
     }
 
     size_t length = txn->length;
-    mx_paddr_t phys_addr = 0;
+    iotxn_sg_t* sg;
+    uint32_t sgl;
     if (length > 0) {
-        txn->ops->physmap(txn, &phys_addr);
+        iotxn_physmap(txn, &sg, &sgl);
     }
     uint64_t frame = proto_data->frame;
     uint8_t direction;
@@ -133,12 +134,12 @@ mx_status_t xhci_queue_transfer(xhci_t* xhci, iotxn_t* txn) {
     if (ep_type >= 4) ep_type -= 4;
     bool isochronous = (ep_type == USB_ENDPOINT_ISOCHRONOUS);
     if (isochronous) {
-        if (!phys_addr || !length) return ERR_INVALID_ARGS;
+        if (!sg->paddr || !length) return ERR_INVALID_ARGS;
         // we currently do not support isoch buffers that span page boundaries
         // Section 3.2.11 in the XHCI spec describes how to handle this, but since
         // iotxn buffers are always close to the beginning of a page, this shouldn't be necessary.
-        mx_paddr_t start_page = phys_addr & ~(xhci->page_size - 1);
-        mx_paddr_t end_page = (phys_addr + length - 1) & ~(xhci->page_size - 1);
+        mx_paddr_t start_page = sg->paddr & ~(xhci->page_size - 1);
+        mx_paddr_t end_page = (sg->paddr + length - 1) & ~(xhci->page_size - 1);
         if (start_page != end_page) {
             printf("isoch buffer spans page boundary in xhci_queue_transfer\n");
             return ERR_INVALID_ARGS;
@@ -204,7 +205,7 @@ mx_status_t xhci_queue_transfer(xhci_t* xhci, iotxn_t* txn) {
 
             xhci_trb_t* trb = ring->current;
             xhci_clear_trb(trb);
-            XHCI_WRITE64(&trb->ptr, phys_addr + (i * XHCI_MAX_DATA_BUFFER));
+            XHCI_WRITE64(&trb->ptr, sg->paddr + (i * XHCI_MAX_DATA_BUFFER));
             XHCI_SET_BITS32(&trb->status, XFER_TRB_XFER_LENGTH_START, XFER_TRB_XFER_LENGTH_BITS, transfer_size);
             uint32_t td_size = data_packets - i - 1;
             XHCI_SET_BITS32(&trb->status, XFER_TRB_TD_SIZE_START, XFER_TRB_TD_SIZE_BITS, td_size);
@@ -291,7 +292,7 @@ int xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request_type, u
 
     iotxn_t* txn;
 
-    mx_status_t status = iotxn_alloc(&txn, 0, length, 0);
+    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, length);
     if (status != NO_ERROR) return status;
     txn->protocol = MX_PROTOCOL_USB;
 
@@ -309,7 +310,7 @@ int xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request_type, u
 
     bool out = !!((request_type & USB_DIR_MASK) == USB_DIR_OUT);
     if (length > 0 && out) {
-        txn->ops->copyto(txn, data, length, 0);
+        iotxn_copyto(txn, data, length, 0);
     }
 
     completion_t completion = COMPLETION_INIT;
@@ -325,10 +326,10 @@ int xhci_control_request(xhci_t* xhci, uint32_t slot_id, uint8_t request_type, u
         status = txn->actual;
 
         if (length > 0 && !out) {
-            txn->ops->copyfrom(txn, data, txn->actual, 0);
+            iotxn_copyfrom(txn, data, txn->actual, 0);
         }
     }
-    txn->ops->release(txn);
+    iotxn_release(txn);
     xprintf("xhci_control_request returning %d\n", status);
     return status;
 }
@@ -440,9 +441,9 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
     mtx_unlock(&ep->lock);
 
     if (result < 0) {
-        txn->ops->complete(txn, result, 0);
+        iotxn_complete(txn, result, 0);
     } else {
-        txn->ops->complete(txn, NO_ERROR, result);
+        iotxn_complete(txn, NO_ERROR, result);
     }
 
     if (process_deferred_txns) {

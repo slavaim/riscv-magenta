@@ -514,7 +514,9 @@ mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* _pending, mx_time_t 
     }
     mx_signals_t pending;
     if ((r = mx_object_wait_one(h, signals, timeout, &pending)) < 0) {
-        goto end;
+        if (r != ERR_TIMED_OUT) {
+            goto end;
+        }
     }
     io->ops->wait_end(io, pending, &events);
 
@@ -1207,7 +1209,7 @@ int faccessat(int dirfd, const char* filename, int amode, int flag) {
 
     // amode is allowed to be either a subset of this mask, or just F_OK.
     const int allowed_modes = R_OK | W_OK | X_OK;
-    if (amode != F_OK && (flag & (~allowed_modes))) {
+    if (amode != F_OK && (amode & (~allowed_modes))) {
         return ERRNO(EINVAL);
     }
 

@@ -23,7 +23,9 @@
 #include <kernel/vm/vm_object.h>
 
 #include <lib/crypto/global_prng.h>
+#include <lib/ktrace.h>
 
+#include <magenta/diagnostics.h>
 #include <magenta/futex_context.h>
 #include <magenta/handle_owner.h>
 #include <magenta/handle_reaper.h>
@@ -367,6 +369,10 @@ void ProcessDispatcher::SetStateLocked(State s) {
         // the semantics of signaling MX_JOB_NO_PROCESSES match that of MX_TASK_TERMINATED.
         if (job_)
             job_->RemoveChildProcess(this);
+
+        // The PROC_CREATE record currently emits a uint32_t.
+        uint32_t koid = static_cast<uint32_t>(get_koid());
+        ktrace(TAG_PROC_EXIT, koid, 0, 0, 0);
     }
 }
 
@@ -485,6 +491,11 @@ status_t ProcessDispatcher::GetInfo(mx_info_process_t* info) {
 }
 
 status_t ProcessDispatcher::GetStats(mx_info_task_stats_t* stats) {
+    DEBUG_ASSERT(stats != nullptr);
+    AutoLock lock(&state_lock_);
+    if (state_ != State::RUNNING) {
+        return ERR_BAD_STATE;
+    }
     VmAspace::vm_usage_t usage;
     status_t s = aspace_->GetMemoryUsage(&usage);
     if (s != NO_ERROR) {
@@ -493,6 +504,16 @@ status_t ProcessDispatcher::GetStats(mx_info_task_stats_t* stats) {
     stats->mem_mapped_bytes = usage.mapped_pages * PAGE_SIZE;
     stats->mem_committed_bytes = usage.committed_pages * PAGE_SIZE;
     return NO_ERROR;
+}
+
+status_t ProcessDispatcher::GetAspaceMaps(
+    user_ptr<mx_info_maps_t> maps, size_t max,
+    size_t* actual, size_t* available) {
+    AutoLock lock(&state_lock_);
+    if (state_ != State::RUNNING) {
+        return ERR_BAD_STATE;
+    }
+    return GetVmAspaceMaps(aspace_, maps, max, actual, available);
 }
 
 status_t ProcessDispatcher::CreateUserThread(mxtl::StringPiece name, uint32_t flags, mxtl::RefPtr<UserThread>* user_thread) {

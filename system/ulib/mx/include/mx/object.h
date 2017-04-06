@@ -75,6 +75,10 @@ public:
         return mx_handle_cancel(value_, key, options);
     }
 
+    static mx_status_t wait_many(mx_wait_item_t* wait_items, uint32_t count, mx_time_t timeout) {
+        return mx_object_wait_many(wait_items, count, timeout);
+    }
+
     // TODO(abarth): Not all of these methods apply to every type of object. We
     // should sort out which ones apply where and limit them to the interfaces
     // where they work.
@@ -115,6 +119,14 @@ public:
     mx_status_t set_property(uint32_t property, const void* value,
                              size_t size) const {
         return mx_object_set_property(get(), property, value, size);
+    }
+
+    mx_status_t get_cookie(mx_handle_t scope, uint64_t *cookie) const {
+        return mx_object_get_cookie(get(), scope, cookie);
+    }
+
+    mx_status_t set_cookie(mx_handle_t scope, uint64_t cookie) {
+        return mx_object_set_cookie(get(), scope, cookie);
     }
 
     bool is_valid() const { return value_ != MX_HANDLE_INVALID; }

@@ -156,7 +156,7 @@ static void mbr_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     if (first + off_lba >= last) {
         xprintf("mbr: %s offset 0x%" PRIx64 " is past the end of partition!\n",
                 dev->name, txn->offset);
-        txn->ops->complete(txn, ERR_INVALID_ARGS, 0);
+        iotxn_complete(txn, ERR_INVALID_ARGS, 0);
         return;
     }
 
@@ -243,7 +243,7 @@ static int mbr_bind_thread(void* arg) {
         iotxn_size = DIV_ROUND_UP(MBR_SIZE, blksiz) * blksiz;
     }
 
-    mx_status_t st = iotxn_alloc(&txn, 0, iotxn_size, 0);
+    mx_status_t st = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS, iotxn_size);
     if (st != NO_ERROR) {
         xprintf("mbr: failed to allocate iotxn, retcode = %d\n", st);
         goto unbind;
@@ -272,7 +272,7 @@ static int mbr_bind_thread(void* arg) {
     }
 
     uint8_t buffer[MBR_SIZE];
-    txn->ops->copyfrom(txn, buffer, MBR_SIZE, 0);
+    iotxn_copyfrom(txn, buffer, MBR_SIZE, 0);
     mbr_t* mbr = (mbr_t*)buffer;
 
     // Validate the MBR boot signature.
@@ -317,12 +317,12 @@ static int mbr_bind_thread(void* arg) {
         }
     }
 
-    txn->ops->release(txn);
+    iotxn_release(txn);
 
     return 0;
 unbind:
     if (txn)
-        txn->ops->release(txn);
+        iotxn_release(txn);
 
     // If we weren't able to bind any subdevices (for partitions), then unbind
     // the MBR driver as well.

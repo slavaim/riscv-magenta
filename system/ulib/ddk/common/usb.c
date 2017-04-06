@@ -6,6 +6,7 @@
 #include <ddk/device.h>
 #include <ddk/common/usb.h>
 #include <magenta/device/usb.h>
+#include <magenta/assert.h>
 #include <endian.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -19,7 +20,7 @@ mx_status_t usb_control(mx_device_t* device, uint8_t request_type, uint8_t reque
                         uint16_t value, uint16_t index, void* data, size_t length) {
     iotxn_t* txn;
 
-    mx_status_t status = iotxn_alloc(&txn, 0, length, 0);
+    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, length);
     if (status != NO_ERROR) return status;
     txn->protocol = MX_PROTOCOL_USB;
 
@@ -38,7 +39,7 @@ mx_status_t usb_control(mx_device_t* device, uint8_t request_type, uint8_t reque
 
     bool out = !!((request_type & USB_DIR_MASK) == USB_DIR_OUT);
     if (length > 0 && out) {
-        txn->ops->copyto(txn, data, length, 0);
+        iotxn_copyto(txn, data, length, 0);
     }
 
     completion_t completion = COMPLETION_INIT;
@@ -54,10 +55,10 @@ mx_status_t usb_control(mx_device_t* device, uint8_t request_type, uint8_t reque
         status = txn->actual;
 
         if (length > 0 && !out) {
-            txn->ops->copyfrom(txn, data, txn->actual, 0);
+            iotxn_copyfrom(txn, data, txn->actual, 0);
         }
     }
-    txn->ops->release(txn);
+    iotxn_release(txn);
     return status;
 }
 
@@ -162,10 +163,10 @@ size_t usb_get_max_transfer_size(mx_device_t* device, uint8_t ep_address) {
 }
 
 // helper function for allocating iotxns for USB transfers
-iotxn_t* usb_alloc_iotxn(uint8_t ep_address, size_t data_size, size_t extra_size) {
+iotxn_t* usb_alloc_iotxn(uint8_t ep_address, size_t data_size) {
     iotxn_t* txn;
 
-    mx_status_t status = iotxn_alloc(&txn, 0, data_size, extra_size);
+    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, data_size);
     if (status != NO_ERROR) {
         return NULL;
     }

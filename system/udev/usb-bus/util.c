@@ -18,7 +18,7 @@ mx_status_t usb_device_control(mx_device_t* hci_device, uint32_t device_id,
                                uint16_t index, void* data, size_t length) {
     iotxn_t* txn;
 
-    mx_status_t status = iotxn_alloc(&txn, 0, length, 0);
+    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, length);
     if (status != NO_ERROR) return status;
     txn->protocol = MX_PROTOCOL_USB;
     usb_protocol_data_t* proto_data = iotxn_pdata(txn, usb_protocol_data_t);
@@ -36,7 +36,7 @@ mx_status_t usb_device_control(mx_device_t* hci_device, uint32_t device_id,
 
     bool out = !!((request_type & USB_DIR_MASK) == USB_DIR_OUT);
     if (length > 0 && out) {
-        txn->ops->copyto(txn, data, length, 0);
+        iotxn_copyto(txn, data, length, 0);
     }
 
     completion_t completion = COMPLETION_INIT;
@@ -52,10 +52,10 @@ mx_status_t usb_device_control(mx_device_t* hci_device, uint32_t device_id,
         status = txn->actual;
 
         if (length > 0 && !out) {
-            txn->ops->copyfrom(txn, data, txn->actual, 0);
+            iotxn_copyfrom(txn, data, txn->actual, 0);
         }
     }
-    txn->ops->release(txn);
+    iotxn_release(txn);
     return status;
 }
 

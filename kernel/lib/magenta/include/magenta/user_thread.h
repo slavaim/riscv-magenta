@@ -12,6 +12,7 @@
 #include <kernel/vm/vm_address_region.h>
 #include <lib/dpc.h>
 
+#include <magenta/channel_dispatcher.h>
 #include <magenta/dispatcher.h>
 #include <magenta/exception.h>
 #include <magenta/excp_port.h>
@@ -35,6 +36,7 @@ public:
         INITIAL,     // newly created thread
         INITIALIZED, // LK thread state is initialized
         RUNNING,     // thread is running
+        SUSPENDED,   // thread is suspended
         DYING,       // thread has been signaled for kill, but has not exited yet
         DEAD,        // thread has exited and is not running
     };
@@ -84,6 +86,9 @@ public:
     void Exit() __NO_RETURN;
     void Kill();
     void DispatcherClosed();
+
+    status_t Suspend();
+    status_t Resume();
 
     // accessors
     ProcessDispatcher* process() { return process_.get(); }
@@ -147,6 +152,9 @@ public:
     mx_koid_t get_koid() const { return koid_; }
     void set_dispatcher(ThreadDispatcher* dispatcher);
 
+    // For ChannelDispatcher use.
+    ChannelDispatcher::MessageWaiter* GetMessageWaiter() { return &channel_waiter_; }
+
 private:
     UserThread(const UserThread&) = delete;
     UserThread& operator=(const UserThread&) = delete;
@@ -156,7 +164,14 @@ private:
 
     // callback from kernel when thread is exiting, just before it stops for good.
     void Exiting();
-    static void ThreadExitCallback(void* arg);
+
+    // callback from kernel when thread is suspending
+    void Suspending();
+    // callback from kernel when thread is resuming
+    void Resuming();
+
+    // Dispatch routine for state changes that LK tells us about
+    static void ThreadUserCallback(enum thread_user_state_change new_state, void* arg);
 
     // change states of the object, do what is appropriate for the state transition
     void SetState(State) TA_REQ(state_lock_);
@@ -219,6 +234,11 @@ private:
     mxtl::RefPtr<VmMapping> unsafe_kstack_mapping_;
     mxtl::RefPtr<VmAddressRegion> unsafe_kstack_vmar_;
 #endif
+
+    // Per-thread structure used while waiting in a ChannelDispatcher::Call.
+    // Needed to support the requirements of being able to interrupt a Call
+    // in order to suspend a thread.
+    ChannelDispatcher::MessageWaiter channel_waiter_;
 
     // LK thread structure
     // put last to ease debugging since this is a pretty large structure

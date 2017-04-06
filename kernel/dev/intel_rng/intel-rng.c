@@ -6,6 +6,24 @@
 #include <arch/x86/feature.h>
 #include <dev/hw_rng.h>
 
+// TODO(mcgrathr): As of GCC 6.3.0, these other files included by
+// <x86intrin.h> are incompatible with -mno-sse.
+// When https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80298 is fixed,
+// these #define hacks can be removed.
+#ifndef __clang__
+#define _AVX512VLINTRIN_H_INCLUDED
+#define _AVX512BWINTRIN_H_INCLUDED
+#define _AVX512DQINTRIN_H_INCLUDED
+#define _AVX512VLBWINTRIN_H_INCLUDED
+#define _AVX512VLDQINTRIN_H_INCLUDED
+#define _AVX512VBMIINTRIN_H_INCLUDED
+#define _AVX512VBMIVLINTRIN_H_INCLUDED
+#define _MM3DNOW_H_INCLUDED
+#define _FMA4INTRIN_H_INCLUDED
+#define _XOPMMINTRIN_H_INCLUDED
+#endif
+#include <x86intrin.h>
+
 enum entropy_instr {
     ENTROPY_INSTR_RDSEED,
     ENTROPY_INSTR_RDRAND,
@@ -26,8 +44,7 @@ static ssize_t get_entropy_from_rdrand(void* buf, size_t len, bool block);
  * Returns the number of bytes written to the buffer on success (potentially 0),
  * and a negative value on error.
  */
-__NO_SAFESTACK static ssize_t get_entropy_from_cpu(void* buf, size_t len,
-                                                   bool block) {
+static ssize_t get_entropy_from_cpu(void* buf, size_t len, bool block) {
     /* TODO(security): Move this to a shared kernel/user lib, so we can write usermode
      * tests against this code */
 
@@ -47,31 +64,18 @@ __NO_SAFESTACK static ssize_t get_entropy_from_cpu(void* buf, size_t len,
     return ERR_NOT_SUPPORTED;
 }
 
-__NO_SAFESTACK static bool rdrand64_step(unsigned long long int* val) {
-    bool success = false;
-    __asm__ volatile ("rdrand %0; setc %1" : "=r"(*val), "=r"(success) : : "cc");
-    return success;
-}
-
-__NO_SAFESTACK static bool rdseed64_step(unsigned long long int* val) {
-    // We use inline asm here instead of the intrinsic since we observed a
-    // codegen bug with rdseed in GCC 6.2.
-    bool success = false;
-    __asm__ volatile ("rdseed %0; setc %1" : "=r"(*val), "=r"(success) : : "cc");
-    return success;
-}
-
-__NO_SAFESTACK static bool instruction_step(enum entropy_instr instr,
-                                            unsigned long long int* val) {
+__attribute__((target("rdrnd,rdseed")))
+static bool instruction_step(enum entropy_instr instr,
+                             unsigned long long int* val) {
     switch (instr) {
-        case ENTROPY_INSTR_RDRAND: return rdrand64_step(val);
-        case ENTROPY_INSTR_RDSEED: return rdseed64_step(val);
+        case ENTROPY_INSTR_RDRAND: return _rdrand64_step(val);
+        case ENTROPY_INSTR_RDSEED: return _rdseed64_step(val);
         default: panic("Invalid entropy instruction %u\n", instr);
     }
 }
 
-__NO_SAFESTACK static ssize_t get_entropy_from_instruction(
-    void* buf, size_t len, bool block, enum entropy_instr instr) {
+static ssize_t get_entropy_from_instruction(void* buf, size_t len, bool block,
+                                            enum entropy_instr instr) {
     size_t written = 0;
     while (written < len) {
         unsigned long long int val = 0;
@@ -91,13 +95,11 @@ __NO_SAFESTACK static ssize_t get_entropy_from_instruction(
     return (ssize_t)written;
 }
 
-__NO_SAFESTACK static ssize_t get_entropy_from_rdseed(void* buf, size_t len,
-                                                      bool block) {
+static ssize_t get_entropy_from_rdseed(void* buf, size_t len, bool block) {
     return get_entropy_from_instruction(buf, len, block, ENTROPY_INSTR_RDSEED);
 }
 
-__NO_SAFESTACK static ssize_t get_entropy_from_rdrand(void* buf, size_t len,
-                                                      bool block) {
+static ssize_t get_entropy_from_rdrand(void* buf, size_t len, bool block) {
     // TODO(security): This method is not compliant with Intel's "Digital Random
     // Number Generator (DRNG) Software Implementation Guide".  We are using
     // rdrand in a way that is explicitly against their recommendations.  This
@@ -107,7 +109,7 @@ __NO_SAFESTACK static ssize_t get_entropy_from_rdrand(void* buf, size_t len,
     return get_entropy_from_instruction(buf, len, block, ENTROPY_INSTR_RDRAND);
 }
 
-__NO_SAFESTACK size_t hw_rng_get_entropy(void* buf, size_t len, bool block)
+size_t hw_rng_get_entropy(void* buf, size_t len, bool block)
 {
     if (!len) {
         return 0;

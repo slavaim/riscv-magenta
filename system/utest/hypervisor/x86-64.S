@@ -5,9 +5,15 @@
 // https://opensource.org/licenses/MIT
 
 #define FUNCTION(x) .global x; .type x,STT_FUNC; x:
+#define UART_IO_PORT 0x3f8
 
 .text
 
 FUNCTION(guest_start)
-    jmp .
+    xor %rax, %rax
+increment:
+    inc %rax
+    mov $UART_IO_PORT, %dx
+    out %al, %dx
+    jmp increment
 FUNCTION(guest_end)

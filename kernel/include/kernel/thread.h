@@ -30,17 +30,25 @@ __BEGIN_CDECLS;
 #endif
 
 enum thread_state {
-    THREAD_SUSPENDED = 0,
+    THREAD_INITIAL = 0,
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,
     THREAD_SLEEPING,
+    THREAD_SUSPENDED,
     THREAD_DEATH,
+};
+
+enum thread_user_state_change {
+    THREAD_USER_STATE_EXIT,
+    THREAD_USER_STATE_SUSPEND,
+    THREAD_USER_STATE_RESUME,
 };
 
 typedef int (*thread_start_routine)(void *arg);
 typedef void (*thread_trampoline_routine)(void) __NO_RETURN;
-typedef void (*thread_exit_callback_t)(void *arg);
+typedef void (*thread_user_callback_t)(enum thread_user_state_change new_state,
+                                                     void *user_thread);
 
 #define THREAD_FLAG_DETACHED                  (1<<0)
 #define THREAD_FLAG_FREE_STACK                (1<<1)
@@ -50,6 +58,7 @@ typedef void (*thread_exit_callback_t)(void *arg);
 #define THREAD_FLAG_DEBUG_STACK_BOUNDS_CHECK  (1<<5)
 
 #define THREAD_SIGNAL_KILL                    (1<<0)
+#define THREAD_SIGNAL_SUSPEND                 (1<<1)
 
 #define THREAD_MAGIC (0x74687264) // 'thrd'
 
@@ -80,9 +89,12 @@ typedef struct thread {
     vmm_aspace_t *aspace;
 
     /* pointer to user thread if one exists for this thread */
-    void* user_thread;
+    void *user_thread;
     uint64_t user_tid;
     uint64_t user_pid;
+
+    /* callback for user thread state changes */
+    thread_user_callback_t user_callback;;
 
     /* Total time in THREAD_RUNNING state.  If the thread is currently in
      * THREAD_RUNNING state, this excludes the time it has accrued since it
@@ -119,10 +131,6 @@ typedef struct thread {
     /* return code */
     int retcode;
     struct wait_queue retcode_wait_queue;
-
-    /* callbacks particular events */
-    thread_exit_callback_t exit_callback;
-    void *exit_callback_arg;
 
     char name[THREAD_NAME_LENGTH];
 #if WITH_DEBUG_LINEBUFFER
@@ -171,10 +179,11 @@ void thread_construct_first(thread_t *t, const char *name);
 thread_t *thread_create_idle_thread(uint cpu_num);
 void thread_set_name(const char *name);
 void thread_set_priority(int priority);
-void thread_set_exit_callback(thread_t *t, thread_exit_callback_t cb, void *cb_arg);
+void thread_set_user_callback(thread_t *t, thread_user_callback_t cb);
 thread_t *thread_create(const char *name, thread_start_routine entry, void *arg, int priority, size_t stack_size);
 thread_t *thread_create_etc(thread_t *t, const char *name, thread_start_routine entry, void *arg, int priority, void *stack, void *unsafe_stack, size_t stack_size, thread_trampoline_routine alt_trampoline);
 status_t thread_resume(thread_t *);
+status_t thread_suspend(thread_t *);
 void thread_exit(int retcode) __NO_RETURN;
 void thread_forget(thread_t *);
 
@@ -184,6 +193,14 @@ status_t thread_detach_and_resume(thread_t *t);
 status_t thread_set_real_time(thread_t *t);
 
 void thread_owner_name(thread_t *t, char out_name[THREAD_NAME_LENGTH]);
+
+#define THREAD_BACKTRACE_DEPTH 10
+typedef struct thread_backtrace {
+    void* pc[THREAD_BACKTRACE_DEPTH];
+} thread_backtrace_t;
+
+int thread_get_backtrace(thread_t* t, void* fp, thread_backtrace_t* tb);
+
 void thread_print_backtrace(thread_t* t, void* fp);
 
 // Return true if stopped in an exception.

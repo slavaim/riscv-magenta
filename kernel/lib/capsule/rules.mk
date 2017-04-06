@@ -9,9 +9,12 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 
 MODULE := $(LOCAL_DIR)
 
-MODULE_DEPS := \
-
-MODULE_SRCS := \
-    $(LOCAL_DIR)/bootargs.c
+ifeq ($(ARCH),arm64)
+MODULE_SRCS += \
+    $(LOCAL_DIR)/capsule-arm.c
+else ifeq ($(ARCH),x86)
+MODULE_SRCS += \
+    $(LOCAL_DIR)/capsule-intel-rtc.c
+endif
 
 include make/module.mk

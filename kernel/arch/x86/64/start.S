@@ -189,8 +189,20 @@ high_entry:
     lidt _idtr
 
     /* assign this core CPU# 0 and initialize its per cpu state */
-    mov $0, %rdi
+    xor %edi, %edi
     call x86_init_percpu
+
+    // Fill the stack canary with a random value as early as possible.
+    // This isn't done in x86_init_percpu because the hw_rng_get_entropy
+    // call would make it eligible for stack-guard checking itself.  But
+    // %gs is not set up yet in the prologue of the function, so it would
+    // crash if it tried to use the stack-guard.
+    call choose_stack_guard
+
+    // Move it into place.
+    mov %rcx, %gs:MX_TLS_STACK_GUARD_OFFSET
+    // Don't leak that value to other code.
+    xor %ecx, %ecx
 
     /* call the main module */
     call lk_main

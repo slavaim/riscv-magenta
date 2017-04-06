@@ -38,7 +38,7 @@ static int sleep_test(void)
 static int mutex_thread(void *arg)
 {
     int i;
-    const int iterations = 1000000;
+    const int iterations = 100000;
 
     static volatile int shared = 0;
 
@@ -314,7 +314,6 @@ static int preempt_tester(void *arg)
     printf("exiting ts %" PRIu64 " ns\n", current_time_hires());
 
     atomic_add(&preempt_count, -1);
-#undef COUNT
 
     return 0;
 }
@@ -342,11 +341,14 @@ static void preempt_test(void)
      * complete in order, about a second apart. */
     printf("testing real time preemption\n");
 
-    preempt_count = 5;
 
-    for (int i = 0; i < preempt_count; i++) {
+    const int num_threads = 5;
+    preempt_count = num_threads;
+
+    for (int i = 0; i < num_threads; i++) {
         thread_t *t = thread_create("preempt tester", &preempt_tester, NULL, LOW_PRIORITY, DEFAULT_STACK_SIZE);
         thread_set_real_time(t);
+        thread_set_pinned_cpu(t, 0);
         thread_detach_and_resume(t);
     }
 
@@ -471,7 +473,7 @@ static void spinlock_test(void)
 #undef COUNT
 }
 
-static void sleeper_thread_exit(void *arg)
+static void sleeper_thread_exit(enum thread_user_state_change new_state, void *arg)
 {
     TRACEF("arg %p\n", arg);
 }
@@ -488,7 +490,7 @@ static int sleeper_kill_thread(void *arg)
     return 0;
 }
 
-static void waiter_thread_exit(void *arg)
+static void waiter_thread_exit(enum thread_user_state_change new_state, void *arg)
 {
     TRACEF("arg %p\n", arg);
 }
@@ -527,7 +529,8 @@ static void kill_tests(void)
 
     printf("starting sleeper thread, then killing it while it sleeps.\n");
     t = thread_create("sleeper", sleeper_kill_thread, 0, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &sleeper_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &sleeper_thread_exit);
     thread_resume(t);
     thread_sleep(200);
     thread_kill(t, true);
@@ -535,14 +538,16 @@ static void kill_tests(void)
 
     printf("starting sleeper thread, then killing it before it wakes up.\n");
     t = thread_create("sleeper", sleeper_kill_thread, 0, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &sleeper_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &sleeper_thread_exit);
     thread_resume(t);
     thread_kill(t, true);
     thread_join(t, NULL, INFINITE_TIME);
 
     printf("starting sleeper thread, then killing it before it is unsuspended.\n");
     t = thread_create("sleeper", sleeper_kill_thread, 0, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &sleeper_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &sleeper_thread_exit);
     thread_kill(t, false); // kill it before it is resumed
     thread_resume(t);
     thread_join(t, NULL, INFINITE_TIME);
@@ -552,7 +557,8 @@ static void kill_tests(void)
     printf("starting waiter thread that waits forever, then killing it while it blocks.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread_infinite_wait, &e, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &waiter_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_sleep(200);
     thread_kill(t, true);
@@ -562,7 +568,8 @@ static void kill_tests(void)
     printf("starting waiter thread that waits forever, then killing it before it wakes up.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread_infinite_wait, &e, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &waiter_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_kill(t, true);
     thread_join(t, NULL, INFINITE_TIME);
@@ -571,7 +578,8 @@ static void kill_tests(void)
     printf("starting waiter thread that waits some time, then killing it while it blocks.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread, &e, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &waiter_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_sleep(200);
     thread_kill(t, true);
@@ -581,7 +589,8 @@ static void kill_tests(void)
     printf("starting waiter thread that waits some time, then killing it before it wakes up.\n");
     event_init(&e, false, 0);
     t = thread_create("waiter", waiter_kill_thread, &e, LOW_PRIORITY, DEFAULT_STACK_SIZE);
-    thread_set_exit_callback(t, &waiter_thread_exit, (void *)t);
+    t->user_thread = t;
+    thread_set_user_callback(t, &waiter_thread_exit);
     thread_resume(t);
     thread_kill(t, true);
     thread_join(t, NULL, INFINITE_TIME);

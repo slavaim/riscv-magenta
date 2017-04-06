@@ -4,14 +4,15 @@
 
 #pragma once
 
+#include <threads.h>
+
 #include <ddk/device.h>
 #include <fs/vfs.h>
 #include <magenta/compiler.h>
-#include <magenta/listnode.h>
+#include <magenta/thread_annotations.h>
 #include <magenta/types.h>
 #include <mxio/remoteio.h>
 #include <mxio/vfs.h>
-#include <threads.h>
 
 #define MEMFS_TYPE_DATA   0
 #define MEMFS_TYPE_DIR    1
@@ -21,15 +22,26 @@
 
 #ifdef __cplusplus
 
+#include <mxtl/intrusive_double_list.h>
+#include <mxtl/ref_ptr.h>
+#include <mxtl/unique_ptr.h>
+
+#include "dnode.h"
+
 namespace memfs {
 
-typedef struct dnode dnode_t;
+class Dnode;
+
+struct VnodeWatcher : public mxtl::DoublyLinkedListable<mxtl::unique_ptr<VnodeWatcher>> {
+public:
+    VnodeWatcher();
+    ~VnodeWatcher();
+
+    mx_handle_t h;
+};
 
 class VnodeMemfs : public fs::Vnode {
 public:
-    mx_status_t IoctlWatchDir(const void* in_buf, size_t in_len, void* out_buf,
-                              size_t out_len) override;
-    void NotifyAdd(const char* name, size_t len) override;
     virtual mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
                                    uint32_t* type, void* extra, uint32_t* esize) override;
     virtual void Release() override;
@@ -50,14 +62,13 @@ public:
     // TODO(smklein): The following members should become private
     uint32_t seqcount_;
 
-    dnode_t* dnode_;      // list of my children
-    list_node_t dn_list_; // all dnodes that point at this vnode
+    Dnode::DeviceList devices_; // All devices pointing to this vnode
+    mxtl::RefPtr<Dnode> dnode_;
     uint32_t link_count_;
 
 protected:
     VnodeMemfs();
 
-    list_node_t watch_list_; // all directory watchers
     uint64_t create_time_;
     uint64_t modify_time_;
 };
@@ -78,12 +89,15 @@ private:
     mx_off_t length_;
 };
 
-class VnodeDir final : public VnodeMemfs {
+class VnodeDir : public VnodeMemfs {
 public:
     VnodeDir();
-    ~VnodeDir();
+    virtual ~VnodeDir();
 
 private:
+    mx_status_t IoctlWatchDir(const void* in_buf, size_t in_len, void* out_buf,
+                              size_t out_len) final;
+    void NotifyAdd(const char* name, size_t len) TA_REQ(vfs_lock) final;
     mx_status_t Lookup(fs::Vnode** out, const char* name, size_t len) final;
     mx_status_t Readdir(void* cookie, void* dirents, size_t len) final;
     mx_status_t Create(fs::Vnode** out, const char* name, size_t len, uint32_t mode) final;
@@ -93,7 +107,23 @@ private:
                        const char* newname, size_t newlen,
                        bool src_must_be_dir, bool dst_must_be_dir) final;
     mx_status_t Link(const char* name, size_t len, fs::Vnode* target) final;
+    mx_status_t Getattr(vnattr_t* a) override;
+
+    // TODO(smklein): Guard the watch list with a lock more fine-grained
+    // than the VFS lock (or make the watch list thread-safe while lock-free).
+    mxtl::DoublyLinkedList<mxtl::unique_ptr<VnodeWatcher>> watch_list_ TA_GUARDED(vfs_lock);
+};
+
+class VnodeDevice final : public VnodeDir {
+public:
+    VnodeDevice();
+    ~VnodeDevice();
+
+private:
+    void Release() final;
     mx_status_t Getattr(vnattr_t* a) final;
+    mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
+                           uint32_t* type, void* extra, uint32_t* esize) final;
 };
 
 class VnodeVmo final : public VnodeMemfs {
@@ -102,7 +132,7 @@ public:
     ~VnodeVmo();
 
     // TODO(smklein): This 'initializer' function only exists as a hack
-    // due to our implementation of "_memfs_create".
+    // due to our implementation of "memfs_create".
     // We should improve our construction of VnodeVmos, and remove this
     // function.
     void Init(mx_handle_t vmo, mx_off_t length, mx_off_t offset) {
@@ -123,20 +153,6 @@ private:
     mx_off_t offset_;
 };
 
-class VnodeDevice final : public VnodeMemfs {
-public:
-    VnodeDevice();
-    ~VnodeDevice();
-
-private:
-    void Release() final;
-    mx_status_t Lookup(fs::Vnode** out, const char* name, size_t len) final;
-    mx_status_t Getattr(vnattr_t* a) final;
-    mx_status_t Readdir(void* cookie, void* dirents, size_t len) final;
-    mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
-                           uint32_t* type, void* extra, uint32_t* esize) final;
-};
-
 } // namespace memfs
 
 using VnodeMemfs = memfs::VnodeMemfs;
@@ -149,11 +165,6 @@ typedef struct VnodeMemfs VnodeMemfs;
 
 __BEGIN_CDECLS
 
-typedef struct vnode_watcher {
-    list_node_t node;
-    mx_handle_t h;
-} vnode_watcher_t;
-
 void vfs_global_init(VnodeMemfs* root);
 
 // generate mxremoteio handles
@@ -162,7 +173,8 @@ mx_handle_t vfs_create_root_handle(VnodeMemfs* vn);
 
 // device fs
 VnodeMemfs* devfs_get_root(void);
-mx_status_t memfs_create_device_at(VnodeMemfs* parent, VnodeMemfs** out, const char* name, mx_handle_t hdevice);
+mx_status_t memfs_create_device_at(VnodeMemfs* parent, VnodeMemfs** out, const char* name,
+                                   mx_handle_t hdevice) TA_EXCL(vfs_lock);
 mx_status_t devfs_remove(VnodeMemfs* vn);
 
 // boot fs
@@ -175,28 +187,27 @@ mx_status_t systemfs_add_file(const char* path, mx_handle_t vmo, mx_off_t off, s
 
 // memory fs
 VnodeMemfs* memfs_get_root(void);
-mx_status_t memfs_add_link(VnodeMemfs* parent, const char* name, VnodeMemfs* target);
+mx_status_t memfs_add_link(VnodeMemfs* parent, const char* name,
+                           VnodeMemfs* target) TA_EXCL(vfs_lock);
 
 // TODO(orr) normally static; temporary exposure, to be undone in subsequent patch
-mx_status_t _memfs_create(VnodeMemfs* parent, VnodeMemfs** out,
-                          const char* name, size_t namelen,
-                          uint32_t type);
+mx_status_t memfs_create(VnodeMemfs* parent, VnodeMemfs** out,
+                         const char* name, size_t namelen,
+                         uint32_t type);
 
 // Create the global root to memfs
-VnodeMemfs* vfs_create_global_root(void);
+VnodeMemfs* vfs_create_global_root(void) TA_NO_THREAD_SAFETY_ANALYSIS;
 
 // Create a generic root to memfs
 VnodeMemfs* vfs_create_root(void);
 
 // shared among all memory filesystems
-mx_status_t memfs_lookup_name(const VnodeMemfs* vn, char* outname, size_t out_len);
-
 mx_status_t memfs_create_from_buffer(const char* path, uint32_t flags,
                                      const char* ptr, mx_off_t len);
 mx_status_t memfs_create_directory(const char* path, uint32_t flags);
 mx_status_t memfs_create_from_vmo(const char* path, uint32_t flags,
                                   mx_handle_t vmo, mx_off_t off, mx_off_t len);
 
-void memfs_mount(VnodeMemfs* parent, VnodeMemfs* subtree);
+void memfs_mount(VnodeMemfs* parent, VnodeMemfs* subtree) TA_EXCL(vfs_lock);
 
 __END_CDECLS
