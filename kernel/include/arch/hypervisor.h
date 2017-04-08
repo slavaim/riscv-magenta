@@ -23,6 +23,7 @@
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
+class FifoDispatcher;
 class VmObject;
 
 /* Create a hypervisor context.
@@ -34,6 +35,7 @@ status_t arch_hypervisor_create(mxtl::unique_ptr<HypervisorContext>* context);
  * This creates the structures to allow a guest to be run.
  */
 status_t arch_guest_create(mxtl::RefPtr<VmObject> guest_phys_mem,
+                           mxtl::RefPtr<FifoDispatcher> serial_fifo,
                            mxtl::unique_ptr<GuestContext>* context);
 
 /* Enter a guest context.
