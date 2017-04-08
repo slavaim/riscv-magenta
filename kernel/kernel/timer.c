@@ -366,7 +366,9 @@ void timer_transition_off_cpu(uint old_cpu)
     spin_lock_irqsave(&timer_lock, state);
     uint cpu = arch_curr_cpu_num();
 
+#if PLATFORM_HAS_DYNAMIC_TIMER
     timer_t *old_head = list_peek_head_type(&timers[old_cpu].timer_queue, timer_t, node);
+#endif
 
     timer_t *entry = NULL, *tmp_entry = NULL;
     /* Move all timers from old_cpu to this cpu */

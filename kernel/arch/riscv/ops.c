@@ -6,35 +6,36 @@
 // https://opensource.org/licenses/MIT
 
 #include <arch/ops.h>
+#include <debug.h>
 
 void arch_disable_cache(uint flags)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_enable_cache(uint flags)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_clean_cache_range(addr_t start, size_t len)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_clean_invalidate_cache_range(addr_t start, size_t len)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_invalidate_cache_range(addr_t start, size_t len)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_sync_cache_range(addr_t start, size_t len)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 /* Used to suspend work on a CPU until it is further shutdown.
@@ -43,22 +44,16 @@ void arch_sync_cache_range(addr_t start, size_t len)
  * flush_done should be signaled after state is flushed. */
 void arch_flush_state_and_halt(event_t *flush_done)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_idle(void)
 {
-    return;
-}
-
-/* function to call in spinloops to idle */
-static void arch_spinloop_pause(void)
-{
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 /* arch optimized version of a page zero routine against a page aligned buffer */
-void arch_zero_page(void *)
+void arch_zero_page(void* page)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }

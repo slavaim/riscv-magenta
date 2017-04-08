@@ -5,17 +5,21 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+#include <magenta/errors.h>
 #include <arch/mp.h>
+#include <debug.h>
 
 /* send inter processor interrupt, if supported */
 status_t arch_mp_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
 /* Bring a CPU up and enter it into the scheduler */
 status_t platform_mp_cpu_hotplug(uint cpu_id)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -23,6 +27,7 @@ status_t platform_mp_cpu_hotplug(uint cpu_id)
  * around external interrupts at this time. */
 status_t platform_mp_prep_cpu_unplug(uint cpu_id)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -30,6 +35,7 @@ status_t platform_mp_prep_cpu_unplug(uint cpu_id)
  * being scheduled on.  */
 status_t platform_mp_cpu_unplug(uint cpu_id)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -37,6 +43,7 @@ status_t platform_mp_cpu_unplug(uint cpu_id)
  * to bring a CPU up and enter it into the scheduler */
 status_t arch_mp_cpu_hotplug(uint cpu_id)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -44,6 +51,7 @@ status_t arch_mp_cpu_hotplug(uint cpu_id)
  * arch to do whatever it needs to do to stop the CPU */
 status_t arch_mp_prep_cpu_unplug(uint cpu_id)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -51,10 +59,11 @@ status_t arch_mp_prep_cpu_unplug(uint cpu_id)
  * arch to do whatever it needs to do to stop the CPU */
 status_t arch_mp_cpu_unplug(uint cpu_id)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
 void arch_mp_init_percpu(void)
 {
-    return ERR_NOT_SUPPORTED;
+    PANIC_UNIMPLEMENTED;
 }

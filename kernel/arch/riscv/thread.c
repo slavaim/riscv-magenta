@@ -6,13 +6,15 @@
 // https://opensource.org/licenses/MIT
 
 #include <arch/thread.h>
+#include <kernel/thread.h>
+#include <debug.h>
 
-void arch_thread_initialize(struct thread *, vaddr_t entry_point)
+void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_context_switch(struct thread *oldthread, struct thread *newthread)
 {
-    return;
+    PANIC_UNIMPLEMENTED;
 }

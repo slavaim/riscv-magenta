@@ -77,6 +77,7 @@ typedef struct _cmd_block {
 #define STATIC_COMMAND_END_NAMED(name)
 
 #define STATIC_COMMAND(command_str, help_str, func)
+#define STATIC_COMMAND_MASKED(command_str, help_str, func, availability_mask)
 
 #endif
 

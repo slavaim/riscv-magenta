@@ -5,7 +5,9 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+#include <magenta/errors.h>
 #include <arch/user_copy.h>
+#include <debug.h>
 
 /*
  * @brief Copy data from userspace into kernelspace
@@ -21,6 +23,7 @@
  */
 status_t arch_copy_from_user(void *dst, const void *src, size_t len)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -38,6 +41,7 @@ status_t arch_copy_from_user(void *dst, const void *src, size_t len)
  */
 status_t arch_copy_to_user(void *dst, const void *src, size_t len)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 

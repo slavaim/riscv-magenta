@@ -8,8 +8,9 @@
 
 #pragma once
 
+#include <stdint.h>
+#include <sys/types.h>
 #include <magenta/compiler.h>
-#include <list.h>
 
 __BEGIN_CDECLS
 

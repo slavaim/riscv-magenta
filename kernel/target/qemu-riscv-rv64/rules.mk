@@ -8,3 +8,4 @@
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
 PLATFORM := riscv-rv64
+

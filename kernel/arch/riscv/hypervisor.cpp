@@ -5,13 +5,16 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+#include <magenta/errors.h>
 #include <arch/hypervisor.h>
+#include <debug.h>
 
 /* Create a hypervisor context.
  * This setups up the CPUs to allow a hypervisor to be run.
  */
 status_t arch_hypervisor_create(mxtl::unique_ptr<HypervisorContext>* context)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -21,6 +24,7 @@ status_t arch_hypervisor_create(mxtl::unique_ptr<HypervisorContext>* context)
 status_t arch_guest_create(mxtl::RefPtr<VmObject> guest_phys_mem,
                            mxtl::unique_ptr<GuestContext>* context)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }
 
@@ -28,5 +32,6 @@ status_t arch_guest_create(mxtl::RefPtr<VmObject> guest_phys_mem,
  */
 status_t arch_guest_start(const mxtl::unique_ptr<GuestContext>& context, uintptr_t guest_entry)
 {
+    PANIC_UNIMPLEMENTED;
     return ERR_NOT_SUPPORTED;
 }

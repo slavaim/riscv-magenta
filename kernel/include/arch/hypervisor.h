@@ -14,6 +14,10 @@
 #include <arch/x86/hypervisor.h>
 #endif
 
+#if ARCH_RISCV
+#include <arch/rv64/hypervisor.h>
+#endif
+
 #include <magenta/compiler.h>
 #include <magenta/types.h>
 #include <mxtl/ref_ptr.h>
