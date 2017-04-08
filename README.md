@@ -2,7 +2,8 @@
 
 This is an initiative to port Magenta kernel to RISC-V architecture. The official Google's Magenta kernel supports x86-64 and arm64 architectures only.
 
-Below is the original Magenta's README.md
+This repository will be periodically merged with the officiial Magenta repository.  
+Below is the original Magenta's README.md  
 
 # Magenta
 
