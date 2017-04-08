@@ -8,5 +8,4 @@
 # top level project rules for the pc-x86 project
 #
 ARCH := riscv
-SUBARCH ?= riscv-rv64
-PLATFORM 
+SUBARCH ?= riscv-rv64 

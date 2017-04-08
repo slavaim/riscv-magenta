@@ -7,6 +7,23 @@
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
+ifeq ($(SUBARCH),riscv-rv64)
+    SUBARCH_DIR := $(LOCAL_DIR)/rv64
+	GLOBAL_CFLAGS += -mabi=lp64
+	GLOBAL_CPPFLAGS += -mabi=lp64
+	GLOBAL_LDFLAGS += -melf64lriscv
+else
+    $(error The 32 bit RISC-V is not supported yet)
+	SUBARCH_DIR := $(LOCAL_DIR)/rv32
+	GLOBAL_CFLAGS += -mabi=ilp32
+	GLOBAL_CPPFLAGS += -mabi=ilp32
+	GLOBAL_LDFLAGS += -melf32lriscv
+endif
+
+SUBARCH_BUILDDIR := $(call TOBUILDDIR,$(SUBARCH_DIR))
+
+$(info LINKER_SCRIPT = $(LINKER_SCRIPT))
+
 MEMBASE ?= 0
 KERNEL_BASE ?= 0xffffffff80000000
 KERNEL_SIZE ?= 0x40000000 # 1GB
@@ -59,6 +76,21 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/ops.c \
 	$(LOCAL_DIR)/thread.c \
 	$(LOCAL_DIR)/user_copy.c
+
+LINKER_SCRIPT += $(SUBARCH_BUILDDIR)/kernel.ld
+
+# potentially generated files that should be cleaned out with clean make rule
+GENERATED += $(SUBARCH_BUILDDIR)/kernel.ld
+
+# rules for generating the linker scripts
+$(SUBARCH_BUILDDIR)/kernel.ld: $(SUBARCH_DIR)/kernel.ld $(wildcard arch/*.ld)
+	@echo generating $@
+	@$(MKDIR)
+	$(NOECHO)sed "s/%MEMBASE%/$(MEMBASE)/;s/%MEMSIZE%/$(MEMSIZE)/;s/%KERNEL_BASE%/$(KERNEL_BASE)/;s/%KERNEL_LOAD_OFFSET%/$(KERNEL_LOAD_OFFSET)/;s/%HEADER_LOAD_OFFSET%/$(HEADER_LOAD_OFFSET)/;s/%PHYS_HEADER_LOAD_OFFSET%/$(PHYS_HEADER_LOAD_OFFSET)/;" < $< > $@.tmp
+	@$(call TESTANDREPLACEFILE,$@.tmp,$@)
+
+# force a rebuild every time in case something changes
+$(SUBARCH_BUILDDIR)/kernel.ld: FORCE
 
 include $(LOCAL_DIR)/toolchain.mk
 
