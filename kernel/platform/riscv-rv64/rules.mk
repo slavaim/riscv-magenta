@@ -20,3 +20,8 @@ LK_HEAP_IMPLEMENTATION ?= cmpctmalloc
 KERNEL_INCLUDES += kernel/arch/riscv/include
 $(info KERNEL_INCLUDES=$(KERNEL_INCLUDES))
 # END TEST TTTTTTT
+
+MODULE_SRCS += \
+    $(LOCAL_DIR)/debug.c \
+
+include make/module.mk

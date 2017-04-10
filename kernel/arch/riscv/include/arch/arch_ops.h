@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include <debug.h>
+#include <arch/rv64/mp.h>
 
 __BEGIN_CDECLS
 
