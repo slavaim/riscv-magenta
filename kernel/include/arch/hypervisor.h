@@ -15,7 +15,7 @@
 #endif
 
 #if ARCH_RISCV
-#include <arch/rv64/hypervisor.h>
+#include <arch/riscv/hypervisor.h>
 #endif
 
 #include <magenta/compiler.h>

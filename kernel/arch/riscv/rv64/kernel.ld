@@ -9,7 +9,7 @@
 // https://opensource.org/licenses/MIT
 */
 
-ENTRY(_protected_start)
+ENTRY(_start)
 SECTIONS
 {
     . = %MEMBASE% + %HEADER_LOAD_OFFSET%;

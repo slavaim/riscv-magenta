@@ -9,16 +9,40 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 
 ifeq ($(SUBARCH),riscv-rv64)
     SUBARCH_DIR := $(LOCAL_DIR)/rv64
-	GLOBAL_CFLAGS += -mabi=lp64
-	GLOBAL_CPPFLAGS += -mabi=lp64
+	MABI = lp64
+	MARCH = rv64im  # no floating point instructions (f+d|q)
 	GLOBAL_LDFLAGS += -melf64lriscv
 else
     $(error The 32 bit RISC-V is not supported yet)
 	SUBARCH_DIR := $(LOCAL_DIR)/rv32
-	GLOBAL_CFLAGS += -mabi=ilp32
-	GLOBAL_CPPFLAGS += -mabi=ilp32
+	MABI = ilp32
+	MARCH = rv32im # no floating point instructions (f+d|q)
 	GLOBAL_LDFLAGS += -melf32lriscv
 endif
+
+ifeq ($(CONFIG_RV_ATOMIC),y)
+	RV_ATOMIC = a
+endif
+
+# KERNEL_COMPILEFLAGS += -Wall
+
+ifeq ($(CONFIG_RVC),y)
+	RVC = c
+endif
+
+GLOBAL_CFLAGS += -mabi=$(MABI)
+GLOBAL_CPPFLAGS += -mabi=$(MABI)
+KERNEL_COMPILEFLAGS += -mabi=$(MABI)
+
+# TO_DO_RISCV define applications flags with fd to allow floating point operations
+#GLOBAL_CFLAGS += -march=$(MARCH)$(RV_ATOMIC)fd$(RVC)
+#GLOBAL_CPPFLAGS += -march=$(MARCH)$(RV_ATOMIC)fd$(RVC)
+
+# disable floating point instructions in the kernel, no f and d|q set
+KERNEL_COMPILEFLAGS += -march=$(MARCH)$(RV_ATOMIC)$(KBUILD_RVC)
+KERNEL_COMPILEFLAGS += -mno-save-restore
+
+$(info KERNEL_COMPILEFLAGS = $(KERNEL_COMPILEFLAGS))
 
 SUBARCH_BUILDDIR := $(call TOBUILDDIR,$(SUBARCH_DIR))
 
@@ -68,6 +92,10 @@ $(info TOOLCHAIN_PREFIX = $(TOOLCHAIN_PREFIX))
 MODULE := $(LOCAL_DIR)
 
 MODULE_SRCS += \
+	$(SUBARCH_DIR)/start.S \
+	$(SUBARCH_DIR)/sbi.S \
+\
+	$(LOCAL_DIR)/arch.c \
 	$(LOCAL_DIR)/debugger.c \
 	$(LOCAL_DIR)/guest_mmu.c \
 	$(LOCAL_DIR)/hypervisor.cpp \
@@ -78,6 +106,8 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/user_copy.c
 
 LINKER_SCRIPT += $(SUBARCH_BUILDDIR)/kernel.ld
+
+$(info LINKER_SCRIPT = $(LINKER_SCRIPT))
 
 # potentially generated files that should be cleaned out with clean make rule
 GENERATED += $(SUBARCH_BUILDDIR)/kernel.ld
