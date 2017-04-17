@@ -8,25 +8,30 @@
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
 ifeq ($(SUBARCH),riscv-rv64)
+
     BITS_PER_LONG = 64
     SUBARCH_DIR := $(LOCAL_DIR)/rv64
+
+	# no floating point instructions (f+d|q)
+	MARCH = rv64im
 	MABI = lp64
-	MARCH = rv64im  # no floating point instructions (f+d|q)
+
 	GLOBAL_LDFLAGS += --verbose -melf64lriscv
-	# GLOBAL_LDFLAGS_TAIL += -L/work/risc-v/riscv-tools/build/lib/gcc/riscv64-unknown-elf/6.1.0  -lgcc
-	#-L/work/risc-v/riscv-tools/build/lib/gcc/riscv64-unknown-elf/6.1.0/libgcc.a
+	GLOBAL_LDFLAGS_TAIL += -L/work/risc-v/riscv-tools/build-rv64im-lp64/lib/gcc/riscv64-unknown-linux-gnu/6.1.0  -lgcc
 else
     $(error The 32 bit RISC-V is not supported yet)
 	BITS_PER_LONG = 32
 	SUBARCH_DIR := $(LOCAL_DIR)/rv32
+
+	# no floating point instructions (f+d|q)
+	MARCH = rv32im
 	MABI = ilp32
-	MARCH = rv32im # no floating point instructions (f+d|q)
+
 	GLOBAL_LDFLAGS += -melf32lriscv
 endif
 
-ifeq ($(CONFIG_RV_ATOMIC),y)
-	RV_ATOMIC = a
-endif
+# atomic CPU is required for the current code base
+RV_ATOMIC = a
 
 # KERNEL_COMPILEFLAGS += -Wall
 
@@ -100,8 +105,6 @@ MODULE_SRCS += \
 	$(SUBARCH_DIR)/start.S \
 	$(SUBARCH_DIR)/sbi.S \
 \
-	$(LOCAL_DIR)/lib/clz_ctz.c \
-\
 	$(LOCAL_DIR)/arch.c \
 	$(LOCAL_DIR)/debugger.c \
 	$(LOCAL_DIR)/guest_mmu.c \
@@ -110,7 +113,8 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/mp.c \
 	$(LOCAL_DIR)/ops.c \
 	$(LOCAL_DIR)/thread.c \
-	$(LOCAL_DIR)/user_copy.c
+	$(LOCAL_DIR)/user_copy.c \
+	#$(LOCAL_DIR)/lib/clz_ctz.c \
 
 LINKER_SCRIPT += $(SUBARCH_BUILDDIR)/kernel.ld
 
