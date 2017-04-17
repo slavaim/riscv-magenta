@@ -122,7 +122,6 @@ GLOBAL_CFLAGS := --std=c11 -Werror-implicit-function-declaration -Wstrict-protot
 GLOBAL_CPPFLAGS := --std=c++14 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wconversion -Wno-sign-conversion
 #GLOBAL_CPPFLAGS += -Weffc++
 GLOBAL_ASMFLAGS := -DASSEMBLY
-GLOBAL_LDFLAGS := -nostdlib $(addprefix -L,$(LKINC))
 GLOBAL_MODULE_LDFLAGS :=
 
 # Mechanism to generate exported dependency info for sysroot

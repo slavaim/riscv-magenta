@@ -9,8 +9,7 @@
 
 #pragma once
 
-#define PAGE_SIZE 4096
-#define PAGE_SIZE_SHIFT 12
+#include <arch/page.h>
 
 #define CACHE_LINE 32
 

@@ -20,7 +20,7 @@ GCC assembler definitions run the command
 $ echo > empty.S; gcc -dM -E empty.S
 
 */
-#ifdef __ASSEMBLER__
+#if defined(__ASSEMBLER__) || defined(ASSEMBLY)
 #define __ASSEMBLY__ 1
 #define _AC(X,Y)	X
 #define _AT(T,X)	X

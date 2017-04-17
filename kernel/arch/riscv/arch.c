@@ -10,9 +10,20 @@
 
 #include <assert.h>
 #include <magenta/compiler.h>
+#include <arch.h>
 #include <arch/page.h>
 #include <debug.h>
 #include <err.h>
 
 /* early stack */
 uint8_t _kstack[PAGE_SIZE] __ALIGNED(16);
+
+void arch_early_init(void)
+{
+    PANIC_UNIMPLEMENTED;
+}
+
+void arch_init(void)
+{
+    PANIC_UNIMPLEMENTED;
+}

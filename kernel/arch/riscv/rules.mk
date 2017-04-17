@@ -8,12 +8,16 @@
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
 ifeq ($(SUBARCH),riscv-rv64)
+    BITS_PER_LONG = 64
     SUBARCH_DIR := $(LOCAL_DIR)/rv64
 	MABI = lp64
 	MARCH = rv64im  # no floating point instructions (f+d|q)
-	GLOBAL_LDFLAGS += -melf64lriscv
+	GLOBAL_LDFLAGS += --verbose -melf64lriscv
+	# GLOBAL_LDFLAGS_TAIL += -L/work/risc-v/riscv-tools/build/lib/gcc/riscv64-unknown-elf/6.1.0  -lgcc
+	#-L/work/risc-v/riscv-tools/build/lib/gcc/riscv64-unknown-elf/6.1.0/libgcc.a
 else
     $(error The 32 bit RISC-V is not supported yet)
+	BITS_PER_LONG = 32
 	SUBARCH_DIR := $(LOCAL_DIR)/rv32
 	MABI = ilp32
 	MARCH = rv32im # no floating point instructions (f+d|q)
@@ -69,7 +73,8 @@ KERNEL_DEFINES += \
 	KERNEL_BASE=$(KERNEL_BASE) \
 	KERNEL_SIZE=$(KERNEL_SIZE) \
 	KERNEL_LOAD_OFFSET=$(KERNEL_LOAD_OFFSET) \
-	PHYS_HEADER_LOAD_OFFSET=$(PHYS_HEADER_LOAD_OFFSET)
+	PHYS_HEADER_LOAD_OFFSET=$(PHYS_HEADER_LOAD_OFFSET) \
+	BITS_PER_LONG=$(BITS_PER_LONG) \
 
 SMP_MAX_CPUS ?= 8
 $(info SMP_MAX_CPUS = $(SMP_MAX_CPUS))
@@ -94,6 +99,8 @@ MODULE := $(LOCAL_DIR)
 MODULE_SRCS += \
 	$(SUBARCH_DIR)/start.S \
 	$(SUBARCH_DIR)/sbi.S \
+\
+	$(LOCAL_DIR)/lib/clz_ctz.c \
 \
 	$(LOCAL_DIR)/arch.c \
 	$(LOCAL_DIR)/debugger.c \
