@@ -18,3 +18,8 @@ static inline struct thread *get_current_thread(void)
     PANIC_UNIMPLEMENTED;
     return NULL;
 }
+
+static inline void set_current_thread(struct thread *t)
+{
+    PANIC_UNIMPLEMENTED;
+}

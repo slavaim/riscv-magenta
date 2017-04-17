@@ -23,5 +23,7 @@ $(info KERNEL_INCLUDES=$(KERNEL_INCLUDES))
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/debug.c \
+    $(LOCAL_DIR)/timer.c \
+    $(LOCAL_DIR)/platform.c \
 
 include make/module.mk

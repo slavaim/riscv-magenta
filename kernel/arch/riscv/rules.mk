@@ -109,7 +109,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/debugger.c \
 	$(LOCAL_DIR)/guest_mmu.c \
 	$(LOCAL_DIR)/hypervisor.cpp \
-	$(LOCAL_DIR)/mmu.c \
+	$(LOCAL_DIR)/mmu.cpp \
 	$(LOCAL_DIR)/mp.c \
 	$(LOCAL_DIR)/ops.c \
 	$(LOCAL_DIR)/thread.c \
