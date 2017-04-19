@@ -14,6 +14,9 @@ MODULE_DEPS := \
 	kernel/lib/heap \
 	kernel/lib/libc \
 	kernel/lib/mxtl \
+	kernel/lib/crypto \
+	third_party/lib/safeint \
+	kernel/app/tests \
 
 
 MODULE_SRCS := \
