@@ -3,36 +3,30 @@
 // Copyright (c) 2009 Corey Tabaka
 // Copyright (c) 2013 Travis Geiselbrecht
 // Copyright (c) 2015 Intel Corporation
+// Copyright (c) 2017 Slava Imameev
 //
 // Use of this source code is governed by a MIT-style
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 */
 
+OUTPUT_ARCH(riscv)
 ENTRY(_start)
+
 SECTIONS
 {
-    . = %MEMBASE% + %HEADER_LOAD_OFFSET%;
-
-    /* TODO: remove this logic and push .text.header into .text where
-     * .text.boot0 is once ENABLE_NEW_BOOT is made default.
-     * Remove PHYS_HEADER_LOAD_OFFSET as well.
-     */
-    .text.header : AT (%MEMBASE% + %KERNEL_LOAD_OFFSET% - %PHYS_HEADER_LOAD_OFFSET%) {
-        KEEP(*(.text.header))
-    }
-
-    . = %KERNEL_BASE% + %KERNEL_LOAD_OFFSET%;
+    . = %KERNEL_BASE%;
     _start = .;
 
-    .text : AT(%MEMBASE% + %KERNEL_LOAD_OFFSET%) {
+    .text : AT(ADDR(.text) - %KERNEL_BASE%) {
+        *(.text);
         __code_start = .;
         KEEP(*(.text.boot0))
         KEEP(*(.text.boot))
         *(.text* .sram.text)
         *(.gnu.linkonce.t.*)
         __code_end = .;
-    } =0x9090
+    }
 
     .rodata : ALIGN(4096) {
         __rodata_start = .;
