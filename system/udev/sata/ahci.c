@@ -51,13 +51,8 @@
 #define ahci_read(reg)       pcie_read32(reg)
 #define ahci_write(reg, val) pcie_write32(reg, val)
 
-#ifdef IS_64BIT
 #define HI32(val) (((val) >> 32) & 0xffffffff)
 #define LO32(val) ((val) & 0xffffffff)
-#else
-#define HI32(val) 0
-#define LO32(val) (val)
-#endif
 
 #define AHCI_PORT_FLAG_IMPLEMENTED (1 << 0)
 #define AHCI_PORT_FLAG_PRESENT     (1 << 1)
@@ -269,13 +264,13 @@ static mx_status_t ahci_do_txn(ahci_device_t* dev, ahci_port_t* port, int slot, 
         completion_signal(&dev->worker_completion);
         return status;
     }
-    if (txn->phys_length != 1) {
+    if (txn->phys_count != 1) {
         printf("%s scatter/gather not implemented yet\n", __FUNCTION__);
         iotxn_complete(txn, ERR_INVALID_ARGS, 0);
         completion_signal(&dev->worker_completion);
         return ERR_INVALID_ARGS;
     }
-    mx_paddr_t phys = iotxn_phys_contiguous(txn);
+    mx_paddr_t phys = iotxn_phys(txn);
 
     if (dev->cap & AHCI_CAP_NCQ) {
         if (pdata->cmd == SATA_CMD_READ_DMA_EXT) {

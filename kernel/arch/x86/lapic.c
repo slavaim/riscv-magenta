@@ -286,8 +286,8 @@ status_t apic_timer_set_oneshot(uint32_t count, uint8_t divisor, bool masked) {
     if (status != NO_ERROR) {
         goto cleanup;
     }
-    *INIT_COUNT_ADDR = count;
     *LVT_TIMER_ADDR = timer_config;
+    *INIT_COUNT_ADDR = count;
 cleanup:
     arch_interrupt_restore(state, 0);
     return status;
@@ -305,8 +305,12 @@ void apic_timer_set_tsc_deadline(uint64_t deadline, bool masked) {
     spin_lock_saved_state_t state;
     arch_interrupt_save(&state, 0);
 
-    write_msr(IA32_TSC_DEADLINE_MSR, deadline);
     *LVT_TIMER_ADDR = timer_config;
+    // Intel recommends using an MFENCE to ensure the LVT_TIMER_ADDR write
+    // takes before the write_msr(), since writes to this MSR are ignored if the
+    // time mode is not DEADLINE.
+    mb();
+    write_msr(IA32_TSC_DEADLINE_MSR, deadline);
 
     arch_interrupt_restore(state, 0);
 }
@@ -320,8 +324,8 @@ status_t apic_timer_set_periodic(uint32_t count, uint8_t divisor) {
     if (status != NO_ERROR) {
         goto cleanup;
     }
-    *INIT_COUNT_ADDR = count;
     *LVT_TIMER_ADDR = LVT_VECTOR(X86_INT_APIC_TIMER) | LVT_TIMER_MODE_PERIODIC;
+    *INIT_COUNT_ADDR = count;
 cleanup:
     arch_interrupt_restore(state, 0);
     return status;

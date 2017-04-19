@@ -29,8 +29,9 @@
 #define X86_EFER_LME                    0x00000100 /* long mode enable */
 #define X86_EFER_LMA                    0x00000400 /* long mode active */
 #define X86_EFER_NXE                    0x00000800 /* to enable execute disable bit */
-#define X86_MSR_IA32_EFER               0xc0000080 /* EFER model-specific register */
+#define X86_MSR_IA32_TSC_ADJUST         0x0000003b /* TSC adjust model-specific register */
 #define X86_MSR_IA32_PAT                0x00000277 /* PAT model-specific register */
+#define X86_MSR_IA32_EFER               0xc0000080 /* EFER model-specific register */
 #define X86_MSR_IA32_STAR               0xc0000081 /* system call address */
 #define X86_MSR_IA32_LSTAR              0xc0000082 /* long mode call address */
 #define X86_MSR_IA32_FMASK              0xc0000084 /* system call flag mask */
@@ -117,6 +118,9 @@ void x86_extended_register_context_switch(
         thread_t *old_thread, thread_t *new_thread);
 
 void x86_set_extended_register_pt_state(bool threads);
+
+uint64_t x86_xgetbv(uint32_t reg);
+void x86_xsetbv(uint32_t reg, uint64_t val);
 
 __END_CDECLS
 

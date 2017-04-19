@@ -108,9 +108,12 @@ static mx_status_t mount_minfs(int fd, mount_options_t* options) {
             options->readonly = true;
             options->wait_until_ready = true;
 
-            mount(fd, "/system", DISK_FORMAT_MINFS, options, launch_minfs);
-
-            devmgr_start_system_init(NULL);
+            mx_status_t st = mount(fd, "/system", DISK_FORMAT_MINFS, options, launch_minfs);
+            if (st != NO_ERROR) {
+                printf("devmgr: failed to mount /system, retcode = %d\n", st);
+            } else {
+                devmgr_start_system_init(NULL);
+            }
 
             return NO_ERROR;
         } else if (!memcmp(type_guid, data_guid, GPT_GUID_LEN)) {
@@ -120,7 +123,10 @@ static mx_status_t mount_minfs(int fd, mount_options_t* options) {
             data_mounted = true;
             options->wait_until_ready = true;
 
-            mount(fd, "/data", DISK_FORMAT_MINFS, options, launch_minfs);
+            mx_status_t st = mount(fd, "/data", DISK_FORMAT_MINFS, options, launch_minfs);
+            if (st != NO_ERROR) {
+                printf("devmgr: failed to mount /data, retcode = %d\n", st);
+            }
 
             return NO_ERROR;
         }
@@ -245,9 +251,13 @@ int service_starter(void* arg) {
                       NULL, -1, NULL, NULL, 0);
     }
 
-    devmgr_launch(svcs_job_handle, "sh:autorun0",
-                  countof(argv_autorun0), argv_autorun0,
-                  NULL, -1, NULL, NULL, 0);
+    struct stat s;
+    if (stat(argv_autorun0[1], &s) == 0) {
+        printf("devmgr: starting /boot/autorun ...\n");
+        devmgr_launch(svcs_job_handle, "sh:autorun0",
+                      countof(argv_autorun0), argv_autorun0,
+                      NULL, -1, NULL, NULL, 0);
+    }
 
     int dirfd;
     if ((dirfd = open("/dev/class/block", O_DIRECTORY|O_RDONLY)) >= 0) {
@@ -276,7 +286,7 @@ static int console_starter(void* arg) {
                           countof(argv_sh), argv_sh, envp, fd, NULL, NULL, 0);
             break;
         }
-        mx_nanosleep(MX_MSEC(100));
+        mx_nanosleep(mx_deadline_after(MX_MSEC(100)));
     }
     return 0;
 }

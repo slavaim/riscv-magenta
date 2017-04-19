@@ -29,10 +29,6 @@
 #  define xprintf(args...)
 #endif
 
-// borrowed from LK/magenta stdlib.h
-#define ROUNDUP(a, b) (((a)+ ((b)-1)) & ~((b)-1))
-#define ALIGN(a, b) ROUNDUP(a, b)
-
 #define READ_REQ_COUNT 8
 #define WRITE_REQ_COUNT 4
 #define USB_BUF_SIZE 24576
@@ -278,7 +274,7 @@ static mx_status_t ax88179_recv(ax88179_t* eth, iotxn_t* request) {
 static void ax88179_read_complete(iotxn_t* request, void* cookie) {
     ax88179_t* eth = (ax88179_t*)cookie;
 
-    if (request->status == ERR_REMOTE_CLOSED) {
+    if (request->status == ERR_PEER_CLOSED) {
         iotxn_release(request);
         return;
     }
@@ -294,7 +290,7 @@ static void ax88179_read_complete(iotxn_t* request, void* cookie) {
 static void ax88179_write_complete(iotxn_t* request, void* cookie) {
     ax88179_t* eth = (ax88179_t*)cookie;
 
-    if (request->status == ERR_REMOTE_CLOSED) {
+    if (request->status == ERR_PEER_CLOSED) {
         iotxn_release(request);
         return;
     }
@@ -305,7 +301,7 @@ static void ax88179_write_complete(iotxn_t* request, void* cookie) {
 }
 
 static void ax88179_interrupt_complete(iotxn_t* request, void* cookie) {
-    if (request->status == ERR_REMOTE_CLOSED) {
+    if (request->status == ERR_PEER_CLOSED) {
         // request will be released in ax88179_release()
         return;
     }
@@ -494,14 +490,14 @@ static int ax88179_thread(void* arg) {
         printf("ax88179_write_mac to %#x failed: %d\n", AX88179_MAC_EPPRCR, status);
         goto fail;
     }
-    mx_nanosleep(MX_MSEC(1));
+    mx_nanosleep(mx_deadline_after(MX_MSEC(1)));
     data = 0x0020;
     status = ax88179_write_mac(eth, AX88179_MAC_EPPRCR, 2, &data);
     if (status < 0) {
         printf("ax88179_write_mac to %#x failed: %d\n", AX88179_MAC_EPPRCR, status);
         goto fail;
     }
-    mx_nanosleep(MX_MSEC(200));
+    mx_nanosleep(mx_deadline_after(MX_MSEC(200)));
 
     // Switch clock to normal speed
     data = 0x03;
@@ -510,7 +506,7 @@ static int ax88179_thread(void* arg) {
         printf("ax88179_write_mac to %#x failed: %d\n", AX88179_MAC_CLKSR, status);
         goto fail;
     }
-    mx_nanosleep(MX_MSEC(1));
+    mx_nanosleep(mx_deadline_after(MX_MSEC(1)));
 
     // Read the MAC addr
     status = ax88179_read_mac(eth, AX88179_MAC_NIDR, 6, eth->mac_addr);

@@ -9,6 +9,7 @@
 #include <trace.h>
 
 #include <kernel/auto_lock.h>
+#include <platform.h>
 
 #include <lib/ktrace.h>
 #include <lib/user_copy/user_ptr.h>
@@ -62,11 +63,16 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
     ktrace(TAG_WAIT_ONE, koid, signals, (uint32_t)timeout, (uint32_t)(timeout >> 32));
 #endif
 
+    lk_bigtime_t lk_deadline = timeout;
+    if (timeout != MX_TIME_INFINITE && timeout != 0) {
+        lk_deadline += current_time_hires();
+    }
+
     // event_wait() will return NO_ERROR if already signaled,
     // even if timeout is 0.  It will return ERR_TIMED_OUT
     // after the timeout expires if the event has not been
     // signaled.
-    result = event.Wait(mx_time_to_lk(timeout));
+    result = event.Wait(lk_deadline);
 
     // Regardless of wait outcome, we must call End().
     auto signals_state = wait_state_observer.End();
@@ -81,7 +87,7 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
     }
 
     if (signals_state & MX_SIGNAL_HANDLE_CLOSED)
-        return ERR_HANDLE_CLOSED;
+        return ERR_CANCELED;
 
     return result;
 }
@@ -143,11 +149,16 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
         return result;
     }
 
+    lk_bigtime_t lk_deadline = timeout;
+    if (timeout != MX_TIME_INFINITE && timeout != 0) {
+        lk_deadline += current_time_hires();
+    }
+
     // event_wait() will return NO_ERROR if already signaled,
     // even if timeout is 0.  It will return ERR_TIMED_OUT
     // after the timeout expires if the event has not been
     // signaled.
-    result = event.Wait(mx_time_to_lk(timeout));
+    result = event.Wait(lk_deadline);
 
     // Regardless of wait outcome, we must call End().
     mx_signals_t combined = 0;
@@ -159,7 +170,7 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
         return ERR_INVALID_ARGS;
 
     if (combined & MX_SIGNAL_HANDLE_CLOSED)
-        return ERR_HANDLE_CLOSED;
+        return ERR_CANCELED;
 
     return result;
 }
@@ -185,32 +196,4 @@ mx_status_t sys_object_wait_async(mx_handle_t handle_value, mx_handle_t port_han
 
         return port->MakeObservers(options, handle, key, signals);
     }
-}
-
-mx_status_t sys_handle_cancel(mx_handle_t handle_value, uint64_t key, uint32_t options) {
-    if ((options != MX_CANCEL_KEY) && (options != MX_CANCEL_ANY))
-        return ERR_INVALID_ARGS;
-
-    auto up = ProcessDispatcher::GetCurrent();
-
-    {
-        AutoLock lock(up->handle_table_lock());
-        Handle* handle = up->GetHandleLocked(handle_value);
-        if (!handle)
-            return up->BadHandle(handle_value, ERR_BAD_HANDLE);
-        if (!magenta_rights_check(handle, MX_RIGHT_WRITE))
-            return ERR_ACCESS_DENIED;
-
-        auto state_tracker = handle->dispatcher()->get_state_tracker();
-        if (!state_tracker)
-            return ERR_NOT_SUPPORTED;
-
-        if (options == MX_CANCEL_ANY) {
-            state_tracker->Cancel(handle);
-        } else {
-            state_tracker->CancelByKey(handle, nullptr, key);
-        }
-    }
-
-    return NO_ERROR;
 }

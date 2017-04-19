@@ -4,6 +4,7 @@
 
 #include <gpt/gpt.h>
 #include <lib/cksum.h>
+#include <magenta/syscalls.h> // for mx_cprng_draw
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -256,6 +257,11 @@ int gpt_device_sync(gpt_device_t* dev) {
         // backup gpt is in the last block
         header.backup = priv->blocks - 1;
         // generate a guid
+        size_t sz;
+        if (mx_cprng_draw(header.guid, GPT_GUID_LEN, &sz) != NO_ERROR ||
+            sz != GPT_GUID_LEN) {
+            return -1;
+        }
     }
 
     // always write 128 entries in partition table
@@ -429,4 +435,10 @@ struct guid {
 void uint8_to_guid_string(char* dst, const uint8_t* src) {
     struct guid* guid = (struct guid*)src;
     sprintf(dst, "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X", guid->data1, guid->data2, guid->data3, guid->data4[0], guid->data4[1], guid->data4[2], guid->data4[3], guid->data4[4], guid->data4[5], guid->data4[6], guid->data4[7]);
+}
+
+void gpt_device_get_header_guid(gpt_device_t* dev,
+                                uint8_t (*disk_guid_out)[GPT_GUID_LEN]) {
+    gpt_header_t* header = &get_priv(dev)->header;
+    memcpy(disk_guid_out, header->guid, GPT_GUID_LEN);
 }

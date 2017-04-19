@@ -50,6 +50,7 @@ void EventPairDispatcher::on_zero_handles() {
     AutoLock locker(&lock_);
     DEBUG_ASSERT(other_);
 
+    other_->state_tracker_.InvalidateCookie(other_->get_cookie_jar());
     other_->state_tracker_.UpdateState(0u, MX_EPAIR_PEER_CLOSED);
     other_.reset();
 }
@@ -68,7 +69,7 @@ status_t EventPairDispatcher::user_signal(uint32_t clear_mask, uint32_t set_mask
     AutoLock locker(&lock_);
     // object_signal() may race with handle_close() on another thread.
     if (!other_)
-        return ERR_REMOTE_CLOSED;
+        return ERR_PEER_CLOSED;
     other_->state_tracker_.UpdateState(clear_mask, set_mask);
     return NO_ERROR;
 }

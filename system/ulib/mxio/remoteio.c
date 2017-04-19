@@ -535,20 +535,13 @@ static mx_status_t mxrio_misc(mxio_t* io, uint32_t op, int64_t off,
     if (ptr && len > 0) {
         memcpy(msg.data, ptr, len);
     }
-
     switch (op) {
-        // The following are ops that send reply channels, like open and clone.
-        // These operations may need to be forwarded across filesystems to reach
-        // their destination.
-        case MXRIO_RENAME:
-        case MXRIO_LINK: {
-            mxrio_object_t info;
-            if ((r = mxrio_reply_channel_call(rio, &msg, &info)) < 0) {
-                return r;
-            }
-            discard_handles(info.handle, info.hcount);
-            return r;
-        }
+    case MXRIO_RENAME:
+    case MXRIO_LINK:
+        // As a hack, 'Rename' and 'Link' take token handles through
+        // the offset argument.
+        msg.handle[0] = (mx_handle_t) off;
+        msg.hcount = 1;
     }
 
     if ((r = mxrio_txn(rio, &msg)) < 0) {
@@ -754,7 +747,7 @@ static ssize_t mxsio_read_stream(mxio_t* io, void* data, size_t len) {
         if ((r = mx_socket_read(rio->h2, 0, data, len, &len)) == NO_ERROR) {
             return (ssize_t) len;
         }
-        if (r == ERR_REMOTE_CLOSED) {
+        if (r == ERR_PEER_CLOSED) {
             return 0;
         } else if (r == ERR_SHOULD_WAIT && !nonblock) {
             mx_signals_t pending;
@@ -970,7 +963,7 @@ static ssize_t mxsio_rx_dgram(mxio_t* io, void* buf, size_t buflen) {
                                  NULL, 0, NULL)) == NO_ERROR) {
             return n;
         }
-        if (r == ERR_REMOTE_CLOSED) {
+        if (r == ERR_PEER_CLOSED) {
             return 0;
         } else if (r == ERR_SHOULD_WAIT) {
             if (io->flags & MXIO_FLAG_NONBLOCK) {

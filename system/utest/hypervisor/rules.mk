@@ -18,6 +18,12 @@ endif
 MODULE_NAME := hypervisor-test
 
 MODULE_LIBS := \
-    ulib/unittest ulib/mxio ulib/magenta ulib/c
+    system/ulib/c \
+    system/ulib/hypervisor \
+    system/ulib/magenta \
+    system/ulib/mxio \
+    system/ulib/unittest \
+
+MODULE_STATIC_LIBS := system/ulib/hexdump
 
 include make/module.mk

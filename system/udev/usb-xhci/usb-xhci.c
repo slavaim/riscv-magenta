@@ -62,7 +62,7 @@ static int xhci_irq_thread(void* arg) {
 
         wait_res = mx_interrupt_wait(xhci->irq_handle);
         if (wait_res != NO_ERROR) {
-            if (wait_res != ERR_HANDLE_CLOSED) {
+            if (wait_res != ERR_CANCELED) {
                 printf("unexpected pci_wait_interrupt failure (%d)\n", wait_res);
             }
             mx_interrupt_complete(xhci->irq_handle);
@@ -170,7 +170,7 @@ void xhci_process_deferred_txns(xhci_t* xhci, xhci_endpoint_t* ep, bool closed) 
 
     if (closed) {
         while ((txn = list_remove_head_type(&list, iotxn_t, node)) != NULL) {
-            iotxn_complete(txn, ERR_REMOTE_CLOSED, 0);
+            iotxn_complete(txn, ERR_PEER_CLOSED, 0);
         }
         return;
     }

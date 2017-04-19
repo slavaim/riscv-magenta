@@ -50,12 +50,7 @@ mx_status_t VnodeDevice::GetHandles(uint32_t flags, mx_handle_t* hnds,
 mx_status_t VnodeMemfs::GetHandles(uint32_t flags, mx_handle_t* hnds, uint32_t* type, void* extra,
                                    uint32_t* esize) {
     // local vnode or device as a directory, we will create the handles
-    mx_status_t r = Serve(flags, hnds);
-    if (r < 0) {
-        return r;
-    }
-    *type = MXIO_PROTOCOL_REMOTE;
-    return 1;
+    return Serve(flags, hnds, type);
 }
 
 VnodeWatcher::VnodeWatcher() : h(MX_HANDLE_INVALID) {}
@@ -126,14 +121,15 @@ mx_handle_t vfs_create_root_handle(VnodeMemfs* vn) {
         return r;
     }
     mx_handle_t h;
-    if ((r = vn->Serve(0, &h)) < 0) {
+    uint32_t type;
+    if ((r = vn->Serve(0, &h, &type)) < 0) {
         return r;
     }
     return h;
 }
 
 // Initialize the global root VFS node and dispatcher
-void vfs_global_init(VnodeMemfs* root) {
+void vfs_global_init(VnodeDir* root) {
     memfs::global_vfs_root = root;
     if (mxio_dispatcher_create(&vfs_dispatcher, mxrio_handler) == NO_ERROR) {
         mxio_dispatcher_start(vfs_dispatcher, "vfs-rio-dispatcher");

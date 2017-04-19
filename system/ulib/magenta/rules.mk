@@ -11,11 +11,12 @@ MODULE_TYPE := userlib
 # This library should not depend on libc.
 MODULE_COMPILEFLAGS := -ffreestanding
 
-MODULE_HEADER_DEPS := lib/vdso
+MODULE_HEADER_DEPS := kernel/lib/vdso
 
 MODULE_SRCS := \
     $(LOCAL_DIR)/data.c \
     $(LOCAL_DIR)/mx_cache_flush.c \
+    $(LOCAL_DIR)/mx_deadline_after.c \
     $(LOCAL_DIR)/mx_status_get_string.c \
     $(LOCAL_DIR)/mx_system_get_num_cpus.c \
     $(LOCAL_DIR)/mx_system_get_physmem.c \
@@ -48,7 +49,7 @@ MODULE_LDFLAGS := -T scripts/rodso.ld
 
 # Explicit dependency to make sure the file gets generated first.
 # MODULE_SRCDEPS is overkill for this since only one file uses it.
-$(BUILDDIR)/ulib/magenta/system/ulib/magenta/mx_system_get_version.c.o: \
+$(BUILDDIR)/$(LOCAL_DIR)/$(LOCAL_DIR)/mx_system_get_version.c.o: \
     $(BUILDDIR)/config-buildid.h
 MODULE_COMPILEFLAGS += -I$(BUILDDIR)
 

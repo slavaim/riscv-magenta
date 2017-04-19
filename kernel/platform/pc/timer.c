@@ -22,6 +22,7 @@
 #include <kernel/spinlock.h>
 #include <kernel/thread.h>
 #include <platform.h>
+#include <pow2.h>
 #include <dev/interrupt.h>
 #include <platform/console.h>
 #include <platform/pc.h>
@@ -29,6 +30,8 @@
 #include <platform/pc/hpet.h>
 #include <platform/timer.h>
 #include "platform_p.h"
+
+#define MSR_PLATFORM_INFO 0xCE
 
 // Current timer scheme:
 // The HPET is used to calibrate the local APIC timers and the TSC.  If the
@@ -65,10 +68,8 @@ static platform_timer_callback t_callback[SMP_MAX_CPUS] = {NULL};
 static void *callback_arg[SMP_MAX_CPUS] = {NULL};
 
 // PIT time accounting info
-static uint64_t next_trigger_time;
-static uint64_t next_trigger_delta;
-static uint64_t timer_delta_time;
-static volatile uint64_t timer_current_time;
+static struct fp_32_64 us_per_pit;
+static volatile uint64_t pit_ticks;
 static uint16_t pit_divisor;
 
 // Whether or not we have an Invariant TSC (controls whether we use the PIT or
@@ -85,12 +86,14 @@ static enum clock_source calibration_clock;
 
 // APIC timer calibration values
 static bool use_tsc_deadline;
-static volatile uint32_t apic_ticks_per_ms = 0;
+static uint64_t apic_ticks_per_ms = 0;
+static struct fp_32_64 apic_ticks_per_ns;
 static uint8_t apic_divisor = 0;
 
 // TSC timer calibration values
 static uint64_t tsc_ticks_per_ms;
 static struct fp_32_64 ns_per_tsc;
+static struct fp_32_64 tsc_per_ns;
 
 // HPET calibration values
 static struct fp_32_64 ns_per_hpet;
@@ -108,36 +111,9 @@ uint64_t get_tsc_ticks_per_ms(void) {
 
 /* Maximum amount of time that can be program on the timer to schedule the next
  *  interrupt, in miliseconds */
-#define MAX_TIMER_INTERVAL 55
+#define MAX_TIMER_INTERVAL LK_MSEC(55)
 
 #define LOCAL_TRACE 0
-
-lk_time_t current_time(void)
-{
-    lk_time_t time;
-
-    switch (wall_clock) {
-        case CLOCK_TSC: {
-            uint64_t tsc = rdtsc();
-            time = tsc / tsc_ticks_per_ms;
-            break;
-        }
-        case CLOCK_HPET: {
-            uint64_t counter = hpet_get_value();
-            time = counter / hpet_ticks_per_ms();
-            break;
-        }
-        case CLOCK_PIT: {
-            // XXX slight race
-            time = (lk_time_t) (timer_current_time >> 32);
-            break;
-        }
-        default:
-            panic("Invalid wall clock source\n");
-    }
-
-    return time;
-}
 
 lk_bigtime_t current_time_hires(void)
 {
@@ -155,9 +131,7 @@ lk_bigtime_t current_time_hires(void)
             break;
         }
         case CLOCK_PIT: {
-            // XXX slight race
-            time = (lk_bigtime_t) ((timer_current_time >> 22) * 1000) >> 10;
-            time *= 1000;
+            time = u64_mul_u64_fp32_64(pit_ticks, us_per_pit) * 1000;
             break;
         }
         default:
@@ -165,6 +139,27 @@ lk_bigtime_t current_time_hires(void)
     }
 
     return time;
+}
+
+// Round up t to a clock tick, so that when the APIC timer fires, the wall time
+// will have elapsed.
+static lk_bigtime_t discrete_time_roundup(lk_bigtime_t t) {
+    switch (wall_clock) {
+        case CLOCK_TSC: {
+            // Add 1ns to conservatively deal with rounding
+            return t + u64_mul_u64_fp32_64(1, ns_per_tsc) + 1;
+        }
+        case CLOCK_HPET: {
+            // Add 1ns to conservatively deal with rounding
+            return t + u64_mul_u64_fp32_64(1, ns_per_hpet) + 1;
+        }
+        case CLOCK_PIT: {
+            // Add 1us to the PIT tick rate to dea lwith rounding
+            return t + (u64_mul_u64_fp32_64(1, us_per_pit) + 1) * 1000;
+        }
+        default:
+            panic("Invalid wall clock source\n");
+    }
 }
 
 uint64_t ticks_per_second(void)
@@ -175,7 +170,7 @@ uint64_t ticks_per_second(void)
 // The PIT timer will keep track of wall time if we aren't using the TSC
 static enum handler_return pit_timer_tick(void *arg)
 {
-    timer_current_time += timer_delta_time;
+    pit_ticks += 1;
     return INT_NO_RESCHEDULE;
 }
 
@@ -184,15 +179,12 @@ enum handler_return platform_handle_apic_timer_tick(void) {
     DEBUG_ASSERT(arch_ints_disabled());
     uint cpu = arch_curr_cpu_num();
 
-    lk_time_t time = current_time();
+    lk_bigtime_t time = current_time_hires();
     //lk_bigtime_t btime = current_time_hires();
     //printf_xy(71, 0, WHITE, "%08u", (uint32_t) time);
     //printf_xy(63, 1, WHITE, "%016llu", (uint64_t) btime);
 
-    if (t_callback[cpu] && timer_current_time >= next_trigger_time) {
-        lk_time_t delta = timer_current_time - next_trigger_time;
-        next_trigger_time = timer_current_time + next_trigger_delta - delta;
-
+    if (t_callback[cpu]) {
         return t_callback[cpu](callback_arg[cpu], time);
     } else {
         return INT_NO_RESCHEDULE;
@@ -230,9 +222,8 @@ static void set_pit_frequency(uint32_t frequency)
      * funky math that i don't feel like explaining. essentially 32.32 fixed
      * point representation of the configured timer delta.
      */
-    timer_delta_time = (3685982306ULL * count) >> 10;
+    fp_32_64_div_32_32(&us_per_pit, 1000 * 1000 * 3 * count, INTERNAL_FREQ_3X);
 
-    //dprintf(DEBUG, "set_pit_frequency: dt=%016llx\n", timer_delta_time);
     //dprintf(DEBUG, "set_pit_frequency: pit_divisor=%04x\n", pit_divisor);
 
     /*
@@ -290,11 +281,70 @@ static inline void hpet_calibration_cycle_cleanup(void)
     hpet_disable();
 }
 
+static uint64_t lookup_core_crystal_freq(void) {
+    // The APIC frequency is the core crystal clock frequency if it is
+    // enumerated in the CPUID leaf 0x15, or the processor's bus clock
+    // frequency.
+    const struct cpuid_leaf *tsc_leaf = x86_get_cpuid_leaf(X86_CPUID_TSC);
+    if (tsc_leaf && tsc_leaf->c != 0) {
+        return tsc_leaf->c;
+    }
+
+    switch (x86_microarch) {
+        case X86_MICROARCH_INTEL_SKYLAKE:
+        case X86_MICROARCH_INTEL_KABYLAKE:
+            return 24u * 1000 * 1000;
+        case X86_MICROARCH_INTEL_SANDY_BRIDGE:
+        case X86_MICROARCH_INTEL_IVY_BRIDGE:
+        case X86_MICROARCH_INTEL_HASWELL:
+        case X86_MICROARCH_INTEL_BROADWELL: {
+            uint64_t platform_info;
+            if (read_msr_safe(MSR_PLATFORM_INFO, &platform_info) == NO_ERROR) {
+                uint64_t bus_freq_mult = (platform_info >> 8) & 0xf;
+                return bus_freq_mult * 100 * 1000 * 1000;
+            }
+            break;
+        }
+        case X86_MICROARCH_AMD_BULLDOZER:
+        case X86_MICROARCH_AMD_JAGUAR:
+        case X86_MICROARCH_AMD_ZEN:
+            // TODO: figure out how to look up frequency
+            break;
+        case X86_MICROARCH_UNKNOWN:
+            break;
+    }
+
+    return 0;
+}
+
+static uint64_t lookup_tsc_freq(void) {
+    const uint32_t core_crystal_clock_freq = lookup_core_crystal_freq();
+
+    // If this leaf is present, then 18.18.3 (Determining the Processor Base
+    // Frequency) documents this as the nominal TSC frequency.
+    const struct cpuid_leaf *tsc_leaf = x86_get_cpuid_leaf(X86_CPUID_TSC);
+    if (tsc_leaf) {
+        return ((uint64_t)core_crystal_clock_freq * tsc_leaf->b) / tsc_leaf->a;
+    }
+
+    return 0;
+}
+
 static void calibrate_apic_timer(void)
 {
     ASSERT(arch_ints_disabled());
 
-    TRACEF("Calibrating APIC with %s\n", clock_name[calibration_clock]);
+    const uint64_t apic_freq = lookup_core_crystal_freq();
+    if (apic_freq != 0) {
+        apic_ticks_per_ms = apic_freq / 1000;
+        apic_divisor = 1;
+        fp_32_64_div_32_32(&apic_ticks_per_ns, apic_ticks_per_ms, 1000 * 1000);
+        TRACEF("APIC frequency: %" PRIu64 " ticks/ms\n", apic_ticks_per_ms);
+        return;
+    }
+
+    TRACEF("Could not find APIC frequency! Calibrating APIC with %s\n",
+           clock_name[calibration_clock]);
 
     apic_divisor = 1;
 outer:
@@ -357,11 +407,12 @@ outer:
 
         }
         apic_ticks_per_ms = (best_time[1] - best_time[0]) / (duration_ms[1] - duration_ms[0]);
+        fp_32_64_div_32_32(&apic_ticks_per_ns, apic_ticks_per_ms, 1000 * 1000);
         break;
     }
     ASSERT(apic_divisor != 0);
 
-    LTRACEF("APIC timer calibrated: %u ticks/ms, %d divisor\n",
+    LTRACEF("APIC timer calibrated: %" PRIu64 " ticks/ms, %d divisor\n",
             apic_ticks_per_ms, apic_divisor);
 }
 
@@ -369,7 +420,17 @@ static void calibrate_tsc(void)
 {
     ASSERT(arch_ints_disabled());
 
-    TRACEF("Calibrating TSC with %s\n", clock_name[calibration_clock]);
+    const uint64_t tsc_freq = lookup_tsc_freq();
+    if (tsc_freq != 0) {
+        tsc_ticks_per_ms = tsc_freq / 1000;
+        fp_32_64_div_32_32(&ns_per_tsc, 1000 * 1000, tsc_ticks_per_ms);
+        fp_32_64_div_32_32(&tsc_per_ns, tsc_ticks_per_ms, 1000 * 1000);
+        TRACEF("TSC frequency: %" PRIu64 " ticks/ms\n", tsc_ticks_per_ms);
+        return;
+    }
+
+    TRACEF("Could not find TSC frequency! Calibrating TSC with %s\n",
+           clock_name[calibration_clock]);
 
     uint64_t best_time[2] = {UINT64_MAX, UINT64_MAX};
     const uint16_t duration_ms[2] = { 1, 2 };
@@ -427,7 +488,8 @@ static void calibrate_tsc(void)
 
     LTRACEF("TSC calibrated: %" PRIu64 " ticks/ms\n", tsc_ticks_per_ms);
 
-    fp_32_64_div_32_32(&ns_per_tsc, 1000 * 1000 * 1000, tsc_ticks_per_ms * 1000);
+    fp_32_64_div_32_32(&ns_per_tsc, 1000 * 1000, tsc_ticks_per_ms);
+    fp_32_64_div_32_32(&tsc_per_ns, tsc_ticks_per_ms, 1000 * 1000);
     LTRACEF("ns_per_tsc: %08x.%08x%08x\n", ns_per_tsc.l0, ns_per_tsc.l32, ns_per_tsc.l64);
 }
 
@@ -451,7 +513,7 @@ static void platform_init_timer(uint level)
 
     if (has_hpet) {
         calibration_clock = CLOCK_HPET;
-        fp_32_64_div_32_32(&ns_per_hpet, 1000 * 1000 * 1000, hpet_ticks_per_ms() * 1000);
+        fp_32_64_div_32_32(&ns_per_hpet, 1000 * 1000, hpet_ticks_per_ms());
     } else {
         calibration_clock = CLOCK_PIT;
     }
@@ -473,7 +535,7 @@ static void platform_init_timer(uint level)
         outp(I8253_CONTROL_REG, 0x38);
         wall_clock = CLOCK_TSC;
     } else {
-        if (constant_tsc) {
+        if (constant_tsc || invariant_tsc) {
             // Calibrate the TSC even though it's not as good as we want, so we
             // can still let folks still use it for cheap timing.
             calibrate_tsc();
@@ -490,7 +552,6 @@ static void platform_init_timer(uint level)
 
             wall_clock = CLOCK_PIT;
 
-            timer_current_time = 0;
             set_pit_frequency(1000); // ~1ms granularity
 
             uint32_t irq = apic_io_isa_to_global(ISA_IRQ_PIT);
@@ -506,7 +567,7 @@ static void platform_init_timer(uint level)
 LK_INIT_HOOK(timer, &platform_init_timer, LK_INIT_LEVEL_VM + 3);
 
 status_t platform_set_oneshot_timer(platform_timer_callback callback,
-                                    void *arg, lk_time_t interval)
+                                    void *arg, lk_bigtime_t deadline)
 {
     DEBUG_ASSERT(arch_ints_disabled());
     uint cpu = arch_curr_cpu_num();
@@ -514,28 +575,61 @@ status_t platform_set_oneshot_timer(platform_timer_callback callback,
     t_callback[cpu] = callback;
     callback_arg[cpu] = arg;
 
-    if (interval > MAX_TIMER_INTERVAL)
-        interval = MAX_TIMER_INTERVAL;
-    if (interval < 1) interval = 1;
+    deadline = discrete_time_roundup(deadline);
 
     if (use_tsc_deadline) {
-        if (UINT64_MAX / interval < tsc_ticks_per_ms) {
+        if (UINT64_MAX / deadline < (tsc_ticks_per_ms / LK_MSEC(1))) {
             return ERR_INVALID_ARGS;
         }
-        uint64_t tsc_interval = interval * tsc_ticks_per_ms;
-        uint64_t deadline = rdtsc() + tsc_interval;
-        LTRACEF("Scheduling oneshot timer: %" PRIu64 " deadline\n", deadline);
-        apic_timer_set_tsc_deadline(deadline, false /* unmasked */);
+
+        // We rounded up to the tick after above.
+        const uint64_t tsc_deadline = u64_mul_u64_fp32_64(deadline, tsc_per_ns);
+        LTRACEF("Scheduling oneshot timer: %" PRIu64 " deadline\n", tsc_deadline);
+        apic_timer_set_tsc_deadline(tsc_deadline, false /* unmasked */);
         return NO_ERROR;
     }
 
-    uint8_t extra_divisor = 1;
-    while (apic_ticks_per_ms > UINT32_MAX / interval / extra_divisor) {
-        extra_divisor *= 2;
+    const lk_bigtime_t now = current_time_hires();
+    if (now >= deadline) {
+        // Deadline has already passed. We still need to schedule a timer so that
+        // the interrupt fires.
+        LTRACEF("Scheduling oneshot timer for min duration\n");
+        return apic_timer_set_oneshot(1, 1, false /* unmasked */);
     }
-    uint32_t count = (apic_ticks_per_ms / extra_divisor) * interval;
-    uint32_t divisor = apic_divisor * extra_divisor;
-    ASSERT(divisor <= UINT8_MAX);
+    const lk_bigtime_t interval = deadline - now;
+    DEBUG_ASSERT(interval != 0);
+
+    uint64_t apic_ticks_needed = u64_mul_u64_fp32_64(interval, apic_ticks_per_ns);
+    if (apic_ticks_needed == 0) {
+        apic_ticks_needed = 1;
+    }
+
+    // Find the shift needed for this timeout, since count is 32-bit.
+    const uint highest_set_bit = log2_ulong_floor(apic_ticks_needed);
+    uint8_t extra_shift = (highest_set_bit <= 31) ? 0 : highest_set_bit - 31;
+    if (extra_shift > 8) {
+        extra_shift = 8;
+    }
+
+    uint32_t divisor = apic_divisor << extra_shift;
+    uint32_t count;
+    // If the divisor is too large, we're at our maximum timeout.  Saturate the
+    // timer.  It'll fire earlier than requested, but the scheduler will notice
+    // and ask us to set the timer up again.
+    if (divisor <= 128) {
+        count = (uint32_t)(apic_ticks_needed >> extra_shift);
+        DEBUG_ASSERT((apic_ticks_needed >> extra_shift) <= UINT32_MAX);
+    } else {
+        divisor = 128;
+        count = UINT32_MAX;
+    }
+
+    // Make sure we're not underflowing
+    if (count == 0) {
+        DEBUG_ASSERT(divisor == 1);
+        count = 1;
+    }
+
     LTRACEF("Scheduling oneshot timer: %u count, %u div\n", count, divisor);
     return apic_timer_set_oneshot(count, divisor, false /* unmasked */);
 }

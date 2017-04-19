@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "futex_impl.h"
 #include "libc.h"
 #include "pthread_impl.h"
@@ -49,13 +47,9 @@ int pthread_create(pthread_t* restrict res, const pthread_attr_t* restrict attrp
     if (attr._a_stackaddr != NULL)
         return ENOTSUP;
 
-    __acquire_ptc();
-
     pthread_t new = __allocate_thread(&attr);
-    if (new == NULL) {
-        __release_ptc();
+    if (new == NULL)
         return EAGAIN;
-    }
 
     const char* name = attr.__name ? attr.__name : "";
     mx_status_t status =
@@ -80,8 +74,6 @@ int pthread_create(pthread_t* restrict res, const pthread_attr_t* restrict attrp
     status = mxr_thread_start(&new->mxr_thread,
                               (uintptr_t)new->safe_stack.iov_base,
                               new->safe_stack.iov_len, start, new);
-
-    __release_ptc();
 
     // TODO(kulakowski) Signals?
     // if (do_sched) {
@@ -132,6 +124,8 @@ _Noreturn void pthread_exit(void* result) {
 
     self->result = result;
 
+    __tls_run_dtors();
+
     __pthread_tsd_run_dtors();
 
     /* Block all signals before decrementing the live thread count.
@@ -152,14 +146,6 @@ _Noreturn void pthread_exit(void* result) {
         // __restore_sigs(&set);
         exit(0);
     }
-
-    /* TODO(kulakowski): Pthread robust mutex processing used to occur
-     * inside this vm lock/unlock pair. I don't if there is also
-     * implicitly a need to synchronize on this lock in this function
-     * in any case, so I'm leaving the lock/unlock pair.
-     */
-    __vm_lock();
-    __vm_unlock();
 
     __dl_thread_cleanup();
 

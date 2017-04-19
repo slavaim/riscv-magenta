@@ -347,7 +347,7 @@ size_t pmm_count_total_bytes() TA_REQ(arena_lock) {
 }
 
 extern "C"
-enum handler_return pmm_dump_timer(struct timer *t, lk_time_t, void *) TA_REQ(arena_lock) {
+enum handler_return pmm_dump_timer(struct timer *t, lk_bigtime_t, void *) TA_REQ(arena_lock) {
     pmm_dump_free();
     return INT_NO_RESCHEDULE;
 }
@@ -358,7 +358,7 @@ static void arena_dump(bool is_panic) TA_NO_THREAD_SAFETY_ANALYSIS {
         arena_lock.Acquire();
     }
     for (auto& a : arena_list) {
-        a.Dump(false);
+        a.Dump(false, false);
     }
     if (!is_panic) {
         arena_lock.Release();
@@ -401,7 +401,7 @@ static int cmd_pmm(int argc, const cmd_args* argv, uint32_t flags) {
         if (!show_mem) {
             printf("pmm free: issue the same command to stop.\n");
             timer_initialize(&timer);
-            timer_set_periodic(&timer, 1000, &pmm_dump_timer, nullptr);
+            timer_set_periodic(&timer, LK_SEC(1), &pmm_dump_timer, nullptr);
             show_mem = true;
         } else {
             timer_cancel(&timer);

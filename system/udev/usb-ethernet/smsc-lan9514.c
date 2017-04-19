@@ -275,7 +275,7 @@ static void queue_interrupt_requests_locked(lan9514_t* eth) {
 mx_status_t lan9514_recv(lan9514_t* eth, iotxn_t* request) {
     if (eth->dead) {
         printf("lan9514_recv dead\n");
-        return ERR_REMOTE_CLOSED;
+        return ERR_PEER_CLOSED;
     }
 
     size_t len = request->actual;
@@ -308,7 +308,7 @@ static void lan9514_read_complete(iotxn_t* request, void* cookie) {
     lan9514_t* eth = (lan9514_t*)cookie;
     //printf("lan9514 read complete\n");
 
-    if (request->status == ERR_REMOTE_CLOSED) {
+    if (request->status == ERR_PEER_CLOSED) {
         iotxn_release(request);
         return;
     }
@@ -323,7 +323,7 @@ static void lan9514_read_complete(iotxn_t* request, void* cookie) {
 
 static void lan9514_write_complete(iotxn_t* request, void* cookie) {
     lan9514_t* eth = (lan9514_t*)cookie;
-    if (request->status == ERR_REMOTE_CLOSED) {
+    if (request->status == ERR_PEER_CLOSED) {
         iotxn_release(request);
         return;
     }
@@ -335,7 +335,7 @@ static void lan9514_write_complete(iotxn_t* request, void* cookie) {
 
 static void lan9514_interrupt_complete(iotxn_t* request, void* cookie) {
     lan9514_t* eth = (lan9514_t*)cookie;
-    if ((request->status == ERR_REMOTE_CLOSED) || (request->status == ERR_IO)) { // ERR_IO = NACK (no status change)
+    if ((request->status == ERR_PEER_CLOSED) || (request->status == ERR_IO)) { // ERR_IO = NACK (no status change)
         iotxn_release(request);
         return;
     }
@@ -358,7 +358,7 @@ mx_status_t _lan9514_send(mx_device_t* device, const void* buffer, size_t length
     lan9514_t* eth = get_lan9514(device);
 
     if (eth->dead) {
-        return ERR_REMOTE_CLOSED;
+        return ERR_PEER_CLOSED;
     }
 
     mx_status_t status = NO_ERROR;
@@ -679,7 +679,7 @@ static int lan9514_start_thread(void* arg) {
                 mx_time_t timecheck = mx_time_get(MX_CLOCK_MONOTONIC);
                 while (!(temp & MII_PHY_BSR_LINK_UP)) {
                     lan9514_mdio_read(eth, MII_PHY_BSR_REG, &temp);
-                    mx_nanosleep(MX_MSEC(100));
+                    mx_nanosleep(mx_deadline_after(MX_MSEC(100)));
                     if ((mx_time_get(MX_CLOCK_MONOTONIC - timecheck) > MX_SEC(1))) {
                         status = ERR_TIMED_OUT;
                         goto teardown;

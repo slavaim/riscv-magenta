@@ -33,12 +33,14 @@ typedef int32_t mx_handle_t;
 // Same as kernel status_t
 typedef int32_t mx_status_t;
 
-// time in nanoseconds
+// absolute time in nanoseconds (generally with respect to the monotonic clock)
 typedef uint64_t mx_time_t;
+// a duration in nanoseconds
+typedef uint64_t mx_duration_t;
 #define MX_TIME_INFINITE UINT64_MAX
-#define MX_USEC(n) ((mx_time_t)(1000ULL * (n)))
-#define MX_MSEC(n) ((mx_time_t)(1000000ULL * (n)))
-#define MX_SEC(n)  ((mx_time_t)(1000000000ULL * (n)))
+#define MX_USEC(n) ((mx_duration_t)(1000ULL * (n)))
+#define MX_MSEC(n) ((mx_duration_t)(1000000ULL * (n)))
+#define MX_SEC(n)  ((mx_duration_t)(1000000000ULL * (n)))
 
 typedef uint32_t mx_signals_t;
 
@@ -151,13 +153,10 @@ typedef uint32_t mx_signals_t;
 #define MX_PROCESS_SIGNALED         MX_PROCESS_TERMINATED
 #define MX_THREAD_SIGNALED          MX_THREAD_TERMINATED
 
-// Cancellation options
-#define MX_CANCEL_ANY           0u
-#define MX_CANCEL_KEY           1u
-
 // global kernel object id.
 typedef uint64_t mx_koid_t;
 #define MX_KOID_INVALID ((uint64_t) 0)
+#define MX_KOID_KERNEL  ((uint64_t) 1)
 
 // Transaction ID and argument types for mx_channel_call.
 typedef uint32_t mx_txid_t;
@@ -212,6 +211,9 @@ typedef uint32_t mx_rights_t;
 #define MX_VMO_OP_CACHE_INVALIDATE       7u
 #define MX_VMO_OP_CACHE_CLEAN            8u
 #define MX_VMO_OP_CACHE_CLEAN_INVALIDATE 9u
+
+// VM Object clone flags
+#define MX_VMO_CLONE_COPY_ON_WRITE       1u
 
 // Mapping flags to vmar routines
 #define MX_VM_FLAG_PERM_READ          (1u << 0)

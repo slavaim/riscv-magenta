@@ -317,6 +317,12 @@ private:
     vaddr_t NonCompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
                                                       uint arch_mmu_flags);
 
+    // Utility for allocators for iterating over gaps between allocations
+    // F should have a signature of bool func(vaddr_t gap_base, size_t gap_size).
+    // If func returns false, the iteration stops.  gap_base will be aligned in
+    // accordance with align_pow2.
+    template <typename F> void ForEachGap(F func, uint8_t align_pow2);
+
     // list of subregions, indexed by base address
     ChildList subregions_;
 };
@@ -398,6 +404,10 @@ public:
     uint64_t object_offset() const { return object_offset_; }
     mxtl::RefPtr<VmObject> vmo() const { return object_; };
 
+    // Convenience wrapper for vmo()->DecommitRange() with the necessary
+    // offset modification and locking.
+    status_t DecommitRange(size_t offset, size_t len, size_t* decommitted);
+
     // Map in pages from the underlying vm object, optionally committing pages as it goes
     status_t MapRange(size_t offset, size_t len, bool commit);
 
@@ -425,7 +435,7 @@ protected:
     friend mxtl::RefPtr<VmMapping>;
 
     // private apis from VmObject land
-    friend class VmObjectPaged;
+    friend class VmObject;
 
     // unmap any pages that map the passed in vmo range. May not intersect with this range
     status_t UnmapVmoRangeLocked(uint64_t start, uint64_t size) const;

@@ -6,11 +6,11 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 
 MODULE_TYPE := driver
 
-MODULE_STATIC_LIBS := ulib/ddk ulib/hexdump ulib/sync
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/hexdump system/ulib/sync
 
-MODULE_LIBS := ulib/driver ulib/magenta ulib/c
+MODULE_LIBS := system/ulib/driver system/ulib/magenta system/ulib/c
 
-MODULE := $(LOCAL_DIR)-ax88772b
+MODULE := $(LOCAL_DIR).ax88772b
 
 MODULE_SRCS := $(LOCAL_DIR)/asix-88772b.c
 
@@ -19,11 +19,11 @@ include make/module.mk
 
 MODULE_TYPE := driver
 
-MODULE_STATIC_LIBS := ulib/ddk ulib/hexdump ulib/sync
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/hexdump system/ulib/sync
 
-MODULE_LIBS := ulib/driver ulib/magenta ulib/c
+MODULE_LIBS := system/ulib/driver system/ulib/magenta system/ulib/c
 
-MODULE := $(LOCAL_DIR)-ax88179
+MODULE := $(LOCAL_DIR).ax88179
 
 MODULE_SRCS := $(LOCAL_DIR)/asix-88179.c
 
@@ -31,11 +31,11 @@ include make/module.mk
 
 MODULE_TYPE := driver
 
-MODULE_STATIC_LIBS := ulib/ddk ulib/hexdump ulib/sync
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/hexdump system/ulib/sync
 
-MODULE_LIBS := ulib/driver ulib/magenta ulib/c ulib/mxio
+MODULE_LIBS := system/ulib/driver system/ulib/magenta system/ulib/c system/ulib/mxio
 
-MODULE := $(LOCAL_DIR)-lan9514
+MODULE := $(LOCAL_DIR).lan9514
 
 MODULE_SRCS := $(LOCAL_DIR)/smsc-lan9514.c
 

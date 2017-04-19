@@ -297,8 +297,11 @@ status_t WaitSetDispatcher::Wait(mx_time_t timeout,
                                  uint32_t* max_results) {
     canary_.Assert();
 
-    lk_time_t lk_timeout = mx_time_to_lk(timeout);
-    status_t result = event_wait_timeout(&event_, lk_timeout, true);
+    lk_bigtime_t lk_deadline = timeout;
+    if (timeout != MX_TIME_INFINITE && timeout != 0) {
+        lk_deadline += current_time_hires();
+    }
+    status_t result = event_wait_deadline(&event_, lk_deadline, true);
 
     if (result != NO_ERROR && result != ERR_TIMED_OUT) {
         DEBUG_ASSERT(result == ERR_INTERRUPTED);
@@ -309,7 +312,7 @@ status_t WaitSetDispatcher::Wait(mx_time_t timeout,
 
     // Always prefer to give results over timed out, but prefer "cancelled" over everything.
     if (cancelled_)
-        return ERR_HANDLE_CLOSED;
+        return ERR_CANCELED;
 
     if (!num_triggered_entries_) {
         // It's *possible* that we woke due to something triggering
@@ -334,7 +337,7 @@ status_t WaitSetDispatcher::Wait(mx_time_t timeout,
             results[i].observed = it->GetSignalsStateLocked();
         } else {
             // Cancelled.
-            results[i].status = ERR_HANDLE_CLOSED;
+            results[i].status = ERR_CANCELED;
             results[i].observed = 0;
         }
     }

@@ -174,7 +174,7 @@ static bool channel_read_error_test(void) {
 
     // Read from an empty channel with a closed peer, should yield a channel closed error.
     status = mx_channel_read(channel[0], 0u, NULL, 0, NULL, NULL, 0, NULL);
-    ASSERT_EQ(status, ERR_REMOTE_CLOSED, "read on empty closed channel produced incorrect error");
+    ASSERT_EQ(status, ERR_PEER_CLOSED, "read on empty closed channel produced incorrect error");
 
     END_TEST;
 }
@@ -448,9 +448,11 @@ static uint32_t call_test_done = 0;
 static mtx_t call_test_lock;
 static cnd_t call_test_cvar;
 
+// we use txid_t for cmd here so that the test
+// works with both 32bit and 64bit txids
 typedef struct {
     mx_txid_t txid;
-    uint32_t cmd;
+    mx_txid_t cmd;
     uint32_t bit;
     unsigned action;
     mx_status_t expect;
@@ -473,7 +475,7 @@ static int call_client(void* _args) {
     ccargs_t* ccargs = _args;
     mx_channel_call_args_t args;
 
-    uint32_t data[2];
+    mx_txid_t data[2];
     mx_handle_t txhandle = 0;
     mx_handle_t rxhandle = 0;
 
@@ -497,9 +499,10 @@ static int call_client(void* _args) {
     uint32_t act_bytes = 0xffffffff;
     uint32_t act_handles = 0xffffffff;
 
-    mx_time_t timeout = (ccargs->action & CLI_SHORT_WAIT) ? MX_MSEC(250) : MX_TIME_INFINITE;
+    mx_time_t deadline = (ccargs->action & CLI_SHORT_WAIT) ? mx_deadline_after(MX_MSEC(250)) :
+            MX_TIME_INFINITE;
     mx_status_t rs = NO_ERROR;
-    if ((r = mx_channel_call(ccargs->h, 0, timeout, &args, &act_bytes, &act_handles, &rs)) != ccargs->expect) {
+    if ((r = mx_channel_call(ccargs->h, 0, deadline, &args, &act_bytes, &act_handles, &rs)) != ccargs->expect) {
         ccargs->err = "channel call returned";
         ccargs->val = r;
     }
@@ -612,13 +615,13 @@ static int call_server(void* ptr) {
             continue;
         }
 
-        uint32_t data[4];
+        mx_txid_t data[4];
         data[0] = m->txid;
         data[1] = m->txid * 31337;
         data[2] = 0x22222222;
         data[3] = 0x33333333;
 
-        uint32_t bytes = (m->action & SRV_SEND_DATA) ? 16 : 8;
+        uint32_t bytes = sizeof(mx_txid_t) * ((m->action & SRV_SEND_DATA) ? 4 : 2);
         uint32_t handles = (m->action & SRV_SEND_HANDLE) ? 1 : 0;
         mx_handle_t handle = 0;
         if (handles) {
@@ -710,7 +713,7 @@ static bool create_and_nest(mx_handle_t out, mx_handle_t* end, size_t n) {
 
 static int call_server2(void* ptr) {
     mx_handle_t h = (mx_handle_t) (uintptr_t) ptr;
-    mx_nanosleep(MX_MSEC(250));
+    mx_nanosleep(mx_deadline_after(MX_MSEC(250)));
     mx_handle_close(h);
     return 0;
 }
@@ -740,12 +743,13 @@ static bool channel_call2(void) {
     uint32_t act_handles = 0xffffffff;
 
     mx_status_t rs = NO_ERROR;
-    mx_status_t r = mx_channel_call(cli, 0, MX_MSEC(1000), &args, &act_bytes, &act_handles, &rs);
+    mx_status_t r = mx_channel_call(cli, 0, mx_deadline_after(MX_MSEC(1000)), &args, &act_bytes,
+                                    &act_handles, &rs);
 
     mx_handle_close(cli);
 
     EXPECT_EQ(r, ERR_CALL_FAILED, "");
-    EXPECT_EQ(rs, ERR_REMOTE_CLOSED, "");
+    EXPECT_EQ(rs, ERR_PEER_CLOSED, "");
 
     END_TEST;
 }

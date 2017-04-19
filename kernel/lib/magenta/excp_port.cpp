@@ -1,3 +1,9 @@
+// Copyright 2017 The Fuchsia Authors
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 #include <err.h>
 #include <inttypes.h>
 #include <new.h>
@@ -203,7 +209,7 @@ mx_status_t ExceptionPort::SendReport(const mx_exception_report_t* report) {
             report->header.type, report->context.pid, report->context.tid);
     if (port_ == nullptr) {
         // The port has been unbound.
-        return ERR_REMOTE_CLOSED;
+        return ERR_PEER_CLOSED;
     }
 
     auto iopk = MakePacket(port_key_, report, sizeof(*report));

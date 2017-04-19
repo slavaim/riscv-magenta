@@ -6,6 +6,10 @@
 
 #include "device-internal.h"
 
+#if DEVHOST_V2
+#include "devcoordinator.h"
+#endif
+
 #include <ddk/binding.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
@@ -39,7 +43,8 @@ mx_status_t devhost_driver_add(mx_driver_t* driver);
 mx_status_t devhost_driver_remove(mx_driver_t* driver);
 mx_status_t devhost_driver_unbind(mx_driver_t* driver, mx_device_t* dev);
 
-mx_status_t devhost_device_add(mx_device_t* dev, mx_device_t* parent);
+mx_status_t devhost_device_add(mx_device_t* dev, mx_device_t* parent,
+                              const char* businfo, mx_handle_t resource);
 mx_status_t devhost_device_add_root(mx_device_t* dev);
 mx_status_t devhost_device_remove(mx_device_t* dev);
 mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_name);
@@ -66,6 +71,9 @@ typedef struct devhost_iostate {
     size_t io_off;
     uint32_t flags;
     mtx_t lock;
+#if DEVHOST_V2
+    port_handler_t ph;
+#endif
 } devhost_iostate_t;
 
 devhost_iostate_t* create_devhost_iostate(mx_device_t* dev);

@@ -1,7 +1,6 @@
 # Magenta System Calls
 
 ## Handles
-+ [handle_cancel](syscalls/handle_cancel.md) - cancel waits and async operations
 + [handle_close](syscalls/handle_close.md) - close a handle
 + [handle_duplicate](syscalls/handle_duplicate.md) - create a duplicate handle (optionally with reduced rights)
 + [handle_replace](syscalls/handle_replace.md) - create a new handle (optionally with reduced rights) and destroy the old one
@@ -36,7 +35,7 @@
 ## Jobs
 + [job_create](syscalls/job_create.md) - create a new job within a job
 
-## Tasks (Task, Process, or Job)
+## Tasks (Thread, Process, or Job)
 + [task_resume](syscalls/task_resume.md) - cause a suspended task to continue running
 + [task_bind_exception_port](syscalls/task_bind_exception_port.md) - attach an exception port to a task
 + [task_kill](syscalls/task_kill.md) - cause a task to stop running
@@ -75,9 +74,9 @@
 + [port_cancel](syscalls/port_cancel.md) - cancel notificaitons from async_wait
 
 ## Futexes
-+ [futex_wait](syscalls/futex_wait.md)
-+ [futex_wake](syscalls/futex_wake.md)
-+ [futex_requeue](syscalls/futex_requeue.md)
++ [futex_wait](syscalls/futex_wait.md) - wait on a futex
++ [futex_wake](syscalls/futex_wake.md) - wake waiters on a futex
++ [futex_requeue](syscalls/futex_requeue.md) - wake some waiters and requeue other waiters
 
 ## Virtual Memory Objects (VMOs)
 + [vmo_create](syscalls/vmo_create.md) - create a new vmo

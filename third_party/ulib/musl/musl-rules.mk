@@ -34,7 +34,6 @@ LOCAL_CFLAGS := \
     -Wno-sign-compare \
     -Wno-parentheses \
     -Wno-missing-braces \
-    -Wno-type-limits \
     -Werror=strict-prototypes \
     -Werror=incompatible-pointer-types \
 
@@ -47,10 +46,6 @@ LOCAL_COMPILEFLAGS += -fno-stack-protector
 # arguments would only be added to C or C++ targets.
 LOCAL_COMPILEFLAGS += -Qunused-arguments
 
-else
-LOCAL_CFLAGS += \
-    -Wno-discarded-qualifiers \
-    -Wno-unused-but-set-variable
 endif
 
 # The upstream musl build uses this too.  It's necessary to avoid the
@@ -256,6 +251,7 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/env/unsetenv.c \
     $(LOCAL_DIR)/src/errno/__errno_location.c \
     $(LOCAL_DIR)/src/errno/strerror.c \
+    $(LOCAL_DIR)/src/exit/__cxa_thread_atexit.c \
     $(LOCAL_DIR)/src/exit/_Exit.c \
     $(LOCAL_DIR)/src/exit/abort.c \
     $(LOCAL_DIR)/src/exit/assert.c \
@@ -855,7 +851,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/thread/cnd_signal.c \
     $(LOCAL_DIR)/src/thread/cnd_timedwait.c \
     $(LOCAL_DIR)/src/thread/cnd_wait.c \
-    $(LOCAL_DIR)/src/thread/lock_ptc.c \
     $(LOCAL_DIR)/src/thread/mtx_destroy.c \
     $(LOCAL_DIR)/src/thread/mtx_init.c \
     $(LOCAL_DIR)/src/thread/mtx_lock.c \
@@ -871,7 +866,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/thread/tss_create.c \
     $(LOCAL_DIR)/src/thread/tss_delete.c \
     $(LOCAL_DIR)/src/thread/tss_set.c \
-    $(LOCAL_DIR)/src/thread/vmlock.c \
     $(LOCAL_DIR)/src/time/__asctime.c \
     $(LOCAL_DIR)/src/time/__map_file.c \
     $(LOCAL_DIR)/src/time/__month_to_secs.c \
@@ -1119,8 +1113,8 @@ MODULE_COMPILEFLAGS := $(LOCAL_COMPILEFLAGS)
 MODULE_CFLAGS := $(LOCAL_CFLAGS)
 MODULE_SRCS := $(LOCAL_SRCS)
 
-MODULE_LIBS := ulib/magenta
-MODULE_STATIC_LIBS := ulib/runtime
+MODULE_LIBS := system/ulib/magenta
+MODULE_STATIC_LIBS := system/ulib/runtime
 
 # At link time and in DT_SONAME, musl is known as libc.so.  But the
 # (only) place it needs to be installed at runtime is where the
@@ -1141,7 +1135,7 @@ include make/module.mk
 
 # build a fake library to build crt1.o separately
 
-MODULE := system/ulib/c-crt
+MODULE := system/ulib/c.crt
 MODULE_TYPE := userlib
 MODULE_COMPILEFLAGS := $(LOCAL_COMPILEFLAGS)
 MODULE_CFLAGS := $(LOCAL_CFLAGS)
@@ -1149,7 +1143,7 @@ MODULE_CFLAGS := $(LOCAL_CFLAGS)
 MODULE_SRCS := $(LOCAL_DIR)/arch/$(MUSL_ARCH)/crt1.S
 
 # where our object files will end up
-LOCAL_OUT := $(BUILDDIR)/ulib/c-crt/$(LOCAL_DIR)
+LOCAL_OUT := $(BUILDDIR)/system/ulib/c.crt/$(LOCAL_DIR)
 LOCAL_CRT1_OBJ := $(LOCAL_OUT)/arch/$(MUSL_ARCH)/crt1.S.o
 
 # install it globally

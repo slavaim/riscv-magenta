@@ -38,7 +38,7 @@ static inline bool arch_in_int_handler(void)
     return false;
 }
 
-static inline uint32_t arch_cycle_count(void)
+static inline uint64_t arch_cycle_count(void)
 {
     PANIC_UNIMPLEMENTED;
     return 0;

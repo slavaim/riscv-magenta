@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <err.h>
 #include <new.h>
+#include <platform.h>
 #include <pow2.h>
 
 #include <magenta/compiler.h>
@@ -69,11 +70,6 @@ bool PortObserver::OnCancel(Handle* handle) {
 bool PortObserver::OnCancelByKey(Handle* handle, const void* port, uint64_t key) {
     if ((key_ != key) || (handle_ != handle))
         return false;
-    // Stopgap check so that mx_handle_cancel( ..MX_CANCEL_KEY) is not broken.
-    // Remove once clients have transitioned.
-    if (port && (port != port_.get()))
-        return false;
-
     remove_ = true;
     return false;
 }
@@ -176,6 +172,11 @@ mx_status_t PortDispatcherV2::Queue(PortPacket* port_packet,
 mx_status_t PortDispatcherV2::DeQueue(mx_time_t timeout, mx_port_packet_t* packet) {
     canary_.Assert();
 
+    lk_bigtime_t lk_deadline = timeout;
+    if (timeout != MX_TIME_INFINITE && timeout != 0) {
+        lk_deadline += current_time_hires();
+    }
+
     PortPacket* port_packet = nullptr;
     PortObserver* observer = nullptr;
 
@@ -196,7 +197,7 @@ mx_status_t PortDispatcherV2::DeQueue(mx_time_t timeout, mx_port_packet_t* packe
         return NO_ERROR;
 
 wait:
-        status_t st = sema_.Wait(mx_time_to_lk(timeout));
+        status_t st = sema_.Wait(lk_deadline);
         if (st != NO_ERROR)
             return st;
     }

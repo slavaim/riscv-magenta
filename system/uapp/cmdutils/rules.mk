@@ -4,7 +4,7 @@
 
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
-MODULE := $(LOCAL_DIR)-env
+MODULE := $(LOCAL_DIR).env
 
 MODULE_TYPE := userapp
 
@@ -12,6 +12,6 @@ MODULE_SRCS += $(LOCAL_DIR)/env.c
 
 MODULE_NAME := env
 
-MODULE_LIBS := ulib/magenta ulib/c ulib/launchpad
+MODULE_LIBS := system/ulib/magenta system/ulib/c system/ulib/launchpad
 
 include make/module.mk

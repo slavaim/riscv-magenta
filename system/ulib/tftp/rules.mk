@@ -13,11 +13,11 @@ MODULE_SRCS += $(LOCAL_DIR)/tftp.c
 MODULE_EXPORT := a
 
 #MODULE_SO_NAME := tftp
-MODULE_LIBS := ulib/magenta ulib/c
+MODULE_LIBS := system/ulib/magenta system/ulib/c
 
 include make/module.mk
 
-MODULE := $(LOCAL_DIR)-test
+MODULE := $(LOCAL_DIR).test
 
 MODULE_TYPE := usertest
 
@@ -25,13 +25,13 @@ MODULE_SRCS := $(LOCAL_DIR)/tftp-test.cpp
 
 MODULE_NAME := tftp-test
 
-MODULE_STATIC_LIBS := ulib/tftp
+MODULE_STATIC_LIBS := system/ulib/tftp
 
-MODULE_LIBS := ulib/unittest ulib/mxio ulib/c ulib/mxtl ulib/mxcpp
+MODULE_LIBS := system/ulib/unittest system/ulib/mxio system/ulib/c system/ulib/mxtl system/ulib/mxcpp
 
 include make/module.mk
 
-MODULE := $(LOCAL_DIR)-tftp-example
+MODULE := $(LOCAL_DIR).tftp-example
 
 MODULE_TYPE := hostapp
 

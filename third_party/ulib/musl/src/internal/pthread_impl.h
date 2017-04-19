@@ -35,6 +35,8 @@ typedef struct {
     uintptr_t unsafe_sp;
 } tp_abi_t;
 
+struct tls_dtor;
+
 struct pthread {
 #ifndef TLS_ABOVE_TP
     // These must be the very first members.
@@ -52,6 +54,7 @@ struct pthread {
     struct iovec safe_stack, safe_stack_region;
     struct iovec unsafe_stack, unsafe_stack_region;
 
+    struct tls_dtor* tls_dtors;
     void* tsd[PTHREAD_KEYS_MAX];
     int tsd_used;
     int errno_value;
@@ -146,17 +149,17 @@ void __private_cond_signal(void* condvar, int n);
 int __libc_sigaction(int, const struct sigaction*, struct sigaction*);
 int __libc_sigprocmask(int, const sigset_t*, sigset_t*);
 
-void __vm_wait(void) ATTR_LIBC_VISIBILITY;
-void __vm_lock(void) ATTR_LIBC_VISIBILITY;
-void __vm_unlock(void) ATTR_LIBC_VISIBILITY;
-
 // This is guaranteed to only return 0, EINVAL, or ETIMEDOUT.
 int __timedwait(atomic_int*, int, clockid_t, const struct timespec*)
     ATTR_LIBC_VISIBILITY;
 
-void __acquire_ptc(void) ATTR_LIBC_VISIBILITY;
-void __release_ptc(void) ATTR_LIBC_VISIBILITY;
-void __inhibit_ptc(void) ATTR_LIBC_VISIBILITY;
+// Loading a library can introduce more thread_local variables. Thread
+// allocation bases bookkeeping decisions based on the current state
+// of thread_locals in the program, so thread creation needs to be
+// inhibited by a concurrent dlopen. This lock implements that
+// exclusion.
+void __thread_allocation_inhibit(void) ATTR_LIBC_VISIBILITY;
+void __thread_allocation_release(void) ATTR_LIBC_VISIBILITY;
 
 void __block_all_sigs(void*) ATTR_LIBC_VISIBILITY;
 void __block_app_sigs(void*) ATTR_LIBC_VISIBILITY;

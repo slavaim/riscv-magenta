@@ -45,7 +45,7 @@ typedef struct thread_data {
 typedef struct wait_data {
     mx_handle_t handle;
     mx_handle_t signals;
-    uint64_t timeout;
+    mx_time_t timeout;
     mx_status_t status;
 } wait_data_t;
 
@@ -61,8 +61,8 @@ static mx_handle_t event_handle;
 static bool wait_readable(mx_handle_t handle, enum wait_result* result) {
     mx_signals_t pending;
     mx_signals_t signals = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
-    int64_t timeout = MX_TIME_INFINITE;
-    mx_status_t status = mx_object_wait_one(handle, signals, timeout, &pending);
+    mx_time_t deadline = MX_TIME_INFINITE;
+    mx_status_t status = mx_object_wait_one(handle, signals, deadline, &pending);
     if (status == ERR_CANCELED) {
         *result = WAIT_CANCELLED;
         return true;
@@ -80,8 +80,8 @@ static bool wait_readable(mx_handle_t handle, enum wait_result* result) {
 static bool wait_signaled(mx_handle_t handle, enum wait_result* result) {
     mx_signals_t pending;
     mx_signals_t signals = MX_EVENT_SIGNALED;
-    int64_t timeout = MX_TIME_INFINITE;
-    mx_status_t status = mx_object_wait_one(handle, signals, timeout, &pending);
+    mx_time_t deadline = MX_TIME_INFINITE;
+    mx_status_t status = mx_object_wait_one(handle, signals, deadline, &pending);
     if (status == ERR_CANCELED) {
         *result = WAIT_CANCELLED;
         return true;
@@ -183,7 +183,8 @@ static int worker_thread_func(void* arg) {
 static int wait_thread_func(void* arg) {
     wait_data_t* data = arg;
     mx_signals_t observed;
-    data->status = mx_object_wait_one(data->handle, data->signals, data->timeout, &observed);
+    data->status = mx_object_wait_one(data->handle, data->signals, mx_deadline_after(data->timeout),
+                                      &observed);
     return 0;
 }
 
@@ -222,7 +223,7 @@ bool handle_wait_test(void) {
     // when there exists a duplicate of the handle.
     // N.B. We're assuming thread 1 is waiting on event_handle at this point.
     // TODO(vtl): This is a flaky assumption, though the following sleep should help.
-    mx_nanosleep(MX_MSEC(20));
+    mx_nanosleep(mx_deadline_after(MX_MSEC(20)));
 
     mx_handle_t event_handle_dup;
     mx_status_t status = mx_handle_duplicate(event_handle, MX_RIGHT_SAME_RIGHTS, &event_handle_dup);
@@ -242,30 +243,8 @@ bool handle_wait_test(void) {
     END_TEST;
 }
 
-bool wait_cancel_test(void) {
-    BEGIN_TEST;
-
-    mx_handle_t event_handle;
-    ASSERT_EQ(mx_event_create(0u, &event_handle), 0, "");
-
-    thrd_t thread1;
-    wait_data_t wait_data = {event_handle, MX_EVENT_SIGNALED, MX_MSEC(400), 0u};
-    ASSERT_EQ(thrd_create(&thread1, wait_thread_func, &wait_data), thrd_success, "");
-    mx_nanosleep(MX_MSEC(20));
-    ASSERT_EQ(mx_handle_cancel(event_handle, 0ull,  MX_CANCEL_ANY), 0, "");
-
-    EXPECT_EQ(thrd_join(thread1, NULL), thrd_success, "");
-    EXPECT_EQ(wait_data.status, ERR_CANCELED, "");
-
-    ASSERT_EQ(mx_handle_cancel(event_handle, 0ull,  MX_CANCEL_ANY), 0, "");
-
-    EXPECT_EQ(mx_handle_close(event_handle), NO_ERROR, "");
-    END_TEST;
-}
-
 BEGIN_TEST_CASE(handle_wait_tests)
 RUN_TEST(handle_wait_test);
-RUN_TEST(wait_cancel_test);
 END_TEST_CASE(handle_wait_tests)
 
 #ifndef BUILD_COMBINED_TESTS

@@ -46,6 +46,10 @@ syscall ticks_per_second vdsocall const
     ()
     returns (uint64_t);
 
+syscall deadline_after vdsocall
+    (nanoseconds: mx_duration_t)
+    returns (mx_time_t);
+
 # Global system information
 
 syscall system_get_num_cpus vdsocall const
@@ -67,10 +71,6 @@ syscall cache_flush vdsocall
     returns (mx_status_t);
 
 # Generic handle operations
-
-syscall handle_cancel
-    (handle: mx_handle_t, key: uint64_t, options: uint32_t)
-    returns (mx_status_t);
 
 syscall handle_close
     (handle: mx_handle_t)
@@ -338,6 +338,11 @@ syscall vmo_set_size
 syscall vmo_op_range
     (handle: mx_handle_t, op: uint32_t, offset: uint64_t, size: uint64_t,
         buffer: any[buffer_size] INOUT, buffer_size: size_t)
+    returns (mx_status_t);
+
+syscall vmo_clone
+    (handle: mx_handle_t, options: uint32_t, offset: uint64_t, size: uint64_t,
+        out: mx_handle_t[1] OUT)
     returns (mx_status_t);
 
 # Address space management

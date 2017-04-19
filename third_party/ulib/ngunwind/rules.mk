@@ -103,7 +103,7 @@ endif
 MODULE_SO_NAME := ngunwind
 
 MODULE_LIBS := \
-    ulib/magenta ulib/c
+    system/ulib/magenta system/ulib/c
 
 # Compile this with frame pointers so that if we crash the crashlogger
 # the simplistic unwinder will work.

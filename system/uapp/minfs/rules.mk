@@ -24,23 +24,23 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/minfs-check.cpp \
 
 MODULE_STATIC_LIBS := \
-    ulib/fs \
+    system/ulib/fs \
 
 MODULE_LIBS := \
-    ulib/bitmap \
-    ulib/magenta \
-    ulib/mxio \
-    ulib/c \
-    ulib/mxcpp \
-    ulib/mxio \
-    ulib/mxtl \
+    system/ulib/bitmap \
+    system/ulib/magenta \
+    system/ulib/mxio \
+    system/ulib/c \
+    system/ulib/mxcpp \
+    system/ulib/mxio \
+    system/ulib/mxtl \
 
 include make/module.mk
 
 
 # host minfs tool
 
-MODULE := $(LOCAL_DIR)-host
+MODULE := $(LOCAL_DIR).host
 
 MODULE_NAME := minfs
 

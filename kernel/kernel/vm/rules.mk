@@ -10,11 +10,9 @@ LOCAL_DIR := $(GET_LOCAL_DIR)
 MODULE := $(LOCAL_DIR)
 
 MODULE_DEPS += \
-    lib/crypto \
-    lib/mxtl \
-    lib/user_copy \
-    lib/safeint \
-    app/tests
+    third_party/lib/cryptolib \
+    kernel/lib/mxtl \
+    kernel/lib/user_copy
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/bootalloc.cpp \

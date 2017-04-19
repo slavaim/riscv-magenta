@@ -18,7 +18,6 @@
 
 /* multiboot information passed in, if present */
 extern multiboot_info_t *_multiboot_info;
-extern void *_zero_page_boot_params;
 
 /* statically allocate an array of pmm_arena_info_ts to be filled in at boot time */
 #define PMM_ARENAS 16
@@ -107,34 +106,15 @@ static int mem_arena_init(boot_addr_range_t *range)
             size -= adjust;
         }
 
-        while (size && used < PMM_ARENAS) {
-            pmm_arena_info_t *arena = &mem_arenas[used];
+        pmm_arena_info_t *arena = &mem_arenas[used];
+        arena->base = base;
+        arena->size = size;
+        arena->name = "memory";
+        arena->priority = 1;
+        arena->flags = PMM_ARENA_FLAG_KMAP;
+        used++;
 
-            arena->base = base;
-            arena->size = size;
-
-            if ((uint64_t)arena->base != base) {
-                LTRACEF("Range base %#" PRIx64 " is too high.\n", base);
-                break;
-            }
-            if ((uint64_t)arena->size != size) {
-                LTRACEF("Range size %#" PRIx64 " is too large, splitting it.\n",
-                        size);
-                arena->size = -PAGE_SIZE;
-            }
-
-            size -= arena->size;
-            base += arena->size;
-
-            LTRACEF("Adding pmm range at %#" PRIxPTR " of %#zx bytes.\n",
-                    arena->base, arena->size);
-
-            arena->name = "memory";
-            arena->priority = 1;
-            arena->flags = PMM_ARENA_FLAG_KMAP;
-
-            used++;
-        }
+        LTRACEF("Adding pmm range at %#" PRIxPTR " of %#zx bytes.\n", arena->base, arena->size);
     }
 
     return used;
@@ -201,21 +181,7 @@ static int e820_range_init(boot_addr_range_t *range, e820_range_seq_t *seq)
         return 1;
     }
 
-    if (_zero_page_boot_params == NULL) {
-        LTRACEF("No zero page found.\n");
-        return 0;
-    }
-
-    uintptr_t zero_page = (uintptr_t)_zero_page_boot_params + KERNEL_BASE;
-
-    seq->count = *(uint8_t *)(zero_page + E820_ENTRIES_OFFSET);
-    LTRACEF("There are %d e820 mappings.\n", seq->count);
-
-    seq->map = (void *)(zero_page + E820_MAP_OFFSET);
-
-    range->reset(range);
-
-    return 1;
+    return 0;
 }
 
 

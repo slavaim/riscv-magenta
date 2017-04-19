@@ -23,7 +23,10 @@
 #include <kernel/mp.h>
 #include <kernel/thread.h>
 #include <magenta/errors.h>
+
+#if WITH_LIB_MAGENTA
 #include <magenta/fifo_dispatcher.h>
+#endif // WITH_LIB_MAGENTA
 
 #include "hypervisor_priv.h"
 
@@ -101,6 +104,22 @@ static uint64_t vmread(uint64_t field) {
     return val;
 }
 
+static uint16_t vmcs_read(VmcsField16 field) {
+    return static_cast<uint16_t>(vmread(static_cast<uint64_t>(field)));
+}
+
+static uint32_t vmcs_read(VmcsField32 field) {
+    return static_cast<uint32_t>(vmread(static_cast<uint64_t>(field)));
+}
+
+static uint64_t vmcs_read(VmcsField64 field) {
+    return vmread(static_cast<uint64_t>(field));
+}
+
+static uint64_t vmcs_read(VmcsFieldXX field) {
+    return vmread(static_cast<uint64_t>(field));
+}
+
 static void vmwrite(uint64_t field, uint64_t val) {
     uint8_t err;
 
@@ -112,6 +131,22 @@ static void vmwrite(uint64_t field, uint64_t val) {
         : "cc");
 
     DEBUG_ASSERT(err == NO_ERROR);
+}
+
+static void vmcs_write(VmcsField16 field, uint16_t val) {
+    vmwrite(static_cast<uint64_t>(field), val);
+}
+
+static void vmcs_write(VmcsField32 field, uint32_t val) {
+    vmwrite(static_cast<uint64_t>(field), val);
+}
+
+static void vmcs_write(VmcsField64 field, uint64_t val) {
+    vmwrite(static_cast<uint64_t>(field), val);
+}
+
+static void vmcs_write(VmcsFieldXX field, uint64_t val) {
+    vmwrite(static_cast<uint64_t>(field), val);
 }
 
 // TODO(abdulla): Update this to execute on every CPU. For development, it is
@@ -141,6 +176,13 @@ VmxInfo::VmxInfo() {
     vmx_controls = BIT_SHIFT(basic_info, 55);
 }
 
+MiscInfo::MiscInfo() {
+    // From Volume 3, Appendix A.6.
+    uint64_t misc_info = read_msr(X86_MSR_IA32_VMX_MISC);
+    wait_for_sipi = BIT_SHIFT(misc_info, 8);
+    msr_list_limit = static_cast<uint32_t>(BITS_SHIFT(misc_info, 27, 25) + 1) * 512;
+}
+
 EptInfo::EptInfo() {
     // From Volume 3, Appendix A.10.
     uint64_t ept_info = read_msr(X86_MSR_IA32_VMX_EPT_VPID_CAP);
@@ -159,13 +201,45 @@ EptInfo::EptInfo() {
         BIT_SHIFT(ept_info, 26);
 }
 
+ExitInfo::ExitInfo() {
+        exit_reason = static_cast<ExitReason>(vmcs_read(VmcsField32::EXIT_REASON));
+        exit_qualification = vmcs_read(VmcsFieldXX::EXIT_QUALIFICATION);
+        interruption_information = vmcs_read(VmcsField32::INTERRUPTION_INFORMATION);
+        interruption_error_code = vmcs_read(VmcsField32::INTERRUPTION_ERROR_CODE);
+        instruction_length = vmcs_read(VmcsField32::INSTRUCTION_LENGTH);
+        instruction_information = vmcs_read(VmcsField32::INSTRUCTION_INFORMATION);
+        guest_physical_address = vmcs_read(VmcsField64::GUEST_PHYSICAL_ADDRESS);
+        guest_linear_address = vmcs_read(VmcsFieldXX::GUEST_LINEAR_ADDRESS);
+        guest_interruptibility_state = vmcs_read(VmcsField32::GUEST_INTERRUPTIBILITY_STATE);
+        guest_rip = vmcs_read(VmcsFieldXX::GUEST_RIP);
+
+        dprintf(SPEW, "exit reason: %#" PRIx32 "\n", static_cast<uint32_t>(exit_reason));
+        dprintf(SPEW, "exit qualification: %#" PRIx64 "\n", exit_qualification);
+        dprintf(SPEW, "interruption information: %#" PRIx32 "\n", interruption_information);
+        dprintf(SPEW, "interruption error code: %#" PRIx32 "\n", interruption_error_code);
+        dprintf(SPEW, "instruction length: %#" PRIx32 "\n", instruction_length);
+        dprintf(SPEW, "instruction information: %#" PRIx32 "\n", instruction_information);
+        dprintf(SPEW, "guest physical address: %#" PRIx64 "\n", guest_physical_address);
+        dprintf(SPEW, "guest linear address: %#" PRIx64 "\n", guest_linear_address);
+        dprintf(SPEW, "guest interruptibility state: %#" PRIx32 "\n", guest_interruptibility_state);
+        dprintf(SPEW, "guest rip: %#" PRIx64 "\n", guest_rip);
+}
+
+IoInfo::IoInfo(uint64_t qualification) {
+    bytes = static_cast<uint8_t>(BITS(qualification, 2, 0) + 1);
+    input = BIT_SHIFT(qualification, 3);
+    string = BIT_SHIFT(qualification, 4);
+    repeat = BIT_SHIFT(qualification, 5);
+    port = static_cast<uint16_t>(BITS_SHIFT(qualification, 31, 16));
+}
+
 VmxPage::~VmxPage() {
     vm_page_t* page = paddr_to_vm_page(pa_);
     if (page != nullptr)
         pmm_free_page(page);
 }
 
-status_t VmxPage::Alloc(const VmxInfo& vmx_info) {
+status_t VmxPage::Alloc(const VmxInfo& vmx_info, uint8_t fill) {
     // From Volume 3, Appendix A.1: Bits 44:32 report the number of bytes that
     // software should allocate for the VMXON region and any VMCS region. It is
     // a value greater than 0 and at most 4096 (bit 44 is set if and only if
@@ -173,7 +247,7 @@ status_t VmxPage::Alloc(const VmxInfo& vmx_info) {
     if (vmx_info.region_size > PAGE_SIZE)
         return ERR_NOT_SUPPORTED;
 
-    // Check use write-back memory for VMX regions is supported.
+    // Check use of write-back memory for VMX regions is supported.
     if (!vmx_info.write_back)
         return ERR_NOT_SUPPORTED;
 
@@ -183,7 +257,7 @@ status_t VmxPage::Alloc(const VmxInfo& vmx_info) {
         return ERR_NO_MEMORY;
 
     DEBUG_ASSERT(IS_PAGE_ALIGNED(pa_));
-    memset(VirtualAddress(), 0, PAGE_SIZE);
+    memset(VirtualAddress(), fill, PAGE_SIZE);
     return NO_ERROR;
 }
 
@@ -233,6 +307,11 @@ static int vmx_enable(void* arg) {
     if (!ept_info.invept)
         return ERR_NOT_SUPPORTED;
 
+    // Check that wait for startup IPI is a supported activity state.
+    MiscInfo misc_info;
+    if (!misc_info.wait_for_sipi)
+        return ERR_NOT_SUPPORTED;
+
     // Enable VMXON, if required.
     uint64_t feature_control = read_msr(X86_MSR_IA32_FEATURE_CONTROL);
     if (!(feature_control & X86_MSR_IA32_FEATURE_CONTROL_LOCK) ||
@@ -265,7 +344,7 @@ static int vmx_enable(void* arg) {
 }
 
 status_t PerCpu::Init(const VmxInfo& info) {
-    status_t status = page_.Alloc(info);
+    status_t status = page_.Alloc(info, 0);
     if (status != NO_ERROR)
         return status;
 
@@ -349,30 +428,57 @@ AutoVmcsLoad::~AutoVmcsLoad() {
     arch_enable_ints();
 }
 
-static status_t set_vmcs_control(uint32_t controls, uint64_t true_msr, uint64_t old_msr,
-                                 uint32_t set) {
-    uint32_t allowed_0 = static_cast<uint32_t>(BITS(true_msr, 31, 0));
-    uint32_t allowed_1 = static_cast<uint32_t>(BITS_SHIFT(true_msr, 63, 32));
-    if ((allowed_1 & set) != set) {
-        dprintf(SPEW, "can not set vmcs controls %#" PRIx32 "\n", controls);
-        return ERR_NOT_SUPPORTED;
-    }
+status_t VmcsPerCpu::Init(const VmxInfo& vmx_info) {
+    status_t status = PerCpu::Init(vmx_info);
+    if (status != NO_ERROR)
+        return status;
 
-    // Reference Volume 3, Section 31.5.1, Algorithm 3, Part C. If the control
-    // can be either 0 or 1 (flexible), and the control is unknown, then refer
-    // to the old MSR to find the default value.
-    //
-    // NOTE: We do not explicitly clear any controls, otherwise unknown would be
-    // defined as the complement of the union of what is set and cleared.
-    uint32_t flexible = allowed_0 ^ allowed_1;
-    uint32_t unknown = flexible & ~set;
-    uint32_t defaults = unknown & BITS(old_msr, 31, 0);
-    vmwrite(controls, allowed_0 | defaults | set);
+    status = msr_bitmaps_page_.Alloc(vmx_info, 0xff);
+    if (status != NO_ERROR)
+        return status;
+
+    status = host_msr_page_.Alloc(vmx_info, 0);
+    if (status != NO_ERROR)
+        return status;
+
+    status = guest_msr_page_.Alloc(vmx_info, 0);
+    if (status != NO_ERROR)
+        return status;
+
+    memset(&vmx_state_, 0, sizeof(vmx_state_));
     return NO_ERROR;
 }
 
 status_t VmcsPerCpu::Clear() {
     return page_.IsAllocated() ? vmclear(page_.PhysicalAddress()) : NO_ERROR;
+}
+
+static status_t set_vmcs_control(VmcsField32 controls, uint64_t true_msr, uint64_t old_msr,
+                                 uint32_t set, uint32_t clear) {
+    uint32_t allowed_0 = static_cast<uint32_t>(BITS(true_msr, 31, 0));
+    uint32_t allowed_1 = static_cast<uint32_t>(BITS_SHIFT(true_msr, 63, 32));
+    if ((allowed_1 & set) != set) {
+        dprintf(SPEW, "can not set vmcs controls %#x\n", static_cast<uint>(controls));
+        return ERR_NOT_SUPPORTED;
+    }
+    if ((~allowed_0 & clear) != clear) {
+        dprintf(SPEW, "can not clear vmcs controls %#x\n", static_cast<uint>(controls));
+        return ERR_NOT_SUPPORTED;
+    }
+    if ((set & clear) != 0) {
+        dprintf(SPEW, "can not set and clear the same vmcs controls %#x\n",
+                static_cast<uint>(controls));
+        return ERR_INVALID_ARGS;
+    }
+
+    // Reference Volume 3, Section 31.5.1, Algorithm 3, Part C. If the control
+    // can be either 0 or 1 (flexible), and the control is unknown, then refer
+    // to the old MSR to find the default value.
+    uint32_t flexible = allowed_0 ^ allowed_1;
+    uint32_t unknown = flexible & ~(set | clear);
+    uint32_t defaults = unknown & BITS(old_msr, 31, 0);
+    vmcs_write(controls, allowed_0 | defaults | set);
+    return NO_ERROR;
 }
 
 static uint64_t ept_pointer(paddr_t pml4_address) {
@@ -388,6 +494,50 @@ static uint64_t ept_pointer(paddr_t pml4_address) {
         1u << 6;
 }
 
+static void ignore_msr(VmxPage* msr_bitmaps_page, uint32_t msr) {
+    // From Volume 3, Section 24.6.9.
+    uint8_t* msr_bitmaps = msr_bitmaps_page->VirtualAddress<uint8_t>();
+    if (msr >= 0xc0000000)
+        msr_bitmaps += 1 << 10;
+
+    uint16_t msr_low = msr & 0x1fff;
+    uint16_t msr_byte = msr_low / 8;
+    uint8_t msr_bit = msr_low % 8;
+
+    // Ignore reads to the MSR.
+    msr_bitmaps[msr_byte] &= (uint8_t)~(1 << msr_bit);
+
+    // Ignore writes to the MSR.
+    msr_bitmaps += 2 << 10;
+    msr_bitmaps[msr_byte] &= (uint8_t)~(1 << msr_bit);
+}
+
+struct MsrListEntry {
+    uint32_t msr;
+    uint32_t reserved;
+    uint64_t value;
+} __PACKED;
+
+static void edit_msr_list(VmxPage* msr_list_page, uint index, uint32_t msr, uint64_t value) {
+    // From Volume 3, Section 24.7.2.
+
+    // From Volume 3, Appendix A.6: Specifically, if the value bits 27:25 of
+    // IA32_VMX_MISC is N, then 512 * (N + 1) is the recommended maximum number
+    // of MSRs to be included in each list.
+    //
+    // From Volume 3, Section 24.7.2: This field specifies the number of MSRs to
+    // be stored on VM exit. It is recommended that this count not exceed 512
+    // bytes.
+    //
+    // Since these two statements conflict, we are taking the conservative
+    // minimum and asserting that: index < (512 bytes / size of MsrListEntry).
+    ASSERT(index < (512 / sizeof(MsrListEntry)));
+
+    MsrListEntry* entry = msr_list_page->VirtualAddress<MsrListEntry>() + index;
+    entry->msr = msr;
+    entry->value = value;
+}
+
 status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     status_t status = Clear();
     if (status != NO_ERROR)
@@ -396,73 +546,81 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     AutoVmcsLoad vmcs_load(&page_);
 
     // Setup secondary processor-based VMCS controls.
-    status = set_vmcs_control(VMCS_32_PROCBASED_CTLS2,
+    status = set_vmcs_control(VmcsField32::PROCBASED_CTLS2,
                               read_msr(X86_MSR_IA32_VMX_PROCBASED_CTLS2),
                               0,
                               // Enable use of extended page tables.
-                              VMCS_32_PROCBASED_CTLS2_EPT |
+                              PROCBASED_CTLS2_EPT |
                               // Enable use of RDTSCP instruction.
-                              VMCS_32_PROCBASED_CTLS2_RDTSCP |
+                              PROCBASED_CTLS2_RDTSCP |
                               // Associate cached translations of linear
                               // addresses with a virtual processor ID.
-                              VMCS_32_PROCBASED_CTLS2_VPID |
-                              // Enable use of XSAVES and XRSTORS instructions.
-                              VMCS_32_PROCBASED_CTLS2_XSAVES_XRSTORS);
+                              PROCBASED_CTLS2_VPID,
+                              0);
     if (status != NO_ERROR)
         return status;
 
     // Setup pin-based VMCS controls.
-    status = set_vmcs_control(VMCS_32_PINBASED_CTLS,
+    status = set_vmcs_control(VmcsField32::PINBASED_CTLS,
                               read_msr(X86_MSR_IA32_VMX_TRUE_PINBASED_CTLS),
                               read_msr(X86_MSR_IA32_VMX_PINBASED_CTLS),
                               // External interrupts cause a VM exit.
-                              VMCS_32_PINBASED_CTLS_EXTINT_EXITING |
+                              PINBASED_CTLS_EXTINT_EXITING |
                               // Non-maskable interrupts cause a VM exit.
-                              VMCS_32_PINBASED_CTLS_NMI_EXITING);
+                              PINBASED_CTLS_NMI_EXITING,
+                              0);
     if (status != NO_ERROR)
         return status;
 
     // Setup primary processor-based VMCS controls.
-    status = set_vmcs_control(VMCS_32_PROCBASED_CTLS,
+    status = set_vmcs_control(VmcsField32::PROCBASED_CTLS,
                               read_msr(X86_MSR_IA32_VMX_TRUE_PROCBASED_CTLS),
                               read_msr(X86_MSR_IA32_VMX_PROCBASED_CTLS),
-                              // IO instructions cause a VM exit.
-                              VMCS_32_PROCBASED_CTLS_IO_EXITING |
+                              // Enable VM exit on IO instructions.
+                              PROCBASED_CTLS_IO_EXITING |
+                              // Enable use of MSR bitmaps.
+                              PROCBASED_CTLS_MSR_BITMAPS |
                               // Enable secondary processor-based controls.
-                              VMCS_32_PROCBASED_CTLS_PROCBASED_CTLS2);
+                              PROCBASED_CTLS_PROCBASED_CTLS2,
+                              // Disable VM exit on CR3 load.
+                              PROCBASED_CTLS_CR3_LOAD_EXITING |
+                              // Disable VM exit on CR3 store.
+                              PROCBASED_CTLS_CR3_STORE_EXITING);
     if (status != NO_ERROR)
         return status;
 
     // Setup VM-exit VMCS controls.
-    status = set_vmcs_control(VMCS_32_EXIT_CTLS,
+    status = set_vmcs_control(VmcsField32::EXIT_CTLS,
                               read_msr(X86_MSR_IA32_VMX_TRUE_EXIT_CTLS),
                               read_msr(X86_MSR_IA32_VMX_EXIT_CTLS),
                               // Logical processor is in 64-bit mode after VM
                               // exit. On VM exit CS.L, IA32_EFER.LME, and
                               // IA32_EFER.LMA is set to true.
-                              VMCS_32_EXIT_CTLS_64BIT_MODE |
+                              EXIT_CTLS_64BIT_MODE |
                               // Save the guest IA32_PAT MSR on exit.
-                              VMCS_32_EXIT_CTLS_SAVE_IA32_PAT |
+                              EXIT_CTLS_SAVE_IA32_PAT |
                               // Load the host IA32_PAT MSR on exit.
-                              VMCS_32_EXIT_CTLS_LOAD_IA32_PAT |
+                              EXIT_CTLS_LOAD_IA32_PAT |
                               // Save the guest IA32_EFER MSR on exit.
-                              VMCS_32_EXIT_CTLS_SAVE_IA32_EFER |
+                              EXIT_CTLS_SAVE_IA32_EFER |
                               // Load the host IA32_EFER MSR on exit.
-                              VMCS_32_EXIT_CTLS_LOAD_IA32_EFER);
+                              EXIT_CTLS_LOAD_IA32_EFER,
+                              0);
     if (status != NO_ERROR)
         return status;
 
     // Setup VM-entry VMCS controls.
-    status = set_vmcs_control(VMCS_32_ENTRY_CTLS,
+    status = set_vmcs_control(VmcsField32::ENTRY_CTLS,
                               read_msr(X86_MSR_IA32_VMX_TRUE_ENTRY_CTLS),
                               read_msr(X86_MSR_IA32_VMX_ENTRY_CTLS),
                               // After VM entry, logical processor is in IA-32e
                               // mode and IA32_EFER.LMA is set to true.
-                              VMCS_32_ENTRY_CTLS_IA32E_MODE |
+                              ENTRY_CTLS_IA32E_MODE |
                               // Load the guest IA32_PAT MSR on entry.
-                              VMCS_32_ENTRY_CTLS_LOAD_IA32_PAT |
+                              ENTRY_CTLS_LOAD_IA32_PAT |
                               // Load the guest IA32_EFER MSR on entry.
-                              VMCS_32_ENTRY_CTLS_LOAD_IA32_EFER);
+                              ENTRY_CTLS_LOAD_IA32_EFER,
+                              0);
     if (status != NO_ERROR)
         return status;
 
@@ -476,9 +634,9 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     // From Volume 3, Section 25.2: If software desires VM exits on all page
     // faults, it can set bit 14 in the exception bitmap to 1 and set the
     // page-fault error-code mask and match fields each to 00000000H.
-    vmwrite(VMCS_32_EXCEPTION_BITMAP, VMCS_32_EXCEPTION_BITMAP_ALL_EXCEPTIONS);
-    vmwrite(VMCS_32_PAGEFAULT_ERRORCODE_MASK, 0);
-    vmwrite(VMCS_32_PAGEFAULT_ERRORCODE_MATCH, 0);
+    vmcs_write(VmcsField32::EXCEPTION_BITMAP, EXCEPTION_BITMAP_ALL_EXCEPTIONS);
+    vmcs_write(VmcsField32::PAGEFAULT_ERRORCODE_MASK, 0);
+    vmcs_write(VmcsField32::PAGEFAULT_ERRORCODE_MATCH, 0);
 
     // From Volume 3, Section 28.1: Virtual-processor identifiers (VPIDs)
     // introduce to VMX operation a facility by which a logical processor may
@@ -495,7 +653,7 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     // current EPTP. If a VMM uses different EPTP values for different guests,
     // it may use the same VPID for those guests.
     x86_percpu* percpu = x86_get_percpu();
-    vmwrite(VMCS_16_VPID, percpu->cpu_num + 1);
+    vmcs_write(VmcsField16::VPID, static_cast<uint16_t>(percpu->cpu_num + 1));
 
     // From Volume 3, Section 28.2: The extended page-table mechanism (EPT) is a
     // feature that can be used to support the virtualization of physical
@@ -504,37 +662,61 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     // treated as guest-physical addresses. Guest-physical addresses are
     // translated by traversing a set of EPT paging structures to produce
     // physical addresses that are used to access memory.
-    vmwrite(VMCS_64_EPT_POINTER, ept_pointer(pml4_address));
+    vmcs_write(VmcsField64::EPT_POINTER, ept_pointer(pml4_address));
+
+    // Setup MSR handling.
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_EFER);
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_GS_BASE);
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_KERNEL_GS_BASE);
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_STAR);
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_LSTAR);
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_FMASK);
+    ignore_msr(&msr_bitmaps_page_, X86_MSR_IA32_TSC_ADJUST);
+    vmcs_write(VmcsField64::MSR_BITMAPS_ADDRESS, msr_bitmaps_page_.PhysicalAddress());
+
+    // NOTE: Host X86_MSR_IA32_KERNEL_GS_BASE, is set in a separate function.
+    edit_msr_list(&host_msr_page_, 1, X86_MSR_IA32_STAR, read_msr(X86_MSR_IA32_STAR));
+    edit_msr_list(&host_msr_page_, 2, X86_MSR_IA32_LSTAR, read_msr(X86_MSR_IA32_LSTAR));
+    edit_msr_list(&host_msr_page_, 3, X86_MSR_IA32_FMASK, read_msr(X86_MSR_IA32_FMASK));
+    edit_msr_list(&host_msr_page_, 4, X86_MSR_IA32_TSC_ADJUST, read_msr(X86_MSR_IA32_TSC_ADJUST));
+    vmcs_write(VmcsField64::EXIT_MSR_LOAD_ADDRESS, host_msr_page_.PhysicalAddress());
+    vmcs_write(VmcsField32::EXIT_MSR_LOAD_COUNT, 5);
+
+    edit_msr_list(&guest_msr_page_, 0, X86_MSR_IA32_KERNEL_GS_BASE, 0);
+    edit_msr_list(&guest_msr_page_, 1, X86_MSR_IA32_STAR, 0);
+    edit_msr_list(&guest_msr_page_, 2, X86_MSR_IA32_LSTAR, 0);
+    edit_msr_list(&guest_msr_page_, 3, X86_MSR_IA32_FMASK, 0);
+    edit_msr_list(&guest_msr_page_, 4, X86_MSR_IA32_TSC_ADJUST, 0);
+    vmcs_write(VmcsField64::EXIT_MSR_STORE_ADDRESS, guest_msr_page_.PhysicalAddress());
+    vmcs_write(VmcsField32::EXIT_MSR_STORE_COUNT, 5);
+    vmcs_write(VmcsField64::ENTRY_MSR_LOAD_ADDRESS, guest_msr_page_.PhysicalAddress());
+    vmcs_write(VmcsField32::ENTRY_MSR_LOAD_COUNT, 5);
 
     // Setup VMCS host state.
     //
     // NOTE: We are pinned to a thread when executing this function, therefore
     // it is acceptable to use per-CPU state.
-    vmwrite(VMCS_64_HOST_IA32_PAT, read_msr(X86_MSR_IA32_PAT));
-    vmwrite(VMCS_64_HOST_IA32_EFER, read_msr(X86_MSR_IA32_EFER));
-    vmwrite(VMCS_XX_HOST_CR0, x86_get_cr0());
-    vmwrite(VMCS_XX_HOST_CR4, x86_get_cr4());
-    vmwrite(VMCS_16_HOST_ES_SELECTOR, 0);
-    vmwrite(VMCS_16_HOST_CS_SELECTOR, CODE_64_SELECTOR);
-    vmwrite(VMCS_16_HOST_SS_SELECTOR, DATA_SELECTOR);
-    vmwrite(VMCS_16_HOST_DS_SELECTOR, 0);
-    vmwrite(VMCS_16_HOST_FS_SELECTOR, 0);
-    vmwrite(VMCS_16_HOST_GS_SELECTOR, 0);
-    vmwrite(VMCS_16_HOST_TR_SELECTOR, TSS_SELECTOR(percpu->cpu_num));
-    vmwrite(VMCS_XX_HOST_FS_BASE, read_msr(X86_MSR_IA32_FS_BASE));
-    vmwrite(VMCS_XX_HOST_GS_BASE, read_msr(X86_MSR_IA32_GS_BASE));
-    vmwrite(VMCS_XX_HOST_TR_BASE, reinterpret_cast<uint64_t>(&percpu->default_tss));
-    vmwrite(VMCS_XX_HOST_GDTR_BASE, reinterpret_cast<uint64_t>(_gdt));
-    vmwrite(VMCS_XX_HOST_IDTR_BASE, reinterpret_cast<uint64_t>(idt_get_readonly()));
-    vmwrite(VMCS_XX_HOST_IA32_SYSENTER_ESP, 0);
-    vmwrite(VMCS_XX_HOST_IA32_SYSENTER_EIP, 0);
-    vmwrite(VMCS_32_HOST_IA32_SYSENTER_CS, 0);
-    vmwrite(VMCS_XX_HOST_RSP, reinterpret_cast<uint64_t>(&vmx_state_));
-    vmwrite(VMCS_XX_HOST_RIP, reinterpret_cast<uint64_t>(vmx_exit_entry));
-
-    vmx_state_.host_state.star = read_msr(X86_MSR_IA32_STAR);
-    vmx_state_.host_state.lstar = read_msr(X86_MSR_IA32_LSTAR);
-    vmx_state_.host_state.fmask = read_msr(X86_MSR_IA32_FMASK);
+    vmcs_write(VmcsField64::HOST_IA32_PAT, read_msr(X86_MSR_IA32_PAT));
+    vmcs_write(VmcsField64::HOST_IA32_EFER, read_msr(X86_MSR_IA32_EFER));
+    vmcs_write(VmcsFieldXX::HOST_CR0, x86_get_cr0());
+    vmcs_write(VmcsFieldXX::HOST_CR4, x86_get_cr4());
+    vmcs_write(VmcsField16::HOST_ES_SELECTOR, 0);
+    vmcs_write(VmcsField16::HOST_CS_SELECTOR, CODE_64_SELECTOR);
+    vmcs_write(VmcsField16::HOST_SS_SELECTOR, DATA_SELECTOR);
+    vmcs_write(VmcsField16::HOST_DS_SELECTOR, 0);
+    vmcs_write(VmcsField16::HOST_FS_SELECTOR, 0);
+    vmcs_write(VmcsField16::HOST_GS_SELECTOR, 0);
+    vmcs_write(VmcsField16::HOST_TR_SELECTOR, TSS_SELECTOR(percpu->cpu_num));
+    vmcs_write(VmcsFieldXX::HOST_FS_BASE, read_msr(X86_MSR_IA32_FS_BASE));
+    vmcs_write(VmcsFieldXX::HOST_GS_BASE, read_msr(X86_MSR_IA32_GS_BASE));
+    vmcs_write(VmcsFieldXX::HOST_TR_BASE, reinterpret_cast<uint64_t>(&percpu->default_tss));
+    vmcs_write(VmcsFieldXX::HOST_GDTR_BASE, reinterpret_cast<uint64_t>(_gdt));
+    vmcs_write(VmcsFieldXX::HOST_IDTR_BASE, reinterpret_cast<uint64_t>(idt_get_readonly()));
+    vmcs_write(VmcsFieldXX::HOST_IA32_SYSENTER_ESP, 0);
+    vmcs_write(VmcsFieldXX::HOST_IA32_SYSENTER_EIP, 0);
+    vmcs_write(VmcsField32::HOST_IA32_SYSENTER_CS, 0);
+    vmcs_write(VmcsFieldXX::HOST_RSP, reinterpret_cast<uint64_t>(&vmx_state_));
+    vmcs_write(VmcsFieldXX::HOST_RIP, reinterpret_cast<uint64_t>(vmx_exit_entry));
 
     // Setup VMCS guest state.
 
@@ -544,67 +726,179 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address) {
     if (cr_is_invalid(cr0, X86_MSR_IA32_VMX_CR0_FIXED0, X86_MSR_IA32_VMX_CR0_FIXED1)) {
         return ERR_BAD_STATE;
     }
-    vmwrite(VMCS_XX_GUEST_CR0, cr0);
+    vmcs_write(VmcsFieldXX::GUEST_CR0, cr0);
 
     uint64_t cr4 = X86_CR4_PAE |  // Enable PAE paging
                    X86_CR4_VMXE;  // Enable VMX
     if (cr_is_invalid(cr4, X86_MSR_IA32_VMX_CR4_FIXED0, X86_MSR_IA32_VMX_CR4_FIXED1)) {
         return ERR_BAD_STATE;
     }
-    vmwrite(VMCS_XX_GUEST_CR4, cr4);
+    vmcs_write(VmcsFieldXX::GUEST_CR4, cr4);
 
-    vmwrite(VMCS_64_GUEST_IA32_PAT, read_msr(X86_MSR_IA32_PAT));
-    vmwrite(VMCS_64_GUEST_IA32_EFER, read_msr(X86_MSR_IA32_EFER));
+    vmcs_write(VmcsField64::GUEST_IA32_PAT, read_msr(X86_MSR_IA32_PAT));
+    vmcs_write(VmcsField64::GUEST_IA32_EFER, read_msr(X86_MSR_IA32_EFER));
 
-    vmwrite(VMCS_32_GUEST_CS_ACCESS_RIGHTS,
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_TYPE_A |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_TYPE_W |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_TYPE_E |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_TYPE_CODE |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_S |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_P |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_L);
+    vmcs_write(VmcsField32::GUEST_CS_ACCESS_RIGHTS,
+               GUEST_XX_ACCESS_RIGHTS_TYPE_A |
+               GUEST_XX_ACCESS_RIGHTS_TYPE_W |
+               GUEST_XX_ACCESS_RIGHTS_TYPE_E |
+               GUEST_XX_ACCESS_RIGHTS_TYPE_CODE |
+               GUEST_XX_ACCESS_RIGHTS_S |
+               GUEST_XX_ACCESS_RIGHTS_P |
+               GUEST_XX_ACCESS_RIGHTS_L);
 
-    vmwrite(VMCS_32_GUEST_TR_ACCESS_RIGHTS,
-            VMCS_32_GUEST_TR_ACCESS_RIGHTS_TSS_BUSY |
-            VMCS_32_GUEST_XX_ACCESS_RIGHTS_P);
+    vmcs_write(VmcsField32::GUEST_TR_ACCESS_RIGHTS,
+               GUEST_TR_ACCESS_RIGHTS_TSS_BUSY |
+               GUEST_XX_ACCESS_RIGHTS_P);
 
     // Disable all other segment selectors until we have a guest that uses them.
-    vmwrite(VMCS_32_GUEST_SS_ACCESS_RIGHTS, VMCS_32_GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
-    vmwrite(VMCS_32_GUEST_DS_ACCESS_RIGHTS, VMCS_32_GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
-    vmwrite(VMCS_32_GUEST_ES_ACCESS_RIGHTS, VMCS_32_GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
-    vmwrite(VMCS_32_GUEST_FS_ACCESS_RIGHTS, VMCS_32_GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
-    vmwrite(VMCS_32_GUEST_GS_ACCESS_RIGHTS, VMCS_32_GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
-    vmwrite(VMCS_32_GUEST_LDTR_ACCESS_RIGHTS, VMCS_32_GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
+    vmcs_write(VmcsField32::GUEST_SS_ACCESS_RIGHTS, GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
+    vmcs_write(VmcsField32::GUEST_DS_ACCESS_RIGHTS, GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
+    vmcs_write(VmcsField32::GUEST_ES_ACCESS_RIGHTS, GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
+    vmcs_write(VmcsField32::GUEST_FS_ACCESS_RIGHTS, GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
+    vmcs_write(VmcsField32::GUEST_GS_ACCESS_RIGHTS, GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
+    vmcs_write(VmcsField32::GUEST_LDTR_ACCESS_RIGHTS, GUEST_XX_ACCESS_RIGHTS_UNUSABLE);
 
-    vmwrite(VMCS_XX_GUEST_GDTR_BASE, 0);
-    vmwrite(VMCS_32_GUEST_GDTR_LIMIT, 0);
-    vmwrite(VMCS_XX_GUEST_IDTR_BASE, 0);
-    vmwrite(VMCS_32_GUEST_IDTR_LIMIT, 0);
+    vmcs_write(VmcsFieldXX::GUEST_GDTR_BASE, 0);
+    vmcs_write(VmcsField32::GUEST_GDTR_LIMIT, 0);
+    vmcs_write(VmcsFieldXX::GUEST_IDTR_BASE, 0);
+    vmcs_write(VmcsField32::GUEST_IDTR_LIMIT, 0);
 
     // Set all reserved RFLAGS bits to their correct values
-    vmwrite(VMCS_XX_GUEST_RFLAGS, X86_FLAGS_RESERVED_ONES);
+    vmcs_write(VmcsFieldXX::GUEST_RFLAGS, X86_FLAGS_RESERVED_ONES);
 
-    vmwrite(VMCS_32_GUEST_ACTIVITY_STATE, 0);
-    vmwrite(VMCS_32_GUEST_INTERRUPTIBILITY_STATE, 0);
-    vmwrite(VMCS_XX_GUEST_PENDING_DEBUG_EXCEPTIONS, 0);
+    vmcs_write(VmcsField32::GUEST_ACTIVITY_STATE, 0);
+    vmcs_write(VmcsField32::GUEST_INTERRUPTIBILITY_STATE, 0);
+    vmcs_write(VmcsFieldXX::GUEST_PENDING_DEBUG_EXCEPTIONS, 0);
 
     // From Volume 3, Section 26.3.1.1: The IA32_SYSENTER_ESP field and the
     // IA32_SYSENTER_EIP field must each contain a canonical address.
-    vmwrite(VMCS_XX_GUEST_IA32_SYSENTER_ESP, 0);
-    vmwrite(VMCS_XX_GUEST_IA32_SYSENTER_EIP, 0);
+    vmcs_write(VmcsFieldXX::GUEST_IA32_SYSENTER_ESP, 0);
+    vmcs_write(VmcsFieldXX::GUEST_IA32_SYSENTER_EIP, 0);
 
-    vmwrite(VMCS_32_GUEST_IA32_SYSENTER_CS, 0);
-    vmwrite(VMCS_XX_GUEST_RSP, 0);
+    vmcs_write(VmcsField32::GUEST_IA32_SYSENTER_CS, 0);
+    vmcs_write(VmcsFieldXX::GUEST_RSP, 0);
 
     // From Volume 3, Section 24.4.2: If the “VMCS shadowing” VM-execution
     // control is 1, the VMREAD and VMWRITE instructions access the VMCS
     // referenced by this pointer (see Section 24.10). Otherwise, software
     // should set this field to FFFFFFFF_FFFFFFFFH to avoid VM-entry
     // failures (see Section 26.3.1.5).
-    vmwrite(VMCS_64_LINK_POINTER, VMCS_64_LINK_POINTER_INVALIDATE);
+    vmcs_write(VmcsField64::LINK_POINTER, LINK_POINTER_INVALIDATE);
+
+    if (x86_feature_test(X86_FEATURE_XSAVE)) {
+        // Enable x87 state in guest XCR0.
+        vmx_state_.guest_state.xcr0 = X86_XSAVE_STATE_X87;
+    }
 
     return NO_ERROR;
+}
+
+static void next_rip(const ExitInfo& exit_info) {
+    vmcs_write(VmcsFieldXX::GUEST_RIP, exit_info.guest_rip + exit_info.instruction_length);
+}
+
+static status_t handle_cpuid(const ExitInfo& exit_info, GuestState* guest_state) {
+    const uint64_t leaf = guest_state->rax;
+    const uint64_t subleaf = guest_state->rcx;
+    switch (leaf) {
+    case X86_CPUID_BASE:
+    case X86_CPUID_EXT_BASE:
+        next_rip(exit_info);
+        cpuid((uint32_t)guest_state->rax,
+              (uint32_t*)&guest_state->rax, (uint32_t*)&guest_state->rbx,
+              (uint32_t*)&guest_state->rcx, (uint32_t*)&guest_state->rdx);
+        return NO_ERROR;
+    case X86_CPUID_BASE + 1 ... MAX_SUPPORTED_CPUID:
+    case X86_CPUID_EXT_BASE + 1 ... MAX_SUPPORTED_CPUID_EXT:
+        next_rip(exit_info);
+        cpuid_c((uint32_t)guest_state->rax, (uint32_t)guest_state->rcx,
+                (uint32_t*)&guest_state->rax, (uint32_t*)&guest_state->rbx,
+                (uint32_t*)&guest_state->rcx, (uint32_t*)&guest_state->rdx);
+        if (leaf == X86_CPUID_MODEL_FEATURES) {
+            // Enable the hypervisor bit.
+            guest_state->rcx |= 1u << X86_FEATURE_HYPERVISOR.bit;
+        }
+        if (leaf == X86_CPUID_XSAVE && subleaf == 1) {
+            // Disable the XSAVES bit.
+            guest_state->rax &= ~(1u << 3);
+        }
+        return NO_ERROR;
+    default:
+        return ERR_NOT_SUPPORTED;
+    }
+}
+
+static status_t handle_xsetbv(const ExitInfo& exit_info, GuestState* guest_state) {
+    uint64_t guest_cr4 = vmcs_read(VmcsFieldXX::GUEST_CR4);
+    if (!(guest_cr4 & X86_CR4_OSXSAVE))
+        return ERR_INVALID_ARGS;
+
+    // We only support XCR0.
+    if (guest_state->rcx != 0)
+        return ERR_INVALID_ARGS;
+
+    cpuid_leaf leaf;
+    if (!x86_get_cpuid_subleaf(X86_CPUID_XSAVE, 0, &leaf))
+        return ERR_INTERNAL;
+
+    // Check that XCR0 is valid.
+    uint64_t xcr0_bitmap = ((uint64_t)leaf.d << 32) | leaf.a;
+    uint64_t xcr0 = (guest_state->rdx << 32) | (guest_state->rax & 0xffffffff);
+    if (~xcr0_bitmap & xcr0 ||
+        // x87 state must be enabled.
+        (xcr0 & X86_XSAVE_STATE_X87) != X86_XSAVE_STATE_X87 ||
+        // If AVX state is enabled, SSE state must be enabled.
+        (xcr0 & (X86_XSAVE_STATE_AVX | X86_XSAVE_STATE_SSE)) == X86_XSAVE_STATE_AVX)
+        return ERR_INVALID_ARGS;
+
+    guest_state->xcr0 = xcr0;
+    next_rip(exit_info);
+    return NO_ERROR;
+}
+
+static status_t vmexit_handler(const VmxState& vmx_state, GuestState* guest_state, FifoDispatcher* serial_fifo) {
+    ExitInfo exit_info;
+
+    switch (exit_info.exit_reason) {
+    case ExitReason::EXTERNAL_INTERRUPT:
+        dprintf(SPEW, "handling external interrupt\n\n");
+        DEBUG_ASSERT(arch_ints_disabled());
+        arch_enable_ints();
+        arch_disable_ints();
+        return NO_ERROR;
+    case ExitReason::CPUID:
+        dprintf(SPEW, "handling CPUID instruction\n\n");
+        return handle_cpuid(exit_info, guest_state);
+    case ExitReason::IO_INSTRUCTION: {
+        dprintf(SPEW, "handling IO instruction\n\n");
+        next_rip(exit_info);
+#if WITH_LIB_MAGENTA
+        IoInfo io_info(exit_info.exit_qualification);
+        if (io_info.input || io_info.string || io_info.repeat || io_info.port != kUartIoPort)
+            return NO_ERROR;
+        uint8_t* data = reinterpret_cast<uint8_t*>(&guest_state->rax);
+        uint32_t actual;
+        return serial_fifo->Write(data, io_info.bytes, &actual);
+#else // WITH_LIB_MAGENTA
+        return NO_ERROR;
+#endif // WITH_LIB_MAGENTA
+    }
+    case ExitReason::RDMSR:
+    case ExitReason::WRMSR:
+        dprintf(SPEW, "handling RDMSR/WRMSR instruction\n\n");
+        return ERR_NOT_SUPPORTED;
+    case ExitReason::ENTRY_FAILURE_GUEST_STATE:
+    case ExitReason::ENTRY_FAILURE_MSR_LOADING:
+        dprintf(SPEW, "handling VM entry failure\n\n");
+        return ERR_BAD_STATE;
+    case ExitReason::XSETBV:
+        dprintf(SPEW, "handling XSETBV instruction\n\n");
+        return handle_xsetbv(exit_info, guest_state);
+    default:
+        dprintf(SPEW, "unhandled VM exit %u\n\n", static_cast<uint32_t>(exit_info.exit_reason));
+        return ERR_NOT_SUPPORTED;
+    }
 }
 
 void vmx_exit(VmxState* vmx_state) {
@@ -621,84 +915,43 @@ void vmx_exit(VmxState* vmx_state) {
     // always restores it with a limit of 0xffff, which is too large.
     idt_load(idt_get_readonly());
 
-    // TODO(abdulla): Optimise this, and don't do it unconditionally.
-    write_msr(X86_MSR_IA32_STAR, vmx_state->host_state.star);
-    write_msr(X86_MSR_IA32_LSTAR, vmx_state->host_state.lstar);
-    write_msr(X86_MSR_IA32_FMASK, vmx_state->host_state.fmask);
-    write_msr(X86_MSR_IA32_KERNEL_GS_BASE, vmx_state->host_state.kernel_gs_base);
-}
-
-static status_t vmexit_handler(uint64_t reason, uint64_t qualification, uint64_t next_rip,
-                               const VmxState& vmx_state, FifoDispatcher* serial_fifo) {
-    switch (reason) {
-    case VMCS_32_EXIT_REASON_IO_INSTRUCTION: {
-        dprintf(SPEW, "handling IO instruction\n");
-        vmwrite(VMCS_XX_GUEST_RIP, next_rip);
-        uint16_t io_port = (qualification >> VMCS_XX_EXIT_QUALIFICATION_IO_PORT_SHIFT) &
-                           VMCS_XX_EXIT_QUALIFICATION_IO_PORT_MASK;
-        if (io_port != kUartIoPort)
-            return NO_ERROR;
-        uint8_t byte = vmx_state.guest_state.rax & 0xff;
-        uint32_t actual;
-        return serial_fifo->Write(&byte, 1, &actual);
+    if (x86_feature_test(X86_FEATURE_XSAVE)) {
+        // Save the guest XCR0, and load the host XCR0.
+        vmx_state->guest_state.xcr0 = x86_xgetbv(0);
+        x86_xsetbv(0, vmx_state->host_state.xcr0);
     }
-    case VMCS_32_EXIT_REASON_EXTERNAL_INTERRUPT:
-        dprintf(SPEW, "enabling interrupts for external interrupt\n");
-        DEBUG_ASSERT(arch_ints_disabled());
-        arch_enable_ints();
-        arch_disable_ints();
-        break;
-    }
-    return NO_ERROR;
 }
 
 status_t VmcsPerCpu::Enter(const VmcsContext& context, FifoDispatcher* serial_fifo) {
     AutoVmcsLoad vmcs_load(&page_);
     // FS is used for thread-local storage — save for this thread.
-    vmwrite(VMCS_XX_HOST_FS_BASE, read_msr(X86_MSR_IA32_FS_BASE));
+    vmcs_write(VmcsFieldXX::HOST_FS_BASE, read_msr(X86_MSR_IA32_FS_BASE));
     // CR3 is used to maintain the virtual address space — save for this thread.
-    vmwrite(VMCS_XX_HOST_CR3, x86_get_cr3());
+    vmcs_write(VmcsFieldXX::HOST_CR3, x86_get_cr3());
     // Kernel GS stores the user-space GS (within the kernel) — as the calling
     // user-space thread may change, save this every time.
-    vmx_state_.host_state.kernel_gs_base = read_msr(X86_MSR_IA32_KERNEL_GS_BASE);
+    edit_msr_list(&host_msr_page_, 0, X86_MSR_IA32_KERNEL_GS_BASE, read_msr(X86_MSR_IA32_KERNEL_GS_BASE));
+
+    if (x86_feature_test(X86_FEATURE_XSAVE)) {
+        // Save the host XCR0, and load the guest XCR0.
+        vmx_state_.host_state.xcr0 = x86_xgetbv(0);
+        x86_xsetbv(0, vmx_state_.guest_state.xcr0);
+    }
 
     if (do_resume_) {
         dprintf(SPEW, "re-entering guest\n");
     } else {
-        vmwrite(VMCS_XX_GUEST_CR3, context.cr3());
-        vmwrite(VMCS_XX_GUEST_RIP, context.entry());
+        vmcs_write(VmcsFieldXX::GUEST_CR3, context.cr3());
+        vmcs_write(VmcsFieldXX::GUEST_RIP, context.entry());
     }
 
     status_t status = vmx_enter(&vmx_state_, do_resume_);
     if (status != NO_ERROR) {
-        uint64_t error = vmread(VMCS_32_INSTRUCTION_ERROR);
+        uint64_t error = vmcs_read(VmcsField32::VM_INSTRUCTION_ERROR);
         dprintf(SPEW, "vmlaunch failed: %#" PRIx64 "\n", error);
     } else {
-        uint64_t reason = vmread(VMCS_32_EXIT_REASON);
-        dprintf(SPEW, "vmexit reason: %#" PRIx64 "\n", reason);
-        uint64_t qualification = vmread(VMCS_XX_EXIT_QUALIFICATION);
-        dprintf(SPEW, "vmexit qualification: %#" PRIx64 "\n", qualification);
-        uint64_t interruption_information = vmread(VMCS_32_INTERRUPTION_INFORMATION);
-        dprintf(SPEW, "vmexit interruption information: %#" PRIx64 "\n", interruption_information);
-        uint64_t interruption_error_code = vmread(VMCS_32_INTERRUPTION_ERROR_CODE);
-        dprintf(SPEW, "vmexit interruption error code: %#" PRIx64 "\n", interruption_error_code);
-        uint64_t instruction_length = vmread(VMCS_32_INSTRUCTION_LENGTH);
-        dprintf(SPEW, "vmexit instruction length: %#" PRIx64 "\n", instruction_length);
-        uint64_t instruction_information = vmread(VMCS_32_INSTRUCTION_INFORMATION);
-        dprintf(SPEW, "vmexit instruction information: %#" PRIx64 "\n", instruction_information);
-
-        uint64_t physical_address = vmread(VMCS_64_GUEST_PHYSICAL_ADDRESS);
-        dprintf(SPEW, "guest physical address: %#" PRIx64 "\n", physical_address);
-        uint64_t linear_address = vmread(VMCS_XX_GUEST_LINEAR_ADDRESS);
-        dprintf(SPEW, "guest linear address: %#" PRIx64 "\n", linear_address);
-        uint64_t interruptibility_state = vmread(VMCS_32_GUEST_INTERRUPTIBILITY_STATE);
-        dprintf(SPEW, "guest interruptibility state: %#" PRIx64 "\n", interruptibility_state);
-        uint64_t rip = vmread(VMCS_XX_GUEST_RIP);
-        dprintf(SPEW, "guest rip: %#" PRIx64 "\n", rip);
-
         do_resume_ = true;
-        status = vmexit_handler(reason, qualification, rip + instruction_length,
-                                vmx_state_, serial_fifo);
+        status = vmexit_handler(vmx_state_, &vmx_state_.guest_state, serial_fifo);
     }
     return status;
 }

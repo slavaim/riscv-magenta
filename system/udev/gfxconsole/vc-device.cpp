@@ -8,6 +8,7 @@
 #include <sys/param.h>
 
 #include <magenta/process.h>
+#include <mxtl/auto_lock.h>
 
 #define VCDEBUG 0
 
@@ -45,8 +46,6 @@ static uint32_t default_palette[] = {
 static mx_status_t vc_device_setup(vc_device_t* dev) {
     assert(dev->gfx);
     assert(dev->hw_gfx);
-
-    mtx_init(&dev->lock, mtx_plain);
 
     // calculate how many rows/columns we have
     dev->rows = dev->gfx->height / dev->charh;
@@ -122,7 +121,8 @@ static inline void vc_invalidate_lines(vc_device_t* dev, int y, int h) {
     }
 }
 
-static void vc_tc_invalidate(void* cookie, int x0, int y0, int w, int h) {
+static void vc_tc_invalidate(void* cookie, int x0, int y0,
+                             int w, int h) TA_REQ(g_vc_lock) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
     if (dev->flags & VC_FLAG_RESETSCROLL) {
         dev->flags &= ~VC_FLAG_RESETSCROLL;
@@ -175,7 +175,7 @@ static void vc_set_cursor_hidden(vc_device_t* dev, bool hide) {
 }
 
 static void vc_tc_copy_lines(void* cookie, int y_dest, int y_src,
-                             int line_count) {
+                             int line_count) TA_REQ(g_vc_lock) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
     if (dev->viewport_y < 0)
         return;
@@ -201,7 +201,8 @@ static void vc_tc_copy_lines(void* cookie, int y_dest, int y_src,
     vc_invalidate_lines(dev, 0, vc_device_rows(dev));
 }
 
-static void vc_tc_setparam(void* cookie, int param, uint8_t* arg, size_t arglen) {
+static void vc_tc_setparam(void* cookie, int param, uint8_t* arg,
+                           size_t arglen) TA_REQ(g_vc_lock) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
     switch (param) {
     case TC_SET_TITLE:
@@ -338,10 +339,13 @@ void vc_device_render(vc_device_t* dev) {
 }
 
 void vc_device_invalidate_all_for_testing(vc_device_t* dev) {
+    // This function is called from tests which don't use threading and so
+    // don't need locking.  We claim the following lock just to keep
+    // Clang's thread annotations checker happy.
+    mxtl::AutoLock lock(&g_vc_lock);
+
     vc_device_clear_gfx(dev);
     vc_device_invalidate(dev, 0, 0, dev->columns, dev->rows);
-    // Restore the cursor.
-    vc_tc_movecursor(dev, dev->cursor_x, dev->cursor_y);
 }
 
 int vc_device_get_scrollback_lines(vc_device_t* dev) {
@@ -372,7 +376,6 @@ void vc_device_scroll_viewport(vc_device_t* dev, int dir) {
 }
 
 void vc_device_set_fullscreen(vc_device_t* dev, bool fullscreen) {
-    mtx_lock(&dev->lock);
     unsigned flags;
     if (fullscreen) {
         flags = dev->flags | VC_FLAG_FULLSCREEN;
@@ -383,7 +386,6 @@ void vc_device_set_fullscreen(vc_device_t* dev, bool fullscreen) {
         dev->flags = flags;
         tc_seth(&dev->textcon, vc_device_rows(dev));
     }
-    mtx_unlock(&dev->lock);
     vc_device_render(dev);
 }
 

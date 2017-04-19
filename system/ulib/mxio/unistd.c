@@ -21,6 +21,7 @@
 #include <threads.h>
 #include <unistd.h>
 
+#include <magenta/device/devmgr.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 
@@ -507,7 +508,11 @@ mx_status_t mxio_get_vmo(int fd, mx_handle_t* vmo, size_t* off, size_t* len) {
     return r;
 }
 
+// TODO(teisenbe): Move this interface to deadlines
 mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* _pending, mx_time_t timeout) {
+    const mx_time_t deadline = (timeout == MX_TIME_INFINITE) ? MX_TIME_INFINITE :
+            mx_deadline_after(timeout);
+
     mx_status_t r = NO_ERROR;
     mxio_t* io;
     if ((io = fd_to_io(fd)) == NULL) {
@@ -523,7 +528,7 @@ mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* _pending, mx_time_t 
         goto end;
     }
     mx_signals_t pending;
-    if ((r = mx_object_wait_one(h, signals, timeout, &pending)) < 0) {
+    if ((r = mx_object_wait_one(h, signals, deadline, &pending)) < 0) {
         if (r != ERR_TIMED_OUT) {
             goto end;
         }
@@ -579,7 +584,7 @@ int mxio_status_to_errno(mx_status_t status) {
     case ERR_BUFFER_TOO_SMALL: return EINVAL;
     case ERR_TIMED_OUT: return ETIMEDOUT;
     case ERR_ALREADY_EXISTS: return EEXIST;
-    case ERR_REMOTE_CLOSED: return ENOTCONN;
+    case ERR_PEER_CLOSED: return ENOTCONN;
     case ERR_BAD_PATH: return ENAMETOOLONG;
     case ERR_IO: return EIO;
     case ERR_NOT_DIR: return ENOTDIR;
@@ -971,39 +976,72 @@ int ftruncate(int fd, off_t len) {
      return r;
 }
 
+// Filesystem operations (such as rename and link) which act on multiple paths
+// have some additional complexity on Magenta. These operations (eventually) act
+// on two pairs of variables: a source parent vnode + name, and a target parent
+// vnode + name. However, the loose coupling of these pairs can make their
+// correspondence difficult, especially when accessing each parent vnode may
+// involve crossing various filesystem boundaries.
+//
+// To resolve this problem, these kinds of operations involve:
+// - Opening the source parent vnode directly.
+// - Opening the target parent vnode directly, + acquiring a "vnode token".
+// - Sending the real operation + names to the source parent vnode, along with
+//   the "vnode token" representing the target parent vnode.
+//
+// Using magenta kernel primitives (cookies) to authenticate the vnode token, this
+// allows these multi-path operations to mix absolute / relative paths and cross
+// mount points with ease.
 static int two_path_op(uint32_t op, const char* oldpath, const char* newpath) {
+    const char* oldname;
+    mxio_t* io_oldparent;
+    mx_status_t status;
+    if ((status = __mxio_opendir_containing(&io_oldparent, oldpath, &oldname)) < 0) {
+        return ERROR(status);
+    }
+
+    int r;
+    const char* newname;
+    mxio_t* io_newparent;
+    if ((status = __mxio_opendir_containing(&io_newparent, newpath, &newname)) < 0) {
+        r = ERROR(status);
+        goto oldparent_open;
+    }
+
+    mx_handle_t token;
+    status = io_newparent->ops->ioctl(io_newparent, IOCTL_DEVMGR_GET_TOKEN,
+                                      NULL, 0, &token, sizeof(token));
+    if (status < 0) {
+        r = ERROR(status);
+        goto newparent_open;
+    }
+
     char name[MXIO_CHUNK_SIZE];
-    size_t oldlen = strlen(oldpath);
-    size_t newlen = strlen(newpath);
-    if (oldlen + newlen + 2 > MXIO_CHUNK_SIZE) {
-        return ERRNO(EINVAL);
+    size_t oldlen = strlen(oldname);
+    size_t newlen = strlen(newname);
+    if (oldlen + newlen + 2 > sizeof(name)) {
+        r = ERRNO(EINVAL);
+        goto token_open;
     }
 
-    mxio_t* io;
-    if (oldpath[0] == '/' && newpath[0] == '/') {
-        // Both paths are absolute: Op relative to mxio_root
-        mtx_lock(&mxio_lock);
-        io = mxio_root_handle;
-        mxio_acquire(io);
-        mtx_unlock(&mxio_lock);
-    } else if (oldpath[0] != '/' && newpath[0] != '/') {
-        // Both paths are relative: Op relative to mxio_cwd
-        mtx_lock(&mxio_lock);
-        io = mxio_cwd_handle;
-        mxio_acquire(io);
-        mtx_unlock(&mxio_lock);
-    } else {
-        // Mixed absolute & relative paths: Unsupported
-        return ERROR(ERR_NOT_SUPPORTED);
-    }
-
-    memcpy(name, oldpath, oldlen);
+    memcpy(name, oldname, oldlen);
     name[oldlen] = '\0';
-    memcpy(name + oldlen + 1, newpath, newlen);
+    memcpy(name + oldlen + 1, newname, newlen);
     name[oldlen + newlen + 1] = '\0';
-    mx_status_t r = io->ops->misc(io, op, 0, 0, (void*)name, oldlen + newlen + 2);
-    mxio_release(io);
-    return STATUS(r);
+    status = io_oldparent->ops->misc(io_oldparent, op, token, 0,
+                                     (void*)name, oldlen + newlen + 2);
+    r = STATUS(status);
+    // Token transferred through misc; no longer needs to be closed.
+    goto newparent_open;
+token_open:
+    mx_handle_close(token);
+newparent_open:
+    io_newparent->ops->close(io_newparent);
+    mxio_release(io_newparent);
+oldparent_open:
+    io_oldparent->ops->close(io_oldparent);
+    mxio_release(io_oldparent);
+    return r;
 }
 
 int rename(const char* oldpath, const char* newpath) {
@@ -1490,7 +1528,7 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
 
     int nfds = 0;
     if (r == NO_ERROR && nvalid > 0) {
-        mx_time_t tmo = (timeout >= 0) ? MX_MSEC(timeout) : MX_TIME_INFINITE;
+        mx_time_t tmo = (timeout >= 0) ? mx_deadline_after(MX_MSEC(timeout)) : MX_TIME_INFINITE;
         r = mx_object_wait_many(items, nvalid, tmo);
         // pending signals could be reported on ERR_TIMED_OUT case as well
         if (r == NO_ERROR || r == ERR_TIMED_OUT) {
@@ -1579,7 +1617,7 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
     int nfds = 0;
     if (r == NO_ERROR && nvalid > 0) {
         mx_time_t tmo = (tv == NULL) ? MX_TIME_INFINITE :
-            MX_SEC(tv->tv_sec) + MX_USEC(tv->tv_usec);
+            mx_deadline_after(MX_SEC(tv->tv_sec) + MX_USEC(tv->tv_usec));
         r = mx_object_wait_many(items, nvalid, tmo);
         // pending signals could be reported on ERR_TIMED_OUT case as well
         if (r == NO_ERROR || r == ERR_TIMED_OUT) {

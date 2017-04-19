@@ -37,6 +37,14 @@
     0xa7, 0x89, 0xdb, 0xee, 0xc8, 0xf5, 0x5e, 0x6a \
 };
 
+// 2967380e-134c-4cbb-b6da-17e7ce1ca45d
+#define GUID_BLOBFS_VALUE {                        \
+    0x0e, 0x38, 0x67, 0x29,                        \
+    0x4c, 0x13,                                    \
+    0xbb, 0x4c,                                    \
+    0xb6, 0xda, 0x17, 0xe7, 0xce, 0x1c, 0xa4, 0x5d \
+};
+
 typedef struct gpt_partition {
     uint8_t type[GPT_GUID_LEN];
     uint8_t guid[GPT_GUID_LEN];
@@ -75,3 +83,7 @@ int gpt_partition_remove(gpt_device_t* dev, const uint8_t* guid);
 
 void uint8_to_guid_string(char* dst, const uint8_t* src);
 // converts GUID to a string
+
+void gpt_device_get_header_guid(gpt_device_t* dev,
+                                uint8_t (*disk_guid_out)[GPT_GUID_LEN]);
+// given a gpt device, get the GUID for the disk
