@@ -42,9 +42,14 @@ static void call_constructors(void)
         (*a)();
 }
 
+static volatile int gWaitForDebugger = 1;
+
 /* called from arch code */
 void lk_main(void)
 {
+    while( gWaitForDebugger ){
+    }
+    
     // get us into some sort of thread context
     thread_init_early();
 

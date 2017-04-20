@@ -11,7 +11,7 @@
 */
 
 OUTPUT_ARCH(riscv)
-ENTRY(_start)
+ENTRY(_riscv_start)
 
 SECTIONS
 {
@@ -19,8 +19,8 @@ SECTIONS
     _start = .;
 
     .text : AT(ADDR(.text) - %KERNEL_BASE%) {
-        *(.text);
         __code_start = .;
+        *(.text);
         KEEP(*(.text.boot0))
         KEEP(*(.text.boot))
         *(.text* .sram.text)
