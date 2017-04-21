@@ -1,7 +1,10 @@
-/*
-The code has been borrowed from the Linux kernel which is under GPLv2 license.
-2017 Modified for Magenta by Slava Imameev.
-*/
+//
+// Copyright 2017 Slava Imameev.
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 
 #include <asm.h>
 #include <arch/riscv/asm/csr.h>
@@ -24,17 +27,16 @@ FUNCTION(_riscv_start)
 	call sbi_hart_id
 	bnez a0, .Lsecondary_start
 
-	/* Initialize the stack pointer */
+	/* Initialize the stack pointer,
+	   a stack is required for memset call */
 	la sp, (_kstack + 4096)
 
-#ifdef ZERO_BSS
 	/* Clear the .bss segment */
 	la a0, __bss_start
 	li a1, 0
 	la a2, __bss_end
 	sub a2, a2, a0
 	call memset
-#endif
 
 	/* Initialize current task_struct pointer */
 	/*la tp, init_task*/

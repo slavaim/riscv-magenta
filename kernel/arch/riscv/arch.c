@@ -15,8 +15,8 @@
 #include <debug.h>
 #include <err.h>
 
-/* early stack */
-uint8_t _kstack[PAGE_SIZE] __ALIGNED(16);
+/* early stack, put in the data as bss is being zeroed by memset that requires the stack */
+__SECTION(".data") uint8_t _kstack[PAGE_SIZE] __ALIGNED(16);
 
 void arch_early_init(void)
 {

@@ -74,8 +74,6 @@ SECTIONS
         __data_end = .;
     }
 
-    _zero_page_sys_size = (__data_end - __code_start + 15) / 16;
-
     .bss : ALIGN(4096) {
         __bss_start = .;
         *(.bss*)
