@@ -7,6 +7,8 @@
 
 #include <kernel/vm.h>
 #include <arch/riscv/mmu.h>
+#include <platform.h>
+#include <memory.h>
 
 struct mmu_initial_mapping mmu_initial_mappings[] = {
 
@@ -14,10 +16,17 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
     {
         .phys = MEMBASE,
         .virt = KERNEL_ASPACE_BASE,
-        .size = 64ULL*GB, /* x86-64 maps first 64GB by default */
+        .size = 64ULL*GB, /* maps first 64GB by default */
         .flags = 0,
         .name = "memory"
     },
     /* null entry to terminate the list */
     {}
 };
+
+
+void platform_early_init(void)
+{
+    /* initialize physical memory arenas */
+    platform_mem_init();
+}

@@ -1,10 +1,9 @@
 /*
-The code has been borrowed from the Linux kernel which is under GPLv2 license.
+Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 2017 Modified for Magenta by Slava Imameev.
 */
 
-#ifndef _ASM_RISCV_CSR_H
-#define _ASM_RISCV_CSR_H
+#pragma once
 
 #include <arch/riscv/asm/constant.h>
 
@@ -139,4 +138,3 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #endif /* __ASSEMBLY__ */
 
-#endif /* _ASM_RISCV_CSR_H */

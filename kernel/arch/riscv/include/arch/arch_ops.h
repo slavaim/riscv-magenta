@@ -46,7 +46,8 @@ static inline uint64_t arch_cycle_count(void)
 
 static inline uint arch_curr_cpu_num(void)
 {
-    PANIC_UNIMPLEMENTED;
+    //PANIC_UNIMPLEMENTED;
+    //TO_DO_RISCV return the actual index for SMP
     return 0;
 }
 

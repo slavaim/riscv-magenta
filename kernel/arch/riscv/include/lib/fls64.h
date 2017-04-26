@@ -1,3 +1,6 @@
+/*
+The code has been borrowed from the Linux kernel which is under GPLv2 license.
+*/
 #ifndef _ASM_GENERIC_BITOPS_FLS64_H_
 #define _ASM_GENERIC_BITOPS_FLS64_H_
 

@@ -11,7 +11,7 @@
 #include <assert.h>
 #include <magenta/compiler.h>
 #include <arch.h>
-#include <arch/page.h>
+#include <arch/riscv/page.h>
 #include <debug.h>
 #include <err.h>
 

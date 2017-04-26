@@ -1,7 +1,7 @@
 /* const.h: Macros for dealing with constants.  */
+/*2017 Modfied for Magenta by Slava Imameev*/
 
-#ifndef _RISCV_CONST_H
-#define _RISCV_CONST_H
+#pragma once
 
 /* Some constant macros are used in both assembler and
  * C code.  Therefore we cannot annotate them always with
@@ -33,4 +33,6 @@ $ echo > empty.S; gcc -dM -E empty.S
 #define _BITUL(x)	(_AC(1,UL) << (x))
 #define _BITULL(x)	(_AC(1,ULL) << (x))
 
-#endif /* !(_RISCV_CONST_H) */
+#ifndef CONFIG_64BIT
+    #error "only 64 bit RISCV is supported for the current code base"
+#endif

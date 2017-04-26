@@ -12,6 +12,7 @@
 #include <magenta/compiler.h>
 #include <debug.h>
 
+__BEGIN_CDECLS
 
 static inline struct thread *get_current_thread(void)
 {
@@ -23,3 +24,5 @@ static inline void set_current_thread(struct thread *t)
 {
     PANIC_UNIMPLEMENTED;
 }
+
+__END_CDECLS

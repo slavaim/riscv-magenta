@@ -47,7 +47,7 @@ static volatile int gWaitForDebugger = 1;
 /* called from arch code */
 void lk_main(void)
 {
-    while( gWaitForDebugger ){
+    while (gWaitForDebugger) {
     }
     
     // get us into some sort of thread context

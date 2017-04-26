@@ -31,6 +31,11 @@ void _panic(void *caller, void *frame, const char *fmt, ...)
 {
     platform_panic_start();
 
+    // TO_DO_RISCV , enter in a tight loop as terminal output is not implemented
+#if ARCH_RISCV
+    while(1){;}
+#endif // ARCH_RISCV
+
     printf("panic (caller %p frame %p): ", caller, frame);
 
     va_list ap;

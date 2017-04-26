@@ -1,3 +1,6 @@
+/*
+The code has been borrowed from the Linux kernel which is under GPLv2 license.
+*/
 #ifndef _LINUX_BITOPS_H
 #define _LINUX_BITOPS_H
 

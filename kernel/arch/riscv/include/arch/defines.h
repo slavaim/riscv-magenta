@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include <arch/page.h>
+#include <arch/riscv/page.h>
 
 #define CACHE_LINE 32
 
