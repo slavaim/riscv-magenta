@@ -36,3 +36,7 @@ $ echo > empty.S; gcc -dM -E empty.S
 #ifndef CONFIG_64BIT
     #error "only 64 bit RISCV is supported for the current code base"
 #endif
+
+#if !WITH_SMP
+    #error "SMP support must be allowed"
+#endif
