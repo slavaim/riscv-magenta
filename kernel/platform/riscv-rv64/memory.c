@@ -17,10 +17,12 @@
 #define PMM_ARENAS 4
 static pmm_arena_info_t mem_arenas[PMM_ARENAS];
 
-static void reserve_boot_page_table(void)
+static void reserve_boot_page_table(pte_t* table)
 {
 	unsigned long i;
-    pte_t*   table = (pte_t*)kernel_init_pgd;
+    
+    if (!table)
+        table = (pte_t*)kernel_init_pgd;
 
     assert(table);
 
@@ -28,7 +30,7 @@ static void reserve_boot_page_table(void)
 
 	for (i = 0; i < PTRS_PER_PTE; i++) {
 		if (pte_present(table[i]) && !pte_huge(table[i]))
-			pmm_alloc_range(PFN_PHYS(pte_pfn(table[i])), 1, NULL);
+            reserve_boot_page_table(pfn_to_virt(pte_pfn(table[i])));
 	}
 }
 
@@ -61,5 +63,5 @@ void platform_mem_init(void)
     for (int i = 0; i < arena_count; i++)
         pmm_add_arena(&mem_arenas[i]);
 
-    reserve_boot_page_table();
+    reserve_boot_page_table(NULL);
 }

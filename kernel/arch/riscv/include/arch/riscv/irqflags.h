@@ -7,6 +7,8 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #include <arch/riscv/asm/csr.h>
 
+__BEGIN_CDECLS
+
 /* read interrupt enabled status */
 static inline unsigned long arch_local_save_flags(void)
 {
@@ -49,3 +51,4 @@ static inline void arch_local_irq_restore(unsigned long flags)
 	csr_set(sstatus, flags & SR_IE);
 }
 
+__END_CDECLS

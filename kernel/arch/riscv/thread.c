@@ -7,6 +7,7 @@
 
 #include <arch/thread.h>
 #include <kernel/thread.h>
+#include <arch/riscv/current.h>
 #include <debug.h>
 
 void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
