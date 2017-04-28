@@ -12,6 +12,10 @@
 #include <sys/types.h>
 #include <trace.h>
 
+#if ARCH_RISCV
+#include <arch/riscv/page.h>
+#endif
+
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
 /* cheezy allocator that chews up space just after the end of the kernel mapping */
@@ -26,8 +30,16 @@ void boot_alloc_reserve(uintptr_t start, size_t len) {
     uintptr_t end = ALIGN((start + len), PAGE_SIZE);
 
     // Adjust physical addresses to kernel memory map
+#if ARCH_RISCV
+    start = (uintptr_t)__va(start);
+    end   = (uintptr_t)__va(end);
+#else
+    // This conversion is not valid for many architectures
+    // as the physical addresses might start from non zero
+    // address
     start += KERNEL_BASE;
     end += KERNEL_BASE;
+#endif
 
     if (end >= boot_alloc_start) {
         if ((start > boot_alloc_start) &&

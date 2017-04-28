@@ -17,21 +17,32 @@
 #define PMM_ARENAS 4
 static pmm_arena_info_t mem_arenas[PMM_ARENAS];
 
-static void reserve_boot_page_table(pte_t* table)
+void boot_alloc_reserve(uintptr_t phys, size_t _len);
+
+static void reserve_boot_page_table(uintptr_t pgd_phys)
 {
 	unsigned long i;
+    pte_t* table;
     
-    if (!table)
-        table = (pte_t*)kernel_init_pgd;
+    if (!pgd_phys)
+        pgd_phys = __pa(kernel_init_pgd);
 
-    assert(table);
+    assert(pgd_phys);
 
-	pmm_alloc_range(__pa(table), 1, NULL);
+    table = __va(pgd_phys);
+
+	boot_alloc_reserve(pgd_phys, PAGE_SIZE);
 
 	for (i = 0; i < PTRS_PER_PTE; i++) {
 		if (pte_present(table[i]) && !pte_huge(table[i]))
-            reserve_boot_page_table(pfn_to_virt(pte_pfn(table[i])));
+            reserve_boot_page_table(pfn_to_phys(pte_pfn(table[i])));
 	}
+}
+
+static void reserve_boot_pages(void)
+{
+    ASSERT(kernel_init_pgd);
+    reserve_boot_page_table(__pa(kernel_init_pgd));
 }
 
 static int setup_system_arena(pmm_arena_info_t* mem_arena)
@@ -55,6 +66,7 @@ void platform_mem_init(void)
         panic("setup_memory_info");
 
     setup_kernel_init_pgd();
+    reserve_boot_pages();
 
     error = setup_system_arena(&mem_arenas[arena_count++]);
     if (error)
@@ -63,5 +75,4 @@ void platform_mem_init(void)
     for (int i = 0; i < arena_count; i++)
         pmm_add_arena(&mem_arenas[i]);
 
-    reserve_boot_page_table(NULL);
 }
