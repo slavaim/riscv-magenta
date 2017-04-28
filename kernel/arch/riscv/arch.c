@@ -1,7 +1,4 @@
 // Copyright 2016 The Fuchsia Authors
-// Copyright (c) 2009 Corey Tabaka
-// Copyright (c) 2015 Intel Corporation
-// Copyright (c) 2016 Travis Geiselbrecht
 // Copyright (c) 2017 Slava Imameev
 //
 // Use of this source code is governed by a MIT-style
@@ -20,7 +17,6 @@ __SECTION(".data") uint8_t _kstack[PAGE_SIZE] __ALIGNED(16);
 
 void arch_early_init(void)
 {
-    PANIC_UNIMPLEMENTED;
 }
 
 void arch_init(void)

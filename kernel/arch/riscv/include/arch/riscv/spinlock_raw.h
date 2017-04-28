@@ -21,9 +21,9 @@ __BEGIN_CDECLS
  */
 
 #define arch_spin_lock_flags_raw(lock, flags) arch_spin_lock(lock)
-#define arch_spin_is_locked_raw(x)	((x) != 0)
+#define arch_spin_is_locked_raw(x)	(*(x) != 0)
 #define arch_spin_unlock_wait_raw(x) \
-		do { cpu_relax(); } while ((x))
+		do { cpu_relax(); } while (*(x))
 
 static inline void arch_spin_unlock_raw(arch_spinlock_t *lock)
 {

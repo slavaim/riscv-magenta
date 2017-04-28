@@ -45,7 +45,7 @@ static inline int arch_spin_trylock(spin_lock_t *lock)
 
 static inline void arch_spin_unlock(spin_lock_t *lock)
 {
-    arch_spin_unlock((arch_spinlock_t*)lock);
+    arch_spin_unlock_raw((arch_spinlock_t*)lock);
 }
 
 /* flags are unused on risc-v */

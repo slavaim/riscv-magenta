@@ -12,24 +12,24 @@
 #include <stdbool.h>
 #include <debug.h>
 #include <arch/riscv/mp.h>
+#include <arch/riscv/irqflags.h>
 
 __BEGIN_CDECLS
 
 /* fast routines that most arches will implement inline */
 static inline void arch_enable_ints(void)
 {
-    PANIC_UNIMPLEMENTED;
+    arch_local_irq_enable();
 }
 
 static inline void arch_disable_ints(void)
 {
-    PANIC_UNIMPLEMENTED;
+    arch_local_irq_disable();
 }
 
 static inline bool arch_ints_disabled(void)
 {
-    PANIC_UNIMPLEMENTED;
-    return false;
+    return arch_irqs_disabled();
 }
 
 static inline bool arch_in_int_handler(void)
