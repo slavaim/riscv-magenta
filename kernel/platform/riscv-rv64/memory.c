@@ -11,6 +11,7 @@
 #include <arch/riscv/setup.h>
 #include <arch/riscv/page.h>
 #include <arch/riscv/pgtable.h>
+#include <arch/riscv/sections.h>
 #include <memory.h>
 
 /* statically allocate an array of pmm_arena_info_ts to be filled in at boot time */
@@ -19,30 +20,47 @@ static pmm_arena_info_t mem_arenas[PMM_ARENAS];
 
 void boot_alloc_reserve(uintptr_t phys, size_t _len);
 
-static void reserve_boot_page_table(uintptr_t pgd_phys)
+static void reserve_kernel_pages(void)
+{
+    boot_alloc_reserve(PFN_PHYS(min_low_pfn), __pa(_end_of_kernel) - PFN_PHYS(min_low_pfn));
+}
+
+static void reserve_boot_page_table(pte_t* table, uint depth)
 {
 	unsigned long i;
-    pte_t* table;
-    
-    if (!pgd_phys)
-        pgd_phys = __pa(kernel_init_pgd);
+    uint     next_depth = depth+1;
 
-    assert(pgd_phys);
+    if (!table && 0==depth) {
+        assert(kernel_init_pgd);
+        table = (pte_t*)kernel_init_pgd;
+    }
 
-    table = __va(pgd_phys);
+    assert( table );
 
-	boot_alloc_reserve(pgd_phys, PAGE_SIZE);
+    //
+    // reserve the page table's page
+    //
+	boot_alloc_reserve(__pa(table), PAGE_SIZE);
 
+    //
+    // the current RV64 architecture has a 3 level page table
+    //
+    assert(next_depth<3);
+
+    //
+    // scan the ptes and reserve the next level page tables
+    //
 	for (i = 0; i < PTRS_PER_PTE; i++) {
-		if (pte_present(table[i]) && !pte_huge(table[i]))
-            reserve_boot_page_table(pfn_to_phys(pte_pfn(table[i])));
+		if (!pte_leaf(table[i]))
+            reserve_boot_page_table(pfn_to_virt(pte_pfn(table[i])), next_depth);
 	}
 }
 
 static void reserve_boot_pages(void)
 {
     ASSERT(kernel_init_pgd);
-    reserve_boot_page_table(__pa(kernel_init_pgd));
+    reserve_kernel_pages();
+    reserve_boot_page_table((pte_t*)kernel_init_pgd, 0);
 }
 
 static int setup_system_arena(pmm_arena_info_t* mem_arena)

@@ -156,7 +156,7 @@ static inline void set_pte(pte_t *ptep, pte_t pteval)
 
 static inline int pte_present(pte_t pte)
 {
-	return (pte_val(pte) & _PAGE_PRESENT);
+	return 0x0 != (pte_val(pte) & _PAGE_PRESENT);
 }
 
 static inline int pte_none(pte_t pte)
@@ -168,30 +168,38 @@ static inline int pte_none(pte_t pte)
 
 static inline int pte_write(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_WRITE;
+	return 0x0 != (pte_val(pte) & _PAGE_WRITE);
 }
 
 static inline int pte_huge(pte_t pte)
 {
 	return pte_present(pte)
-		&& (pte_val(pte) & (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
+		&& 0x0 != (pte_val(pte) & (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
+}
+
+/*a leaf pte points to a page with data or to nothing,
+  non-leaf pte points to next level page table*/
+static inline int pte_leaf(pte_t pte)
+{
+	return !pte_present(pte) ||
+		   0x0 != (pte_val(pte) & (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
 }
 
 /* static inline int pte_exec(pte_t pte) */
 
 static inline int pte_dirty(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_DIRTY;
+	return 0x0 != (pte_val(pte) & _PAGE_DIRTY);
 }
 
 static inline int pte_young(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_ACCESSED;
+	return 0x0 != (pte_val(pte) & _PAGE_ACCESSED);
 }
 
 static inline int pte_special(pte_t pte)
 {
-	return pte_val(pte) & _PAGE_SPECIAL;
+	return 0x0 != (pte_val(pte) & _PAGE_SPECIAL);
 }
 
 /* static inline pte_t pte_rdprotect(pte_t pte) */
