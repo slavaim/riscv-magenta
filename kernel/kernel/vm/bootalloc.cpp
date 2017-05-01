@@ -30,7 +30,7 @@ void boot_alloc_reserve(uintptr_t start, size_t len) {
     uintptr_t end = ALIGN((start + len), PAGE_SIZE);
 
     // Adjust physical addresses to kernel memory map
-#if ARCH_RISCV
+#ifdef __va
     start = (uintptr_t)__va(start);
     end   = (uintptr_t)__va(end);
 #else
