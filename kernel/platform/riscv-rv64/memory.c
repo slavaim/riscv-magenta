@@ -25,45 +25,48 @@ static void reserve_kernel_pages(void)
     boot_alloc_reserve(PFN_PHYS(min_low_pfn), __pa(_end_of_kernel) - PFN_PHYS(min_low_pfn));
 }
 
-static void reserve_boot_page_table(pte_t* table, uint depth)
+static void reserve_boot_page_table(pte_t *table, uint depth)
 {
-	unsigned long i;
-    uint     next_depth = depth+1;
+    unsigned long i;
+    uint next_depth = depth + 1;
 
-    if (!table && 0==depth) {
+    if (!table && 0 == depth)
+    {
         assert(kernel_init_pgd);
-        table = (pte_t*)kernel_init_pgd;
+        table = (pte_t *)kernel_init_pgd;
     }
 
-    assert( table );
+    assert(table);
 
     //
     // reserve the page table's page
     //
-	boot_alloc_reserve(__pa(table), PAGE_SIZE);
-
-    //
-    // the current RV64 architecture has a 3 level page table
-    //
-    assert(next_depth<3);
+    boot_alloc_reserve(__pa(table), PAGE_SIZE);
 
     //
     // scan the ptes and reserve the next level page tables
     //
-	for (i = 0; i < PTRS_PER_PTE; i++) {
-		if (!pte_leaf(table[i]))
+    for (i = 0; i < PTRS_PER_PTE; i++)
+    {
+        if (!pte_leaf(table[i]))
+        {
+            //
+            // the current RV64 architecture has a 3 level page table
+            //
+            assert(next_depth < 3);
             reserve_boot_page_table(pfn_to_virt(pte_pfn(table[i])), next_depth);
-	}
+        }
+    }
 }
 
 static void reserve_boot_pages(void)
 {
     ASSERT(kernel_init_pgd);
     reserve_kernel_pages();
-    reserve_boot_page_table((pte_t*)kernel_init_pgd, 0);
+    reserve_boot_page_table((pte_t *)kernel_init_pgd, 0);
 }
 
-static int setup_system_arena(pmm_arena_info_t* mem_arena)
+static int setup_system_arena(pmm_arena_info_t *mem_arena)
 {
     mem_arena->name = "memory";
     mem_arena->base = PFN_PHYS(min_low_pfn);
@@ -77,10 +80,10 @@ static int setup_system_arena(pmm_arena_info_t* mem_arena)
 void platform_mem_init(void)
 {
     int error;
-    int arena_count= 0;
+    int arena_count = 0;
 
     error = setup_memory_info();
-    if(error)
+    if (error)
         panic("setup_memory_info");
 
     setup_kernel_init_pgd();
@@ -92,5 +95,4 @@ void platform_mem_init(void)
 
     for (int i = 0; i < arena_count; i++)
         pmm_add_arena(&mem_arenas[i]);
-
 }

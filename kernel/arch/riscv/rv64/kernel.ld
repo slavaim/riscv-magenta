@@ -88,7 +88,8 @@ SECTIONS
 
     /* put a symbol arbitrarily 4MB past the end of the kernel */
     /* used by the heap and other early boot time allocators */
-    _end_of_kernel = . + (4 * 1024 * 1024);
+    /*_end_of_kernel = . + (4 * 1024 * 1024);*/
+    _end_of_kernel = .;
 
     /DISCARD/ : { *(.comment .note) }
 }
