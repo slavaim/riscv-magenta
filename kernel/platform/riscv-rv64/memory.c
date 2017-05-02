@@ -20,11 +20,12 @@ static pmm_arena_info_t mem_arenas[PMM_ARENAS];
 
 void boot_alloc_reserve(uintptr_t phys, size_t _len);
 
-static void reserve_kernel_pages(void)
-{
-    boot_alloc_reserve(PFN_PHYS(min_low_pfn), __pa(_end_of_kernel) - PFN_PHYS(min_low_pfn));
-}
-
+//
+// reserves the address space occupied by the page table allocated
+// by the bootloader which allocates pages just after the kernel
+// image so the range is consecutive in the direct mapped virtual
+// address range
+//
 static void reserve_boot_page_table(pte_t *table, uint depth)
 {
     unsigned long i;
@@ -62,7 +63,6 @@ static void reserve_boot_page_table(pte_t *table, uint depth)
 static void reserve_boot_pages(void)
 {
     ASSERT(kernel_init_pgd);
-    reserve_kernel_pages();
     reserve_boot_page_table((pte_t *)kernel_init_pgd, 0);
 }
 
@@ -73,7 +73,6 @@ static int setup_system_arena(pmm_arena_info_t *mem_arena)
     mem_arenas->size = PFN_PHYS(max_low_pfn - min_low_pfn);
     mem_arenas->priority = 1;
     mem_arenas->flags = PMM_ARENA_FLAG_KMAP;
-
     return 0;
 }
 

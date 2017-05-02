@@ -7,6 +7,8 @@
 
 #include <arch/ops.h>
 #include <debug.h>
+#include <lib/lib.h>
+#include <arch/riscv/page.h>
 
 void arch_disable_cache(uint flags)
 {
@@ -49,11 +51,11 @@ void arch_flush_state_and_halt(event_t *flush_done)
 
 void arch_idle(void)
 {
-    PANIC_UNIMPLEMENTED;
+    __asm__ volatile("wfi");
 }
 
 /* arch optimized version of a page zero routine against a page aligned buffer */
 void arch_zero_page(void* page)
 {
-    PANIC_UNIMPLEMENTED;
+    arch_memset(page, 0, PAGE_SIZE);
 }

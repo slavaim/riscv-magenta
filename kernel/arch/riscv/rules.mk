@@ -81,9 +81,13 @@ KERNEL_DEFINES += \
 	PHYS_HEADER_LOAD_OFFSET=$(PHYS_HEADER_LOAD_OFFSET) \
 	BITS_PER_LONG=$(BITS_PER_LONG) \
 
+# debug checkss
+KERNEL_DEFINES += \
+	LK_DEBUGLEVEL=2
+
 ifeq ($(SUBARCH),riscv-rv64)
 	KERNEL_DEFINES += \
-	   CONFIG_64BIT=1
+		CONFIG_64BIT=1
 endif
 
 GLOBAL_DEFINES += \
@@ -131,6 +135,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/user_copy.c \
 	$(LOCAL_DIR)/page.c \
 	$(LOCAL_DIR)/pgtable.c \
+	$(LOCAL_DIR)/lib/memset.S \
 	#$(LOCAL_DIR)/lib/clz_ctz.c \
 
 LINKER_SCRIPT += $(SUBARCH_BUILDDIR)/kernel.ld

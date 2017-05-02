@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <magenta/compiler.h>
+#include <arch/riscv/page.h>
 
 __BEGIN_CDECLS
 
@@ -20,10 +21,9 @@ struct arch_aspace {
     /* magic value for use-after-free detection */
     uint32_t magic;
 
-    uint16_t asid;
-
-    /* pointer to the translation table */
-    paddr_t tt_phys;
+    /* pointer to the page table */
+    paddr_t pt_phys;
+    pgd_t*  pt_virt;
 
     uint flags;
 
@@ -33,4 +33,3 @@ struct arch_aspace {
 };
 
 __END_CDECLS
-

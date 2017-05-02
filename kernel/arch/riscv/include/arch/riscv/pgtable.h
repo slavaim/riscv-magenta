@@ -277,6 +277,15 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val })
 
+/* Task size is 0x40000000000 for RV64 or 0xb800000 for RV32.
+   Note that PGDIR_SIZE must evenly divide TASK_SIZE. */
+#ifdef CONFIG_64BIT
+	#define TASK_SIZE (PGDIR_SIZE * PTRS_PER_PGD / 2)
+#else
+	#error "32 bit CPU not supported in the current release"
+	#define TASK_SIZE 0xb800000
+#endif
+
 //
 // returns current CPU sptbr register value translated to virtual address
 //
