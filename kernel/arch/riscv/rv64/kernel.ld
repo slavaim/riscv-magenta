@@ -34,6 +34,12 @@ SECTIONS
         *(.gnu.linkonce.r.*)
     }
 
+    .note.gnu.build-id : {
+        __build_id_note_start = .;
+        *(.note.gnu.build-id)
+        __build_id_note_end = .;
+    }
+
     /*
      * Any read-only data "orphan" sections will be inserted here.
      * Ideally we'd put those into the .rodata output section, but

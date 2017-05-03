@@ -19,3 +19,8 @@ void arch_context_switch(struct thread *oldthread, struct thread *newthread)
 {
     PANIC_UNIMPLEMENTED;
 }
+
+void arch_thread_construct_first(thread_t *t)
+{
+}
+

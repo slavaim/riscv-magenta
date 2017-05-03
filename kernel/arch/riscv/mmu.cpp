@@ -31,8 +31,8 @@ status_t arch_mmu_init_aspace(arch_aspace_t* aspace, vaddr_t base, size_t size, 
         aspace->base = base;
         aspace->size = size;
         aspace->pt_virt = kernel_init_pgd;
-        aspace->pt_phys = vaddr_to_paddr(aspace->pt_virt);
-        assert(vaddr_to_paddr(aspace->pt_virt) == __pa(aspace->pt_virt));
+        aspace->pt_phys = __pa(aspace->pt_virt);
+        //assert(vaddr_to_paddr(aspace->pt_virt) == __pa(aspace->pt_virt));
     } else {
         //DEBUG_ASSERT(base >= 0);
         DEBUG_ASSERT(base + size <= TASK_SIZE );
