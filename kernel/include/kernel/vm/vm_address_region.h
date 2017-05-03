@@ -10,6 +10,7 @@
 #include <kernel/vm/vm_object.h>
 #include <kernel/vm/vm_page_list.h>
 #include <magenta/thread_annotations.h>
+#include <mxtl/canary.h>
 #include <mxtl/intrusive_double_list.h>
 #include <mxtl/intrusive_wavl_tree.h>
 #include <mxtl/ref_counted.h>
@@ -18,9 +19,8 @@
 
 // Creation flags for VmAddressRegion and VmMappings
 
-// When randomly allocating subregions, reduce sprawl (hint).
-// Currently ignored, since randomization is not yet implemented.
-// TODO(teisenbe): Remove this comment when randomization is implemented.
+// When randomly allocating subregions, reduce sprawl by placing allocations
+// near each other.
 #define VMAR_FLAG_COMPACT (1 << 0)
 // Request that the new region be at the specified offset in its parent region.
 #define VMAR_FLAG_SPECIFIC (1 << 1)
@@ -42,7 +42,7 @@
 // mapping can gain this permission.
 #define VMAR_FLAG_CAN_MAP_EXECUTE (1 << 6)
 
-#define VMAR_CAN_RWX_FLAGS (VMAR_FLAG_CAN_MAP_READ | \
+#define VMAR_CAN_RWX_FLAGS (VMAR_FLAG_CAN_MAP_READ |  \
                             VMAR_FLAG_CAN_MAP_WRITE | \
                             VMAR_FLAG_CAN_MAP_EXECUTE)
 
@@ -123,6 +123,9 @@ public:
     // Dump debug info
     virtual void Dump(uint depth, bool verbose) const = 0;
 
+private:
+    mxtl::Canary<mxtl::magic("VMRM")> canary_;
+
 protected:
     // friend VmAddressRegion so it can access DestroyLocked
     friend VmAddressRegion;
@@ -141,7 +144,7 @@ protected:
         DEAD
     };
 
-    VmAddressRegionOrMapping(uint32_t magic, vaddr_t base, size_t size, uint32_t flags,
+    VmAddressRegionOrMapping(vaddr_t base, size_t size, uint32_t flags,
                              VmAspace* aspace, VmAddressRegion* parent, const char* name);
 
     // Check if the given *arch_mmu_flags* are allowed under this
@@ -166,9 +169,6 @@ protected:
     // Transition from NOT_READY to READY, and add references to self to related
     // structures.
     virtual void Activate() = 0;
-
-    // magic value
-    uint32_t magic_;
 
     // current state of the VMAR.  If LifeCycleState::DEAD, then all other
     // fields are invalid.
@@ -237,9 +237,8 @@ public:
 
     void Dump(uint depth, bool verbose) const override;
     status_t PageFault(vaddr_t va, uint pf_flags) override;
-protected:
-    static const uint32_t kMagic = 0x564d4152; // VMAR
 
+protected:
     // constructor for use in creating a VmAddressRegionDummy
     explicit VmAddressRegion();
 
@@ -256,7 +255,6 @@ protected:
     // Remove *region* from the subregion list
     void RemoveSubregion(VmAddressRegionOrMapping* region);
 
-    ~VmAddressRegion() override;
     friend mxtl::RefPtr<VmAddressRegion>;
 
 private:
@@ -265,6 +263,8 @@ private:
                                      WAVLTreeTraits>;
 
     DISALLOW_COPY_ASSIGN_AND_MOVE(VmAddressRegion);
+
+    mxtl::Canary<mxtl::magic("VMAR")> canary_;
 
     // private constructors, use Create...() instead
     VmAddressRegion(VmAspace& aspace, vaddr_t base, size_t size, uint32_t vmar_flags);
@@ -310,18 +310,22 @@ private:
                         size_t region_size, size_t min_gap, uint arch_mmu_flags);
 
     // search for a spot to allocate for a region of a given size
-    vaddr_t AllocSpotLocked(size_t size, uint8_t align_pow2, uint arch_mmu_flags);
+    status_t AllocSpotLocked(size_t size, uint8_t align_pow2, uint arch_mmu_flags, vaddr_t* spot);
 
     // Allocators
-    vaddr_t LinearRegionAllocatorLocked(size_t size, uint8_t align_pow2, uint arch_mmu_flags);
-    vaddr_t NonCompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
-                                                      uint arch_mmu_flags);
+    status_t LinearRegionAllocatorLocked(size_t size, uint8_t align_pow2, uint arch_mmu_flags,
+                                         vaddr_t* spot);
+    status_t NonCompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
+                                                      uint arch_mmu_flags, vaddr_t* spot);
+    status_t CompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
+                                                   uint arch_mmu_flags, vaddr_t* spot);
 
     // Utility for allocators for iterating over gaps between allocations
     // F should have a signature of bool func(vaddr_t gap_base, size_t gap_size).
     // If func returns false, the iteration stops.  gap_base will be aligned in
     // accordance with align_pow2.
-    template <typename F> void ForEachGap(F func, uint8_t align_pow2);
+    template <typename F>
+    void ForEachGap(F func, uint8_t align_pow2);
 
     // list of subregions, indexed by base address
     ChildList subregions_;
@@ -331,7 +335,8 @@ private:
 // reference cycle between root VMARs and VmAspaces.
 class VmAddressRegionDummy final : public VmAddressRegion {
 public:
-    VmAddressRegionDummy() : VmAddressRegion() { }
+    VmAddressRegionDummy()
+        : VmAddressRegion() {}
 
     status_t CreateSubVmar(size_t offset, size_t size, uint8_t align_pow2,
                            uint32_t vmar_flags, const char* name,
@@ -376,7 +381,7 @@ public:
         return ERR_BAD_STATE;
     }
 
-    ~VmAddressRegionDummy() override { }
+    ~VmAddressRegionDummy() override {}
 
     size_t AllocatedPagesLocked() const override {
         return 0;
@@ -429,8 +434,6 @@ public:
     status_t PageFault(vaddr_t va, uint pf_flags) override;
 
 protected:
-    static const uint32_t kMagic = 0x564d4150; // VMAP
-
     ~VmMapping() override;
     friend mxtl::RefPtr<VmMapping>;
 
@@ -442,6 +445,8 @@ protected:
 
 private:
     DISALLOW_COPY_ASSIGN_AND_MOVE(VmMapping);
+
+    mxtl::Canary<mxtl::magic("VMAP")> canary_;
 
     // allow VmAddressRegion to manipulate VmMapping internals for construction
     // and bookkeeping

@@ -99,6 +99,9 @@ typedef struct mx_info_process {
 } mx_info_process_t;
 
 typedef struct mx_info_thread {
+    // One of MX_THREAD_STATE_* values.
+    uint32_t state;
+
     // If nonzero, the thread has gotten an exception and is waiting for
     // the exception to be handled by the specified port.
     // The value is one of MX_EXCEPTION_PORT_TYPE_*.
@@ -175,8 +178,6 @@ typedef struct mx_info_maps {
 
 // Object properties.
 
-// Argument is MX_POLICY_BAD_HANDLE_... (below, uint32_t).
-#define MX_PROP_BAD_HANDLE_POLICY           1u
 // Argument is a uint32_t.
 #define MX_PROP_NUM_STATE_KINDS             2u
 // Argument is a char[MX_MAX_NAME_LEN].
@@ -190,9 +191,11 @@ typedef struct mx_info_maps {
 // Argument is the value of ld.so's _dl_debug_addr, a uintptr_t.
 #define MX_PROP_PROCESS_DEBUG_ADDR          5u
 
-// Policies for MX_PROP_BAD_HANDLE_POLICY:
-#define MX_POLICY_BAD_HANDLE_IGNORE         0u
-#define MX_POLICY_BAD_HANDLE_LOG            1u
-#define MX_POLICY_BAD_HANDLE_EXIT           2u
+// Values for mx_info_thread_t.state.
+#define MX_THREAD_STATE_NEW                 0u
+#define MX_THREAD_STATE_RUNNING             1u
+#define MX_THREAD_STATE_SUSPENDED           2u
+#define MX_THREAD_STATE_BLOCKED             3u
+#define MX_THREAD_STATE_DEAD                4u
 
 __END_CDECLS

@@ -25,18 +25,16 @@
 // file.
 
 typedef struct align_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
     uint64_t blksize;
 } align_device_t;
-
-#define get_aligned_device(dev) containerof(dev, align_device_t, device)
 
 // implement device protocol:
 
 static ssize_t align_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
                            size_t cmdlen, void* reply, size_t max) {
     mx_device_t* parent = dev->parent;
-    return parent->ops->ioctl(parent, op, cmd, cmdlen, reply, max);
+    return device_op_ioctl(parent, op, cmd, cmdlen, reply, max);
 }
 
 static void aligned_write_complete(iotxn_t* txn_aligned, void* cookie) {
@@ -77,7 +75,8 @@ done:
 }
 
 static void align_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
-    uint64_t blksize = get_aligned_device(dev)->blksize;
+    align_device_t* device = dev->ctx;
+    uint64_t blksize = device->blksize;
     mx_device_t* parent = dev->parent;
 
     // In the case that the request is:
@@ -86,7 +85,7 @@ static void align_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     // Don't alter it.
     if ((txn->offset % blksize == 0 && txn->length % blksize == 0) ||
         (txn->opcode != IOTXN_OP_READ && txn->opcode != IOTXN_OP_WRITE)) {
-        parent->ops->iotxn_queue(parent, txn);
+        iotxn_queue(parent, txn);
         return;
     }
 
@@ -128,7 +127,7 @@ static void align_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
 
 static mx_off_t align_getsize(mx_device_t* dev) {
     mx_device_t* parent = dev->parent;
-    return parent->ops->get_size(parent);
+    return device_op_get_size(parent);
 }
 
 static void align_unbind(mx_device_t* dev) {
@@ -136,7 +135,7 @@ static void align_unbind(mx_device_t* dev) {
 }
 
 static mx_status_t align_release(mx_device_t* dev) {
-    align_device_t* device = get_aligned_device(dev);
+    align_device_t* device = dev->ctx;
     free(device);
     return NO_ERROR;
 }
@@ -154,31 +153,41 @@ static mx_status_t align_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie)
     if (!device) {
         return ERR_NO_MEMORY;
     }
-    char name[MX_DEVICE_NAME_MAX + 1];
-    snprintf(name, sizeof(name), "%s (aligned)", dev->name);
-    device_init(&device->device, drv, name, &align_proto);
-    ssize_t rc = dev->ops->ioctl(dev, IOCTL_BLOCK_GET_BLOCKSIZE, NULL, 0,
-                                 &device->blksize, sizeof(&device->blksize));
+
+    block_info_t info;
+    ssize_t rc = device_op_ioctl(dev, IOCTL_BLOCK_GET_INFO, NULL, 0, &info, sizeof(info));
     if (rc < 0) {
         free(device);
         return rc;
     }
-    device->device.protocol_id = MX_PROTOCOL_BLOCK;
+    device->blksize = info.block_size;
+
+    char name[MX_DEVICE_NAME_MAX + 1];
+    snprintf(name, sizeof(name), "%s (aligned)", dev->name);
+
+   device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = name,
+        .ctx = device,
+        .driver = drv,
+        .ops = &align_proto,
+        .proto_id = MX_PROTOCOL_BLOCK,
+    };
+
     mx_status_t status;
-    if ((status = device_add(&device->device, dev)) != NO_ERROR) {
+    if ((status = device_add2(dev, &args, &device->mxdev)) != NO_ERROR) {
         free(device);
         return status;
     }
     return NO_ERROR;
 }
 
-mx_driver_t _driver_align= {
-    .ops = {
-        .bind = align_bind,
-    },
+static mx_driver_ops_t align_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = align_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_align, "align", "magenta", "0.1", 2)
+MAGENTA_DRIVER_BEGIN(align, align_driver_ops, "magenta", "0.1", 2)
     BI_ABORT_IF_AUTOBIND,
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_BLOCK),
-MAGENTA_DRIVER_END(_driver_align)
+MAGENTA_DRIVER_END(align)

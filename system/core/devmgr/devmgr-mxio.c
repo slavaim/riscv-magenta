@@ -53,10 +53,10 @@ static void callback(void* arg, const char* path, size_t off, size_t len) {
 #define USER_MAX_HANDLES 4
 #define MAX_ENVP 16
 
-void devmgr_launch(mx_handle_t job, const char* name,
-                   int argc, const char* const* argv,
-                   const char** _envp, int stdiofd,
-                   mx_handle_t* handles, uint32_t* types, size_t hcount) {
+mx_status_t devmgr_launch(mx_handle_t job, const char* name,
+                          int argc, const char* const* argv,
+                          const char** _envp, int stdiofd,
+                          mx_handle_t* handles, uint32_t* types, size_t hcount) {
 
     const char* envp[MAX_ENVP + 1];
     unsigned envn = 0;
@@ -79,14 +79,14 @@ void devmgr_launch(mx_handle_t job, const char* name,
     launchpad_set_environ(lp, envp);
 
     mx_handle_t h = vfs_create_global_root_handle();
-    launchpad_add_handle(lp, h, MX_HND_TYPE_MXIO_ROOT);
+    launchpad_add_handle(lp, h, PA_MXIO_ROOT);
 
     if (stdiofd < 0) {
         mx_status_t r;
         if ((r = mx_log_create(0, &h) < 0)) {
             launchpad_abort(lp, r, "devmgr: cannot create debuglog handle");
         } else {
-            launchpad_add_handle(lp, h, MX_HND_INFO(MX_HND_TYPE_MXIO_LOGGER, MXIO_FLAG_USE_FOR_STDIO | 0));
+            launchpad_add_handle(lp, h, PA_HND(PA_MXIO_LOGGER, MXIO_FLAG_USE_FOR_STDIO | 0));
         }
     } else {
         launchpad_clone_fd(lp, stdiofd, MXIO_FLAG_USE_FOR_STDIO | 0);
@@ -103,6 +103,7 @@ void devmgr_launch(mx_handle_t job, const char* name,
     } else {
         printf("devmgr: launch %s (%s) OK\n", argv[0], name);
     }
+    return status;
 }
 
 static void start_system_init(void) {
@@ -138,8 +139,8 @@ static ssize_t setup_bootfs_vmo(uint32_t n, uint32_t type, mx_handle_t vmo) {
     return cd.file_count;
 }
 
-#define HND_BOOTFS(n) MX_HND_INFO(MX_HND_TYPE_BOOTFS_VMO, n)
-#define HND_BOOTDATA(n) MX_HND_INFO(MX_HND_TYPE_BOOTDATA_VMO, n)
+#define HND_BOOTFS(n) PA_HND(PA_VMO_BOOTFS, n)
+#define HND_BOOTDATA(n) PA_HND(PA_VMO_BOOTDATA, n)
 
 static void setup_bootfs(void) {
     mx_handle_t vmo;
@@ -246,5 +247,5 @@ void devmgr_vfs_init(void) {
 }
 
 void devmgr_vfs_exit(void) {
-    vfs_uninstall_all(MX_SEC(5));
+    vfs_uninstall_all(mx_deadline_after(MX_SEC(5)));
 }

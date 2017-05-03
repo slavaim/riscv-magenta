@@ -5,14 +5,17 @@
 #pragma once
 
 #include <magenta/types.h>
+#include <mxio/limits.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <threads.h>
 
 typedef struct mxio mxio_t;
+typedef struct mxio_namespace mxio_ns_t;
 
 // MXIO provides open/close/read/write io over various transports
 // via the mxio_t interface abstraction.
@@ -114,17 +117,22 @@ static inline mx_status_t mxio_open(mxio_t* io, const char* path, int32_t flags,
     return io->ops->open(io, path, flags, mode, out);
 }
 mx_status_t mxio_close(mxio_t* io);
+mx_status_t mxio_wait(mxio_t* io, uint32_t events, mx_time_t deadline,
+                      uint32_t* out_pending);
 
-// wraps a socket with an mxio_t using simple io
+// Wraps a socket with an mxio_t using simple io.
+// Takes ownership of h.
 mxio_t* mxio_pipe_create(mx_handle_t h);
 
 mx_status_t mxio_pipe_posix_ioctl(mxio_t* io, int req, va_list va);
 
-// wraps a vmo, offset, length with an mxio_t providing a readonly file
+// Wraps a vmo, offset, length with an mxio_t providing a readonly file.
+// Takens ownership of h.
 mxio_t* mxio_vmofile_create(mx_handle_t h, mx_off_t off, mx_off_t len);
 
-// wraps a socket with an mxio_t using socket io
-mxio_t* mxio_socket_create(mx_handle_t h, mx_handle_t s);
+// Wraps a socket with an mxio_t using socket io.
+// Takes ownership of h and s.
+mxio_t* mxio_socket_create(mx_handle_t h, mx_handle_t s, int flags);
 
 // creates a message port and pair of simple io mxio_t's
 int mxio_pipe_pair(mxio_t** a, mxio_t** b);
@@ -145,7 +153,13 @@ static inline void mxio_release(mxio_t* io) {
     }
 }
 
-// wraps an arbitrary handle with a mxio_t that works with wait hooks
+mxio_t* mxio_ns_open_root(mxio_ns_t* ns);
+
+// io will be consumed by this and must not be shared
+void mxio_chdir(mxio_t* io, const char* path);
+
+// Wraps an arbitrary handle with a mxio_t that works with wait hooks.
+// Takes ownership of handle unless shared_handle is true.
 mxio_t* mxio_waitable_create(mx_handle_t h, mx_signals_t signals_in, mx_signals_t signals_out, bool shared_handle);
 
 void mxio_socket_set_stream_ops(mxio_t* io);
@@ -178,3 +192,28 @@ void __mxio_startup_handles_init(uint32_t num, mx_handle_t handles[],
     __attribute__((visibility("hidden")));
 
 void __mxio_rchannel_init(void) __attribute__((visibility("hidden")));
+
+typedef struct {
+    mtx_t lock;
+    mtx_t cwd_lock;
+    bool init;
+    mode_t umask;
+    mx_handle_t svc_root;
+    mxio_t* root;
+    mxio_t* cwd;
+    mxio_t* fdtab[MAX_MXIO_FD];
+    mxio_ns_t* ns;
+    char cwd_path[PATH_MAX];
+} mxio_state_t;
+
+extern mxio_state_t __mxio_global_state;
+
+#define mxio_lock (__mxio_global_state.lock)
+#define mxio_root_handle (__mxio_global_state.root)
+#define mxio_cwd_handle (__mxio_global_state.cwd)
+#define mxio_cwd_lock (__mxio_global_state.cwd_lock)
+#define mxio_cwd_path (__mxio_global_state.cwd_path)
+#define mxio_fdtab (__mxio_global_state.fdtab)
+#define mxio_root_init (__mxio_global_state.init)
+#define mxio_svc_root (__mxio_global_state.svc_root)
+#define mxio_root_ns (__mxio_global_state.ns)

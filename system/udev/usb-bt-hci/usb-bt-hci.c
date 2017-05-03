@@ -36,8 +36,8 @@
 // #define USB_PID 0x0001
 
 typedef struct {
-    mx_device_t device;
-    mx_device_t* usb_device;
+    mx_device_t* mxdev;
+    mx_device_t* usb_mxdev;
 
     mx_handle_t cmd_channel;
     mx_handle_t acl_channel;
@@ -62,13 +62,12 @@ typedef struct {
 
     mtx_t mutex;
 } hci_t;
-#define get_hci(dev) containerof(dev, hci_t, device)
 
 static void queue_acl_read_requests_locked(hci_t* hci) {
     list_node_t* node;
     while ((node = list_remove_head(&hci->free_acl_read_reqs)) != NULL) {
         iotxn_t* txn = containerof(node, iotxn_t, node);
-        iotxn_queue(hci->usb_device, txn);
+        iotxn_queue(hci->usb_mxdev, txn);
     }
 }
 
@@ -76,7 +75,7 @@ static void queue_interrupt_requests_locked(hci_t* hci) {
     list_node_t* node;
     while ((node = list_remove_head(&hci->free_event_reqs)) != NULL) {
         iotxn_t* txn = containerof(node, iotxn_t, node);
-        iotxn_queue(hci->usb_device, txn);
+        iotxn_queue(hci->usb_mxdev, txn);
     }
 }
 
@@ -263,14 +262,14 @@ static bool hci_handle_cmd_read_events(hci_t* hci, mx_wait_item_t* cmd_item) {
         uint8_t buf[CMD_BUF_SIZE];
         uint32_t length = sizeof(buf);
         mx_status_t status =
-            mx_channel_read(cmd_item->handle, 0, buf, length, &length, NULL, 0, NULL);
+            mx_channel_read(cmd_item->handle, 0, buf, NULL, length, 0, &length, NULL);
         if (status < 0) {
             printf("hci_read_thread: failed to read from command channel %s\n",
                    mx_status_get_string(status));
             goto fail;
         }
 
-        status = usb_control(hci->usb_device,
+        status = usb_control(hci->usb_mxdev,
                              USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_DEVICE,
                              0, 0, 0, buf, length);
         if (status < 0) {
@@ -305,7 +304,7 @@ static bool hci_handle_acl_read_events(hci_t* hci, mx_wait_item_t* acl_item) {
         uint8_t buf[BT_HCI_MAX_FRAME_SIZE];
         uint32_t length = sizeof(buf);
         mx_status_t status =
-            mx_channel_read(acl_item->handle, 0, buf, length, &length, NULL, 0, NULL);
+            mx_channel_read(acl_item->handle, 0, buf, NULL, length, 0, &length, NULL);
         if (status < 0) {
             printf("hci_read_thread: failed to read from ACL channel %s\n",
                    mx_status_get_string(status));
@@ -323,7 +322,7 @@ static bool hci_handle_acl_read_events(hci_t* hci, mx_wait_item_t* acl_item) {
         iotxn_t* txn = containerof(node, iotxn_t, node);
         iotxn_copyto(txn, buf, length, 0);
         txn->length = length;
-        iotxn_queue(hci->usb_device, txn);
+        iotxn_queue(hci->usb_mxdev, txn);
     }
 
     return true;
@@ -394,7 +393,7 @@ done:
 static ssize_t hci_ioctl(mx_device_t* device, uint32_t op, const void* in_buf, size_t in_len,
                          void* out_buf, size_t out_len) {
     ssize_t result = ERR_NOT_SUPPORTED;
-    hci_t* hci = get_hci(device);
+    hci_t* hci = device->ctx;
 
     mtx_lock(&hci->mutex);
 
@@ -485,7 +484,7 @@ done:
 }
 
 static void hci_unbind(mx_device_t* device) {
-    hci_t* hci = get_hci(device);
+    hci_t* hci = device->ctx;
 
     // Close the transport channels so that the host stack is notified of device removal.
     mtx_lock(&hci->mutex);
@@ -496,11 +495,11 @@ static void hci_unbind(mx_device_t* device) {
 
     mtx_unlock(&hci->mutex);
 
-    device_remove(&hci->device);
+    device_remove(hci->mxdev);
 }
 
 static mx_status_t hci_release(mx_device_t* device) {
-    hci_t* hci = get_hci(device);
+    hci_t* hci = device->ctx;
 
     mtx_lock(&hci->mutex);
 
@@ -517,7 +516,6 @@ static mx_status_t hci_release(mx_device_t* device) {
 
     mtx_unlock(&hci->mutex);
 
-    mtx_destroy(&hci->mutex);
     free(hci);
 
     return NO_ERROR;
@@ -581,9 +579,9 @@ static mx_status_t hci_bind(mx_driver_t* driver, mx_device_t* device, void** coo
 
     mtx_init(&hci->mutex, mtx_plain);
 
-    hci->usb_device = device;
+    hci->usb_mxdev = device;
 
-    mx_status_t status;
+    mx_status_t status = NO_ERROR;
 
     for (int i = 0; i < EVENT_REQ_COUNT; i++) {
         iotxn_t* txn = usb_alloc_iotxn(intr_addr, intr_max_packet);
@@ -619,30 +617,35 @@ static mx_status_t hci_bind(mx_driver_t* driver, mx_device_t* device, void** coo
         list_add_head(&hci->free_acl_write_reqs, &txn->node);
     }
 
-    device_init(&hci->device, driver, "usb_bt_hci", &hci_device_proto);
-
     mtx_lock(&hci->mutex);
     queue_interrupt_requests_locked(hci);
     queue_acl_read_requests_locked(hci);
     mtx_unlock(&hci->mutex);
 
-    hci->device.protocol_id = MX_PROTOCOL_BLUETOOTH_HCI;
-    status = device_add(&hci->device, device);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "usb_bt_hci",
+        .ctx = hci,
+        .driver = driver,
+        .ops = &hci_device_proto,
+        .proto_id = MX_PROTOCOL_BLUETOOTH_HCI,
+    };
+
+    status = device_add2(device, &args, &hci->mxdev);
     if (status == NO_ERROR) return NO_ERROR;
 
 fail:
     printf("hci_bind failed: %s\n", mx_status_get_string(status));
-    hci_release(&hci->device);
+    hci_release(hci->mxdev);
     return status;
 }
 
-mx_driver_t _driver_usb_bt_hci = {
-    .ops = {
-        .bind = hci_bind,
-    },
+static mx_driver_ops_t usb_bt_hci_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = hci_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_usb_bt_hci, "usb-bt-hci", "magenta", "0.1", 4)
+MAGENTA_DRIVER_BEGIN(usb_bt_hci, usb_bt_hci_driver_ops, "magenta", "0.1", 4)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_USB),
 #if defined(USB_VID) && defined(USB_PID)
     BI_ABORT_IF(NE, BIND_USB_VID, USB_VID),
@@ -653,4 +656,4 @@ MAGENTA_DRIVER_BEGIN(_driver_usb_bt_hci, "usb-bt-hci", "magenta", "0.1", 4)
     BI_ABORT_IF(NE, BIND_USB_SUBCLASS, 1),
     BI_MATCH_IF(EQ, BIND_USB_PROTOCOL, 1),
 #endif
-MAGENTA_DRIVER_END(_driver_usb_bt_hci)
+MAGENTA_DRIVER_END(usb_bt_hci)

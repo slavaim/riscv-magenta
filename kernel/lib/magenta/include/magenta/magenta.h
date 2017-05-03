@@ -18,6 +18,7 @@ class Dispatcher;
 class ExceptionPort;
 class ProcessDispatcher;
 class JobDispatcher;
+class PolicyManager;
 
 // Creates a handle attached to |dispatcher| and with |rights| from a
 // specific arena which makes their addresses come from a fixed range.
@@ -40,9 +41,12 @@ mxtl::RefPtr<ExceptionPort> GetSystemExceptionPort();
 
 mxtl::RefPtr<JobDispatcher> GetRootJobDispatcher();
 
+PolicyManager* GetSystemPolicyManager();
+
 bool magenta_rights_check(const Handle* handle, mx_rights_t desired);
 
-mx_status_t magenta_sleep(mx_time_t nanoseconds);
+mx_status_t magenta_sleep(mx_time_t deadline);
+void magenta_check_deadline(const char* name, mx_time_t deadline);
 
 // Determines if this handle is to a Resource object.
 // Used to provide access to privileged syscalls.
@@ -53,3 +57,9 @@ mx_status_t validate_resource_handle(mx_handle_t handle);
 mx_status_t get_process(ProcessDispatcher* up,
                         mx_handle_t proc_handle,
                         mxtl::RefPtr<ProcessDispatcher>* proc);
+
+namespace internal {
+    // Dumps internal details of the handle table using printf().
+    // Should only be called by diagnostics.cpp.
+    void DumpHandleTableInfo();
+} // namespace internal

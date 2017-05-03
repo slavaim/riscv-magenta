@@ -17,7 +17,7 @@
 #include <ddk/binding.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/tpm.h>
+#include <magenta/device/tpm.h>
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
 #include <stdlib.h>
@@ -115,11 +115,6 @@ cleanup:
     return status;
 }
 
-static mx_protocol_tpm_t tpm_proto __UNUSED = {
-    .get_random = tpm_get_random,
-    .save_state = tpm_save_state,
-};
-
 static ssize_t tpm_device_ioctl(mx_device_t* dev, uint32_t op,
                              const void* in_buf, size_t in_len,
                              void* out_buf, size_t out_len) {
@@ -148,17 +143,17 @@ mx_status_t tpm_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
     }
     tpm_base = (void*)(tmp);
 
-    mx_device_t* dev;
-    status = device_create(&dev, driver, "tpm", &tpm_device_proto);
-    if (status != NO_ERROR) {
-        return status;
-    }
-    dev->protocol_id = MX_PROTOCOL_TPM;
-    dev->protocol_ops = &tpm_proto;
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "tpm",
+        .driver = driver,
+        .ops = &tpm_device_proto,
+        .proto_id = MX_PROTOCOL_TPM,
+    };
 
-    status = device_add(dev, parent);
+    mx_device_t* dev;
+    status =  device_add2(parent, &args, &dev);
     if (status != NO_ERROR) {
-        free(dev);
         return status;
     }
 
@@ -213,19 +208,17 @@ cleanup_device:
         mx_handle_close(irq_handle);
     }
     device_remove(dev);
-    free(dev);
     return status;
 #else
     return ERR_NOT_SUPPORTED;
 #endif
 }
 
-mx_driver_t _driver_tpm = {
-    .ops = {
-        .bind = tpm_bind,
-    },
+static mx_driver_ops_t tpm_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = tpm_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_tpm, "tpm", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(tpm, tpm_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
-MAGENTA_DRIVER_END(_driver_tpm)
+MAGENTA_DRIVER_END(tpm)

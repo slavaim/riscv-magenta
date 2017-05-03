@@ -24,7 +24,8 @@
 VmMapping::VmMapping(VmAddressRegion& parent, vaddr_t base, size_t size, uint32_t vmar_flags,
                      mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset, uint arch_mmu_flags,
                      const char* name)
-    : VmAddressRegionOrMapping(kMagic, base, size, vmar_flags, parent.aspace_.get(), &parent, name),
+    : VmAddressRegionOrMapping(base, size, vmar_flags,
+                               parent.aspace_.get(), &parent, name),
       object_(mxtl::move(vmo)), object_offset_(vmo_offset), arch_mmu_flags_(arch_mmu_flags) {
 
     LTRACEF("%p '%s' aspace %p base %#" PRIxPTR " size %#zx offset %#" PRIx64 "\n",
@@ -32,12 +33,12 @@ VmMapping::VmMapping(VmAddressRegion& parent, vaddr_t base, size_t size, uint32_
 }
 
 VmMapping::~VmMapping() {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     LTRACEF("%p '%s' aspace %p base %#" PRIxPTR " size %#zx\n", this, name_, aspace_.get(), base_, size_);
 }
 
 size_t VmMapping::AllocatedPagesLocked() const {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
     if (state_ != LifeCycleState::ALIVE) {
@@ -47,7 +48,7 @@ size_t VmMapping::AllocatedPagesLocked() const {
 }
 
 void VmMapping::Dump(uint depth, bool verbose) const {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     for (uint i = 0; i < depth; ++i) {
         printf("  ");
     }
@@ -66,7 +67,7 @@ void VmMapping::Dump(uint depth, bool verbose) const {
 }
 
 status_t VmMapping::Protect(vaddr_t base, size_t size, uint new_arch_mmu_flags) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     LTRACEF("%p %s %#" PRIxPTR " %#x %#x\n", this, name_, base_, flags_, new_arch_mmu_flags);
 
     if (!IS_PAGE_ALIGNED(base)) {
@@ -86,7 +87,6 @@ status_t VmMapping::Protect(vaddr_t base, size_t size, uint new_arch_mmu_flags) 
 
     return ProtectLocked(base, size, new_arch_mmu_flags);
 }
-
 
 status_t VmMapping::ProtectLocked(vaddr_t base, size_t size, uint new_arch_mmu_flags) {
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
@@ -129,8 +129,8 @@ status_t VmMapping::ProtectLocked(vaddr_t base, size_t size, uint new_arch_mmu_f
         // Create a new mapping for the right half (has old perms)
         AllocChecker ac;
         mxtl::RefPtr<VmMapping> mapping(mxtl::AdoptRef(
-                new (&ac) VmMapping(*parent_, base + size, size_ - size, flags_,
-                                    object_, object_offset_ + size, arch_mmu_flags_, name_)));
+            new (&ac) VmMapping(*parent_, base + size, size_ - size, flags_,
+                                object_, object_offset_ + size, arch_mmu_flags_, name_)));
         if (!ac.check()) {
             return ERR_NO_MEMORY;
         }
@@ -151,9 +151,9 @@ status_t VmMapping::ProtectLocked(vaddr_t base, size_t size, uint new_arch_mmu_f
         AllocChecker ac;
 
         mxtl::RefPtr<VmMapping> mapping(mxtl::AdoptRef(
-                new (&ac) VmMapping(*parent_, base, size, flags_,
-                                    object_, object_offset_ + base - base_,
-                                    new_arch_mmu_flags, name_)));
+            new (&ac) VmMapping(*parent_, base, size, flags_,
+                                object_, object_offset_ + base - base_,
+                                new_arch_mmu_flags, name_)));
         if (!ac.check()) {
             return ERR_NO_MEMORY;
         }
@@ -175,14 +175,14 @@ status_t VmMapping::ProtectLocked(vaddr_t base, size_t size, uint new_arch_mmu_f
 
     AllocChecker ac;
     mxtl::RefPtr<VmMapping> center_mapping(mxtl::AdoptRef(
-            new (&ac) VmMapping(*parent_, base, size, flags_,
-                                object_, center_vmo_offset, new_arch_mmu_flags, name_)));
+        new (&ac) VmMapping(*parent_, base, size, flags_,
+                            object_, center_vmo_offset, new_arch_mmu_flags, name_)));
     if (!ac.check()) {
         return ERR_NO_MEMORY;
     }
     mxtl::RefPtr<VmMapping> right_mapping(mxtl::AdoptRef(
-            new (&ac) VmMapping(*parent_, base + size, right_size, flags_,
-                                object_, right_vmo_offset, arch_mmu_flags_, name_)));
+        new (&ac) VmMapping(*parent_, base + size, right_size, flags_,
+                            object_, right_vmo_offset, arch_mmu_flags_, name_)));
     if (!ac.check()) {
         return ERR_NO_MEMORY;
     }
@@ -231,7 +231,7 @@ status_t VmMapping::Unmap(vaddr_t base, size_t size) {
 }
 
 status_t VmMapping::UnmapLocked(vaddr_t base, size_t size) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
     DEBUG_ASSERT(size != 0 && IS_PAGE_ALIGNED(size) && IS_PAGE_ALIGNED(base));
     DEBUG_ASSERT(base >= base_ && base - base_ < size_);
@@ -281,8 +281,8 @@ status_t VmMapping::UnmapLocked(vaddr_t base, size_t size) {
 
     AllocChecker ac;
     mxtl::RefPtr<VmMapping> mapping(mxtl::AdoptRef(
-            new (&ac) VmMapping(*parent_, new_base, new_size, flags_, object_, vmo_offset,
-                                arch_mmu_flags_, name_)));
+        new (&ac) VmMapping(*parent_, new_base, new_size, flags_, object_, vmo_offset,
+                            arch_mmu_flags_, name_)));
     if (!ac.check()) {
         return ERR_NO_MEMORY;
     }
@@ -301,7 +301,7 @@ status_t VmMapping::UnmapLocked(vaddr_t base, size_t size) {
 }
 
 status_t VmMapping::UnmapVmoRangeLocked(uint64_t offset, uint64_t len) const {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
 
     LTRACEF("region %p '%s' obj_offset %#" PRIx64 " size %zu, offset %#" PRIx64 " len %#" PRIx64 "\n",
             this, name_, object_offset_, size_, offset, len);
@@ -354,7 +354,7 @@ status_t VmMapping::UnmapVmoRangeLocked(uint64_t offset, uint64_t len) const {
 
     // make sure we're only unmapping within our window
     DEBUG_ASSERT(unmap_base.ValueOrDie() >= base_ &&
-                (unmap_base.ValueOrDie() + len_new - 1) <= (base_ + size_ - 1));
+                 (unmap_base.ValueOrDie() + len_new - 1) <= (base_ + size_ - 1));
 
     LTRACEF("going to unmap %#" PRIxPTR ", len %#" PRIx64 " aspace %p\n",
             unmap_base.ValueOrDie(), len_new, aspace_.get());
@@ -368,7 +368,7 @@ status_t VmMapping::UnmapVmoRangeLocked(uint64_t offset, uint64_t len) const {
 }
 
 status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
 
     AutoLock guard(aspace_->lock());
     if (state_ != LifeCycleState::ALIVE) {
@@ -432,7 +432,7 @@ status_t VmMapping::MapRange(size_t offset, size_t len, bool commit) {
 
 status_t VmMapping::DecommitRange(size_t offset, size_t len,
                                   size_t* decommitted) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     LTRACEF("%p '%s' [%#zx+%#zx], offset %#zx, len %#zx\n",
             this, name_, base_, size_, offset, len);
 
@@ -441,7 +441,7 @@ status_t VmMapping::DecommitRange(size_t offset, size_t len,
         return ERR_BAD_STATE;
     }
     if (offset + len < offset || offset + len > size_) {
-      return ERR_OUT_OF_RANGE;
+        return ERR_OUT_OF_RANGE;
     }
     // VmObject::DecommitRange will typically call back into our instance's
     // VmMapping::UnmapVmoRangeLocked.
@@ -449,7 +449,7 @@ status_t VmMapping::DecommitRange(size_t offset, size_t len,
 }
 
 status_t VmMapping::DestroyLocked() {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
     LTRACEF("%p '%s'\n", this, name_);
 
@@ -489,7 +489,7 @@ status_t VmMapping::DestroyLocked() {
 }
 
 status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
     DEBUG_ASSERT(va >= base_ && va <= base_ + size_ - 1);
@@ -499,8 +499,8 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
 
     __UNUSED char pf_string[5];
     LTRACEF("%p '%s', va %#" PRIxPTR " vmo_offset %#" PRIx64 ", pf_flags %#x (%s)\n",
-           this, name_, va, vmo_offset, pf_flags,
-           vmm_pf_flags_to_string(pf_flags, pf_string));
+            this, name_, va, vmo_offset, pf_flags,
+            vmm_pf_flags_to_string(pf_flags, pf_string));
 
     // make sure we have permission to continue
     if ((pf_flags & VMM_PF_FLAG_USER) && !(arch_mmu_flags_ & ARCH_MMU_FLAG_PERM_USER)) {
@@ -532,7 +532,7 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
 
     // fault in or grab an existing page
     paddr_t new_pa;
-    vm_page_t *page;
+    vm_page_t* page;
     status_t status = object_->GetPageLocked(vmo_offset, pf_flags, &page, &new_pa);
     if (status < 0) {
         TRACEF("ERROR: failed to fault in or grab existing page\n");
@@ -576,7 +576,7 @@ status_t VmMapping::PageFault(vaddr_t va, const uint pf_flags) {
         } else {
             // some other page is mapped there already
             LTRACEF("thread %s faulted on va %#" PRIxPTR ", different page was present\n",
-                   get_current_thread()->name, va);
+                    get_current_thread()->name, va);
             LTRACEF("old pa %#" PRIxPTR " new pa %#" PRIxPTR "\n", pa, new_pa);
 
             // assert that we're not accidentally mapping the zero page writable

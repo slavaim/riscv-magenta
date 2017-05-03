@@ -40,7 +40,7 @@ static VnodeDir* vnclass;
 #define PNMAX 16
 static const char* proto_name(uint32_t id, char buf[PNMAX]) {
     switch (id) {
-#define DDK_PROTOCOL_DEF(tag, val, name) case val: return name;
+#define DDK_PROTOCOL_DEF(tag, val, name, flags) case val: return name;
 #include <ddk/protodefs.h>
     default:
         snprintf(buf, PNMAX, "proto-%08x", id);
@@ -48,27 +48,38 @@ static const char* proto_name(uint32_t id, char buf[PNMAX]) {
     }
 }
 
-static const char* proto_names[] = {
-#define DDK_PROTOCOL_DEF(tag, val, name) name,
+typedef struct {
+    const char* name;
+    VnodeDir* vnode;
+    uint32_t id;
+    uint32_t flags;
+} pinfo_t;
+
+static pinfo_t proto_info[] = {
+#define DDK_PROTOCOL_DEF(tag, val, name, flags) { name, NULL, val, flags },
 #include <ddk/protodefs.h>
-    NULL,
+    { NULL, NULL, 0, 0 },
 };
 
-static void prepopulate_protocol_dirs(void) {
-    const char** namep = proto_names;
-    while (*namep) {
-        VnodeDir* vnp;
-        if (!strcmp(*namep, "misc") || !strcmp(*namep, "misc-parent")) {
-            // don't publish /dev/class/misc or /dev/class/misc-parent
-            namep++;
-            continue;
+static VnodeDir* proto_dir(uint32_t id) {
+    for (pinfo_t* info = proto_info; info->name; info++) {
+        if (info->id == id) {
+            return info->vnode;
         }
-        memfs_create_device_at(vnclass, &vnp, *namep++, 0);
+    }
+    return NULL;
+}
+
+static void prepopulate_protocol_dirs(void) {
+    for (pinfo_t* info = proto_info; info->name; info++) {
+        if (!(info->flags & PF_NOPUB)) {
+            memfs_create_device_at(vnclass, &info->vnode, info->name, 0);
+        }
     }
 }
 
-mx_status_t do_publish(device_ctx_t* parent, device_ctx_t* ctx) {
-    if (memfs_create_device_at(parent->vnode, &ctx->vnode, ctx->name, ctx->hdevice)) {
+mx_status_t do_publish(device_t* parent, device_t* ctx) {
+    if (memfs_create_device_at(parent->vnode, &ctx->vnode, ctx->name, ctx->hrpc)) {
         printf("devmgr: could not add '%s' to devfs!\n", ctx->name);
         return ERR_INTERNAL;
     }
@@ -83,47 +94,43 @@ mx_status_t do_publish(device_ctx_t* parent, device_ctx_t* ctx) {
         return NO_ERROR;
     }
 
-    char buf[PNMAX];
-    const char* pname = proto_name(ctx->protocol_id, buf);
+    // Create link in /dev/class/... if this id has a published class
+    VnodeDir* vnp = proto_dir(ctx->protocol_id);
+    if (vnp != NULL) {
+        const char* name = ctx->name;
+        if ((ctx->protocol_id != MX_PROTOCOL_MISC) &&
+            (ctx->protocol_id != MX_PROTOCOL_CONSOLE)) {
+            // request a numeric name
+            name = NULL;
+        }
 
-    // find or create a vnode for class/<pname>
-    VnodeDir* vnp;
-    mx_status_t status;
-    if ((status = memfs_create_device_at(vnclass, &vnp, pname, 0)) < 0) {
-        printf("devmgr: could not link to '%s'\n", ctx->name);
-        return NO_ERROR;
-    }
-
-    const char* name = ctx->name;
-    if ((ctx->protocol_id != MX_PROTOCOL_MISC) &&
-        (ctx->protocol_id != MX_PROTOCOL_CONSOLE)) {
-        // request a numeric name
-        name = NULL;
-    }
-
-    if ((status = memfs_add_link(vnp, name, (VnodeMemfs*) ctx->vnode)) < 0) {
-        printf("devmgr: could not link to '%s'\n", ctx->name);
+        if (memfs_add_link(vnp, name, (VnodeMemfs*) ctx->vnode) < 0) {
+            printf("devmgr: could not link to '%s'\n", ctx->name);
+        }
     }
 
     return NO_ERROR;
 }
 
-void do_unpublish(device_ctx_t* dev) {
-    devfs_remove(dev->vnode);
+void do_unpublish(device_t* dev) {
+    if (dev->vnode != NULL) {
+        devfs_remove(dev->vnode);
+        dev->vnode = NULL;
+    }
 }
 
 #if !DEVHOST_V2
 static mxio_dispatcher_t* coordinator_dispatcher;
 static mx_handle_t devhost_job_handle;
 
-static mx_status_t do_remote_create(const char* name, uint32_t protocol_id, device_ctx_t** out,
+static mx_status_t do_remote_create(const char* name, uint32_t protocol_id, device_t** out,
                                     mx_handle_t* _hdevice, mx_handle_t* _hrpc) {
     size_t len = strlen(name);
     if (len >= MX_DEVICE_NAME_MAX) {
         return ERR_INVALID_ARGS;
     }
-    device_ctx_t* ctx;
-    if ((ctx = calloc(1, sizeof(device_ctx_t))) == NULL) {
+    device_t* ctx;
+    if ((ctx = calloc(1, sizeof(device_t))) == NULL) {
         return ERR_NO_MEMORY;
     }
 
@@ -144,7 +151,7 @@ static mx_status_t do_remote_create(const char* name, uint32_t protocol_id, devi
     memcpy(ctx->name, name, len);
     ctx->name[len] = 0;
     ctx->protocol_id = protocol_id;
-    ctx->hdevice = hdevice[1];
+    ctx->hrpc = hdevice[1];
 
     if ((status = mxio_dispatcher_add(coordinator_dispatcher, hrpc[1], NULL, ctx)) < 0) {
         mx_handle_close(hdevice[0]);
@@ -161,21 +168,21 @@ static mx_status_t do_remote_create(const char* name, uint32_t protocol_id, devi
     return NO_ERROR;
 }
 
-static mx_status_t do_remote_add(device_ctx_t* parent, const char* name, uint32_t protocol_id,
+static mx_status_t do_remote_add(device_t* parent, const char* name, uint32_t protocol_id,
                                  mx_handle_t hdevice, mx_handle_t hrpc) {
 
     size_t len = strlen(name);
     if (len >= MX_DEVICE_NAME_MAX) {
         return ERR_INVALID_ARGS;
     }
-    device_ctx_t* ctx;
-    if ((ctx = calloc(1, sizeof(device_ctx_t))) == NULL) {
+    device_t* ctx;
+    if ((ctx = calloc(1, sizeof(device_t))) == NULL) {
         return ERR_NO_MEMORY;
     }
     memcpy(ctx->name, name, len);
     ctx->name[len] = 0;
     ctx->protocol_id = protocol_id;
-    ctx->hdevice = hdevice;
+    ctx->hrpc = hdevice;
 
     //printf("devmgr: new ctx %p(%s), parent: %p(%s)\n", ctx, ctx->name, parent, parent->name);
     mx_status_t status;
@@ -190,19 +197,19 @@ static mx_status_t do_remote_add(device_ctx_t* parent, const char* name, uint32_
     return NO_ERROR;
 }
 
-static mx_status_t do_remote_remove(device_ctx_t* dev, bool clean) {
+static mx_status_t do_remote_remove(device_t* dev, bool clean) {
     //printf("devmgr: del ctx %p(%s) %s\n", dev, dev->name, clean ? "" : "unexpected!");
     devfs_remove(dev->vnode);
-    mx_handle_close(dev->hdevice);
+    mx_handle_close(dev->hrpc);
     dev->vnode = NULL;
-    dev->hdevice = 0;
+    dev->hrpc = 0;
     free(dev);
     return NO_ERROR;
 }
 
 // handle dev_coordinator_msgs from devhosts
 mx_status_t coordinator_handler(mx_handle_t h, void* cb, void* cookie) {
-    device_ctx_t* dev = cookie;
+    device_t* dev = cookie;
     dev_coordinator_msg_t msg;
     mx_handle_t handles[2];
     mx_status_t status;
@@ -214,7 +221,7 @@ mx_status_t coordinator_handler(mx_handle_t h, void* cb, void* cookie) {
 
     uint32_t dsz = sizeof(msg);
     uint32_t hcount = 2;
-    if ((status = mx_channel_read(h, 0, &msg, dsz, &dsz, handles, hcount, &hcount)) < 0) {
+    if ((status = mx_channel_read(h, 0, &msg, handles, dsz, hcount, &dsz, &hcount)) < 0) {
         if (status == ERR_BAD_STATE) {
             return ERR_DISPATCHER_NO_WORK;
         }
@@ -264,7 +271,7 @@ void coordinator_init(VnodeDir* vnroot, mx_handle_t root_job) {
 }
 
 void coordinator(void) {
-    device_ctx_t* root;
+    device_t* root;
     mx_status_t status;
     mx_handle_t hdevice, hrpc;
     if ((status = do_remote_create("root", 0, &root, &hdevice, &hrpc)) < 0) {

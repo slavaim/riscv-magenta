@@ -6,6 +6,14 @@
 
 #pragma once
 
+#include <stdint.h>
+
+#include <arch/x86/hypervisor.h>
+#include <arch/x86/hypervisor_state.h>
+
+static const uint64_t kIoApicPhysBase = 0xfec00000;
+static const uint8_t kIoApicRedirectOffsets = 0x36;
+
 #define X86_MSR_IA32_FEATURE_CONTROL                0x003a      /* Feature control */
 #define X86_MSR_IA32_VMX_BASIC                      0x0480      /* Basic info */
 #define X86_MSR_IA32_VMX_PINBASED_CTLS              0x0481      /* Pin-based controls */
@@ -50,6 +58,8 @@ enum class VmcsField64 : uint64_t {
     EXIT_MSR_STORE_ADDRESS          = 0x2006,   /* VM-exit MSR-store address */
     EXIT_MSR_LOAD_ADDRESS           = 0x2008,   /* VM-exit MSR-load address */
     ENTRY_MSR_LOAD_ADDRESS          = 0x200a,   /* VM-entry MSR-load address */
+    VIRTUAL_APIC_ADDRESS            = 0x2012,   /* Virtual-APIC address */
+    APIC_ACCESS_ADDRESS             = 0x2014,   /* APIC-access address */
     EPT_POINTER                     = 0x201a,   /* EPT pointer */
     GUEST_PHYSICAL_ADDRESS          = 0x2400,   /* Guest physical address */
     LINK_POINTER                    = 0x2800,   /* VMCS link pointer */
@@ -122,6 +132,7 @@ enum class VmcsFieldXX : uint64_t {
 };
 
 /* PROCBASED_CTLS2 flags */
+#define PROCBASED_CTLS2_APIC_ACCESS         (1u << 0)
 #define PROCBASED_CTLS2_EPT                 (1u << 1)
 #define PROCBASED_CTLS2_RDTSCP              (1u << 3)
 #define PROCBASED_CTLS2_VPID                (1u << 5)
@@ -129,6 +140,9 @@ enum class VmcsFieldXX : uint64_t {
 /* PROCBASED_CTLS flags */
 #define PROCBASED_CTLS_CR3_LOAD_EXITING     (1u << 15)
 #define PROCBASED_CTLS_CR3_STORE_EXITING    (1u << 16)
+#define PROCBASED_CTLS_CR8_LOAD_EXITING     (1u << 19)
+#define PROCBASED_CTLS_CR8_STORE_EXITING    (1u << 20)
+#define PROCBASED_CTLS_TPR_SHADOW           (1u << 21)
 #define PROCBASED_CTLS_IO_EXITING           (1u << 24)
 #define PROCBASED_CTLS_MSR_BITMAPS          (1u << 28)
 #define PROCBASED_CTLS_PROCBASED_CTLS2      (1u << 31)
@@ -150,9 +164,6 @@ enum class VmcsFieldXX : uint64_t {
 #define ENTRY_CTLS_LOAD_IA32_PAT            (1u << 14)
 #define ENTRY_CTLS_LOAD_IA32_EFER           (1u << 15)
 
-/* EXCEPTION_BITMAP values */
-#define EXCEPTION_BITMAP_ALL_EXCEPTIONS     0xffffffff
-
 /* LINK_POINTER values */
 #define LINK_POINTER_INVALIDATE             0xffffffffffffffff
 
@@ -165,6 +176,7 @@ enum class ExitReason : uint32_t {
     WRMSR                       = 32u,
     ENTRY_FAILURE_GUEST_STATE   = 33u,
     ENTRY_FAILURE_MSR_LOADING   = 34u,
+    EPT_VIOLATION               = 48u,
     XSETBV                      = 55u,
 };
 
@@ -194,6 +206,7 @@ struct VmxInfo {
     VmxInfo();
 };
 
+/* Stores miscellaneous VMX info from the X86_MSR_IA32_VMX_MISC MSR. */
 struct MiscInfo {
     bool wait_for_sipi;
     uint32_t msr_list_limit;
@@ -272,28 +285,39 @@ struct AutoVmcsLoad {
     ~AutoVmcsLoad();
 };
 
+/* Stores the IO APIC state across VM exits. */
+struct IoApicState {
+    // IO register-select register.
+    uint32_t select;
+    // IO APIC identification register.
+    uint32_t id;
+    // IO redirection table offsets.
+    uint32_t redirect[kIoApicRedirectOffsets];
+};
+
 /* Creates a VMCS CPU context to initialize a VM. */
 class VmcsPerCpu : public PerCpu {
 public:
     status_t Init(const VmxInfo& vmx_info) override;
     status_t Clear();
-    status_t Setup(paddr_t pml4_address);
-    status_t Enter(const VmcsContext& context, FifoDispatcher* serial_fifo);
+    status_t Setup(paddr_t pml4_address, paddr_t msr_bitmaps_address);
+    status_t Enter(const VmcsContext& context, GuestPhysicalAddressSpace* gpas,
+                   FifoDispatcher* serial_fifo);
 
 private:
     bool do_resume_ = false;
-    VmxPage msr_bitmaps_page_;
     VmxPage host_msr_page_;
     VmxPage guest_msr_page_;
+    VmxPage virtual_apic_page_;
     VmxState vmx_state_;
+    IoApicState io_apic_state_;
 };
 
-template<typename T>
-status_t InitPerCpus(const VmxInfo& vmx_info, mxtl::Array<T>* ctxs) {
-    for (size_t i = 0; i < ctxs->size(); i++) {
-        status_t status = (*ctxs)[i].Init(vmx_info);
-        if (status != NO_ERROR)
-            return status;
-    }
-    return NO_ERROR;
-}
+uint16_t vmcs_read(VmcsField16 field);
+uint32_t vmcs_read(VmcsField32 field);
+uint64_t vmcs_read(VmcsField64 field);
+uint64_t vmcs_read(VmcsFieldXX field);
+void vmcs_write(VmcsField16 field, uint16_t val);
+void vmcs_write(VmcsField32 field, uint32_t val);
+void vmcs_write(VmcsField64 field, uint64_t val);
+void vmcs_write(VmcsFieldXX field, uint64_t val);

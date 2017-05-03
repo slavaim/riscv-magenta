@@ -32,7 +32,6 @@
 #include <ddk/binding.h>
 #include <ddk/device.h>
 #include <ddk/iotxn.h>
-#include <ddk/protocol/bcm.h>
 #include <ddk/protocol/sdmmc.h>
 
 // Magenta Includes
@@ -43,6 +42,7 @@
 
 // BCM28xx Specific Includes
 #include <bcm/bcm28xx.h>
+#include <bcm/ioctl.h>
 
 #define TRACE 0
 
@@ -167,7 +167,7 @@ typedef struct emmc {
     volatile struct emmc_regs* regs;
 
     // Device heirarchy
-    mx_device_t device;
+    mx_device_t* mxdev;
     mx_device_t* parent;
 
     // Held when a command or action is in progress.
@@ -181,8 +181,6 @@ typedef struct emmc_setup_context {
     mx_device_t* dev;
     mx_driver_t* drv;
 } emmc_setup_context_t;
-
-#define dev_to_bcm_emmc(dev) containerof(dev, emmc_t, device)
 
 // If any of these interrupts is asserted in the SDHCI irq register, it means
 // that an error has occured.
@@ -328,7 +326,7 @@ static void emmc_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
         return;
     }
 
-    emmc_t* emmc = dev_to_bcm_emmc(dev);
+    emmc_t* emmc = dev->ctx;
     mx_status_t st;
     mtx_lock(&emmc->mtx);
 
@@ -553,7 +551,7 @@ static mx_status_t emmc_set_voltage(emmc_t* emmc, uint32_t new_voltage) {
 static ssize_t emmc_ioctl(mx_device_t* dev, uint32_t op,
                           const void* in_buf, size_t in_len,
                           void* out_buf, size_t out_len) {
-    emmc_t* emmc = dev_to_bcm_emmc(dev);
+    emmc_t* emmc = dev->ctx;
     uint32_t* arg;
     arg = (uint32_t*)in_buf;
     if (in_len < sizeof(*arg))
@@ -575,12 +573,12 @@ static ssize_t emmc_ioctl(mx_device_t* dev, uint32_t op,
 }
 
 static void emmc_unbind(mx_device_t* device) {
-    emmc_t* emmc = dev_to_bcm_emmc(device);
-    device_remove(&emmc->device);
+    emmc_t* emmc = device->ctx;
+    device_remove(emmc->mxdev);
 }
 
 static mx_status_t emmmc_release(mx_device_t* device) {
-    emmc_t* emmc = dev_to_bcm_emmc(device);
+    emmc_t* emmc = device->ctx;
     free(emmc);
     return NO_ERROR;
 }
@@ -755,10 +753,6 @@ static int emmc_bootstrap_thread(void *arg) {
     regs->irqen = 0;
     regs->irq = 0xffffffff;
 
-    // Create the device.
-    device_init(&emmc->device, drv, "bcm-emmc", &emmc_device_proto);
-    emmc->device.protocol_id = MX_PROTOCOL_SDMMC;
-
     // Create a thread to handle IRQs.
     thrd_t irq_thrd;
     int thrd_rc = thrd_create_with_name(&irq_thrd, emmc_irq_thread, emmc,
@@ -769,10 +763,24 @@ static int emmc_bootstrap_thread(void *arg) {
     }
     thrd_detach(irq_thrd);
 
-    device_add(&emmc->device, emmc->parent);
+    // Create the device.
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "bcm-emmc",
+        .ctx = emmc,
+        .driver = drv,
+        .ops = &emmc_device_proto,
+        .proto_id = MX_PROTOCOL_SDMMC,
+    };
+
+    st = device_add2(emmc->parent, &args, &emmc->mxdev);
+    if (st != NO_ERROR) {
+        goto out;
+    }
 
     // Everything went okay, exit the bootstrap thread!
     return 0;
+
 out:
     if (emmc)
         free(emmc);
@@ -809,17 +817,16 @@ static mx_status_t emmc_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) 
     return NO_ERROR;
 }
 
-mx_driver_t _driver_emmc_dwc = {
-    .ops = {
-        .bind = emmc_bind,
-    },
+static mx_driver_ops_t emmc_dwc_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = emmc_bind,
 };
 
 // The formatter does not play nice with these macros.
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_emmc_dwc, "bcm-emmc", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(bcm_emmc, emmc_dwc_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
     BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
     BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_EMMC),
-MAGENTA_DRIVER_END(_driver_emmc_dwc)
+MAGENTA_DRIVER_END(bcm_emmc)
 // clang-format on

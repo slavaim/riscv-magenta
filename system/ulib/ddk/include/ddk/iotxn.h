@@ -124,6 +124,15 @@ struct iotxn {
     void (*release_cb)(iotxn_t* txn);
 };
 
+// used to iterate over contiguous buffer ranges in the physical address space
+typedef struct {
+    iotxn_t*    txn;        // txn we are operating on
+    mx_off_t    offset;     // current offset in the txn (relative to iotxn vmo_offset)
+    size_t      max_length; // max length to be returned by iotxn_phys_iter_next()
+    uint64_t    page;       // index of page in txn->phys that contains offset
+    uint64_t    last_page;  // last valid page index in txn->phys
+} iotxn_phys_iter_t;
+
 #define iotxn_pdata(txn, type) ((type*) (txn)->protocol_data)
 
 // flags for iotxn_alloc
@@ -162,8 +171,7 @@ ssize_t iotxn_copyfrom(iotxn_t* txn, void* data, size_t length, size_t offset);
 ssize_t iotxn_copyto(iotxn_t* txn, const void* data, size_t length, size_t offset);
 
 // iotxn_physmap() looks up the physical pages backing this iotxn's vm object.
-// the 'phys', 'phys_offset' and 'phys_length' fields are set if this function
-// succeeds.
+// the 'phys' and 'phys_count' fields are set if this function succeeds.
 mx_status_t iotxn_physmap(iotxn_t* txn);
 
 // convenience function to get the physical address of iotxn, taking into
@@ -201,5 +209,14 @@ mx_status_t iotxn_clone_partial(iotxn_t* txn, uint64_t vmo_offset, mx_off_t leng
 
 // free the iotxn -- should be called only by the entity that allocated it
 void iotxn_release(iotxn_t* txn);
+
+// initializes an iotxn_phys_iter_t for an iotxn
+// max_length is the maximum length of a range returned by iotxn_phys_iter_next()
+// max_length must be either a positive multiple of PAGE_SIZE, or zero for no limit.
+void iotxn_phys_iter_init(iotxn_phys_iter_t* iter, iotxn_t* txn, size_t max_length);
+
+// returns the next physical address and length for the iterator up to size max_length.
+// return value is length, or zero if iteration is done.
+size_t iotxn_phys_iter_next(iotxn_phys_iter_t* iter, mx_paddr_t* out_paddr);
 
 __END_CDECLS;

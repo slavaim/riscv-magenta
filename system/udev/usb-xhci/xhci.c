@@ -179,7 +179,7 @@ static mx_status_t xhci_vmo_init(size_t size, mx_handle_t* out_handle, mx_vaddr_
 static void xhci_vmo_release(mx_handle_t handle, mx_vaddr_t virt) {
     uint64_t size;
     mx_vmo_get_size(handle, &size);
-    mx_vmar_unmap(handle, virt, size);
+    mx_vmar_unmap(mx_vmar_root_self(), virt, size);
     mx_handle_close(handle);
 }
 
@@ -188,6 +188,11 @@ mx_status_t xhci_init(xhci_t* xhci, void* mmio) {
     mx_paddr_t* phys_addrs = NULL;
 
     list_initialize(&xhci->command_queue);
+    mtx_init(&xhci->command_ring_lock, mtx_plain);
+    mtx_init(&xhci->command_queue_mutex, mtx_plain);
+    mtx_init(&xhci->mfindex_mutex, mtx_plain);
+    mtx_init(&xhci->input_context_lock, mtx_plain);
+    completion_reset(&xhci->command_queue_completion);
 
     xhci->cap_regs = (xhci_cap_regs_t*)mmio;
     xhci->op_regs = (xhci_op_regs_t*)((uint8_t*)xhci->cap_regs + xhci->cap_regs->length);
@@ -325,7 +330,6 @@ mx_status_t xhci_init(xhci_t* xhci, void* mmio) {
         printf("xhci_command_ring_init failed\n");
         goto fail;
     }
-    mtx_init(&xhci->command_ring_lock, mtx_plain);
 
     result = xhci_event_ring_init(xhci, 0, EVENT_RING_SIZE);
     if (result != NO_ERROR) {
@@ -364,13 +368,17 @@ mx_status_t xhci_endpoint_init(xhci_endpoint_t* ep, int ring_count) {
     mx_status_t status = xhci_transfer_ring_init(&ep->transfer_ring, ring_count);
     if (status != NO_ERROR) return status;
 
-    list_initialize(&ep->pending_requests);
-    list_initialize(&ep->deferred_txns);
     mtx_init(&ep->lock, mtx_plain);
+    list_initialize(&ep->queued_txns);
+    list_initialize(&ep->pending_txns);
+    ep->current_txn = NULL;
     return NO_ERROR;
 }
 
-
+void xhci_endpoint_free(xhci_endpoint_t* ep) {
+    free(ep->transfer_state);
+    ep->transfer_state = NULL;
+}
 
 static void xhci_update_erdp(xhci_t* xhci, int interruptor) {
     xhci_event_ring_t* er = &xhci->event_rings[interruptor];

@@ -157,19 +157,11 @@ ssize_t VnodeFile::Write(const void* data, size_t len, size_t off) {
     return actual;
 }
 
-ssize_t VnodeVmo::Write(const void* data, size_t len, size_t off) {
-    size_t rlen;
-    if (off+len > length_) {
-        // TODO(orr): grow vmo to support extending length
-        return ERR_NOT_SUPPORTED;
-    }
-    mx_status_t r = mx_vmo_write(vmo_, data, offset_ + off, len, &rlen);
-    if (r < 0) {
-        return r;
-    }
-    modify_time_ = mx_time_get(MX_CLOCK_UTC);
-    return rlen;
-}
+bool VnodeDir::IsRemote() const { return remoter_.IsRemote(); }
+mx_handle_t VnodeDir::DetachRemote() { return remoter_.DetachRemote(flags_); }
+mx_handle_t VnodeDir::WaitForRemote() { return remoter_.WaitForRemote(flags_); }
+mx_handle_t VnodeDir::GetRemote() const { return remoter_.GetRemote(); }
+void VnodeDir::SetRemote(mx_handle_t remote) { return remoter_.SetRemote(remote); }
 
 mx_status_t VnodeDir::Lookup(fs::Vnode** out, const char* name, size_t len) {
     if (!IsDirectory()) {
@@ -193,7 +185,7 @@ mx_status_t VnodeDir::Lookup(fs::Vnode** out, const char* name, size_t len) {
 
 mx_status_t VnodeFile::Getattr(vnattr_t* attr) {
     memset(attr, 0, sizeof(vnattr_t));
-    attr->mode = V_TYPE_FILE | V_IRUSR;
+    attr->mode = V_TYPE_FILE | V_IRUSR | V_IWUSR;
     attr->size = length_;
     attr->nlink = link_count_;
     attr->create_time = create_time_;
@@ -213,11 +205,7 @@ mx_status_t VnodeDir::Getattr(vnattr_t* attr) {
 
 mx_status_t VnodeVmo::Getattr(vnattr_t* attr) {
     memset(attr, 0, sizeof(vnattr_t));
-    if (!IsDirectory()) {
-        attr->mode = V_TYPE_FILE | V_IRUSR;
-    } else {
-        attr->mode = V_TYPE_DIR | V_IRUSR;
-    }
+    attr->mode = V_TYPE_FILE | V_IRUSR;
     attr->size = length_;
     attr->nlink = link_count_;
     attr->create_time = create_time_;
@@ -498,7 +486,7 @@ mx_status_t VnodeMemfs::AttachRemote(mx_handle_t h) {
     } else if (IsRemote()) {
         return ERR_ALREADY_BOUND;
     }
-    remote_ = h;
+    SetRemote(h);
     return NO_ERROR;
 }
 
@@ -770,7 +758,6 @@ memfs::VnodeDir* vfs_create_global_root() {
         memfs_mount_locked(memfs::vfs_root, bootfs_get_root());
         memfs_mount_locked(memfs::vfs_root, memfs_get_root());
 
-        memfs_create_directory("/blobstore", 0);
         memfs_create_directory("/data", 0);
         memfs_create_directory("/volume", 0);
         memfs_create_directory("/dev/socket", 0);

@@ -45,54 +45,100 @@ devhost_iostate_t* create_devhost_iostate(mx_device_t* dev) {
     return ios;
 }
 
+#if !DEVHOST_V2
+mx_status_t devhost_start_iostate(devhost_iostate_t* ios, mx_handle_t h) {
+    return mxio_dispatcher_add(devhost_rio_dispatcher, h, devhost_rio_handler, ios);
+}
+#endif
+
 mx_status_t __mxrio_clone(mx_handle_t h, mx_handle_t* handles, uint32_t* types);
 
-static mx_status_t devhost_get_handles(mx_device_t* dev, const char* path,
-                                       uint32_t flags, mx_handle_t* handles,
-                                       uint32_t* ids) {
+static mx_status_t devhost_get_handles(mx_handle_t rh, mx_device_t* dev,
+                                       const char* path, uint32_t flags) {
     mx_status_t r;
+    mxrio_object_t obj;
     devhost_iostate_t* newios;
 
     if ((newios = create_devhost_iostate(dev)) == NULL) {
+        mx_handle_close(rh);
         return ERR_NO_MEMORY;
     }
-    newios->flags = flags;
 
-    mx_handle_t h0, h1;
-    if ((r = mx_channel_create(0, &h0, &h1)) < 0) {
-        free(newios);
-        return r;
-    }
-    handles[0] = h0;
-    ids[0] = MX_HND_TYPE_MXIO_REMOTE;
+    // detect pipeline directive and discard all other
+    // protocol flags
+    bool pipeline = flags & MXRIO_OFLAG_PIPELINE;
+    flags &= (~MXRIO_OFLAG_MASK);
+
+    newios->flags = flags;
 
     if ((r = device_openat(dev, &dev, path, flags)) < 0) {
         printf("devhost_get_handles(%p:%s) open path='%s', r=%d\n",
                dev, dev->name, path ? path : "", r);
-        goto fail1;
+        if (pipeline) {
+            goto fail_openat_pipelined;
+        } else {
+            goto fail_openat;
+        }
     }
     newios->dev = dev;
 
-    if (dev->event > 0) {
-        //TODO: read only?
-        if ((r = mx_handle_duplicate(dev->event, MX_RIGHT_SAME_RIGHTS, &handles[1])) < 0) {
-            goto fail2;
+    if (!pipeline) {
+        if (dev->event > 0) {
+            //TODO: read only?
+            if ((r = mx_handle_duplicate(dev->event, MX_RIGHT_SAME_RIGHTS, &obj.handle[0])) < 0) {
+                goto fail_duplicate;
+            }
+            r = 1;
+        } else {
+            r = 0;
         }
-        ids[1] = MX_HND_TYPE_MXIO_REMOTE;
-        r = 2;
-    } else {
-        r = 1;
+        goto done;
+fail_duplicate:
+        device_close(dev, flags);
+fail_openat:
+        free(newios);
+done:
+        if (r < 0) {
+            obj.status = r;
+            obj.hcount = 0;
+        } else {
+            obj.status = NO_ERROR;
+            obj.type = MXIO_PROTOCOL_REMOTE;
+            obj.hcount = r;
+        }
+        r = mx_channel_write(rh, 0, &obj, MXRIO_OBJECT_MINSIZE,
+                             obj.handle, obj.hcount);
+
+        // If we were reporting an error, we've already closed
+        // the device and destroyed the iostate, so no matter
+        // what we close the handle and return
+        if (obj.status < 0) {
+            mx_handle_close(rh);
+            return obj.status;
+        }
+
+        // If we succeeded but the write failed, we have to
+        // tear down because the channel is now dead
+        if (r < 0) {
+            goto fail;
+        }
     }
 
-    mxio_dispatcher_add(devhost_rio_dispatcher, h1, devhost_rio_handler, newios);
-    return r;
+    // Similarly, if we can't add the new ios and handle to the
+    // dispatcher our only option is to give up and tear down.
+    // In practice, this should never happen.
+    if ((r = devhost_start_iostate(newios, rh)) < 0) {
+        printf("devhost_get_handles: failed to start iostate\n");
+        goto fail;
+    }
 
-fail2:
+    return NO_ERROR;
+
+fail:
     device_close(dev, flags);
-fail1:
-    mx_handle_close(h0);
-    mx_handle_close(h1);
+fail_openat_pipelined:
     free(newios);
+    mx_handle_close(rh);
     return r;
 }
 
@@ -129,7 +175,7 @@ static ssize_t do_sync_io(mx_device_t* dev, uint32_t opcode, void* buf, size_t c
         iotxn_copyto(txn, buf, txn->length, 0);
     }
 
-    dev->ops->iotxn_queue(dev, txn);
+    iotxn_queue(dev, txn);
     completion_wait(&completion, MX_TIME_INFINITE);
 
     if (txn->status != NO_ERROR) {
@@ -197,21 +243,21 @@ static ssize_t do_ioctl(mx_device_t* dev, uint32_t op, const void* in_buf, size_
         break;
     }
     case IOCTL_DEVICE_DEBUG_SUSPEND: {
-        r = dev->ops->suspend(dev);
+        r = device_op_suspend(dev);
         break;
     }
     case IOCTL_DEVICE_DEBUG_RESUME: {
-        r = dev->ops->resume(dev);
+        r = device_op_resume(dev);
         break;
     }
     default:
-        r = dev->ops->ioctl(dev, op, in_buf, in_len, out_buf, out_len);
+        r = device_op_ioctl(dev, op, in_buf, in_len, out_buf, out_len);
     }
     return r;
 }
 
-static mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh,
-                                        devhost_iostate_t* ios, bool* should_free_ios) {
+mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh_unused,
+                                 devhost_iostate_t* ios, bool* should_free_ios) {
     mx_device_t* dev = ios->dev;
     uint32_t len = msg->datalen;
     int32_t arg = msg->arg;
@@ -240,8 +286,6 @@ static mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh,
         msg->data[len] = 0;
         // fallthrough
     case MXRIO_CLONE: {
-        uint32_t ids[VFS_MAX_HANDLES];
-        mx_status_t r;
         char* path = NULL;
         uint32_t flags = arg;
         if (MXRIO_OP(msg->op) == MXRIO_OPEN) {
@@ -252,24 +296,9 @@ static mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh,
             }
         } else {
             xprintf("devhost_rio_handler() clone dev %p name '%s'\n", dev, dev->name);
-            flags = ios->flags;
+            flags = ios->flags | (flags & MXRIO_OFLAG_MASK);
         }
-        mxrio_object_t obj;
-        r = devhost_get_handles(dev, path, flags, obj.handle, ids);
-        if (r < 0) {
-            obj.status = r;
-            obj.hcount = 0;
-        } else {
-            obj.status = NO_ERROR;
-            obj.type = MXIO_PROTOCOL_REMOTE;
-            obj.hcount = r;
-        }
-        // Response is written to the provided handle.
-        // If that fails there's no further useful action we can take
-        // (it should only fail when the caller closes its side first
-        // in which case it is no longer around to hear about a failure).
-        mx_channel_write(msg->handle[0], 0, &obj, MXRIO_OBJECT_MINSIZE, obj.handle, obj.hcount);
-        mx_handle_close(msg->handle[0]);
+        devhost_get_handles(msg->handle[0], dev, path, flags);
         return ERR_DISPATCHER_INDIRECT;
     }
     case MXRIO_READ: {
@@ -314,7 +343,7 @@ static mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh,
     }
     case MXRIO_SEEK: {
         size_t end, n;
-        end = dev->ops->get_size(dev);
+        end = device_op_get_size(dev);
         switch (arg) {
         case SEEK_SET:
             if ((msg->arg2.off < 0) || ((size_t)msg->arg2.off > end)) {
@@ -371,7 +400,7 @@ static mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh,
         vnattr_t* attr = (void*)msg->data;
         memset(attr, 0, sizeof(vnattr_t));
         attr->mode = V_TYPE_CDEV | V_IRUSR | V_IWUSR;
-        attr->size = dev->ops->get_size(dev);
+        attr->size = device_op_get_size(dev);
         return msg->datalen;
     }
     case MXRIO_SYNC: {

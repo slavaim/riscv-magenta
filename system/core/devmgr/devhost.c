@@ -92,15 +92,15 @@ mx_device_t* driver_get_misc_device(void) {
 
 static int devhost_init(void) {
     job_handle = mx_job_default();
-    sysinfo_job_root = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, ID_HJOBROOT));
-    app_launcher = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, ID_HLAUNCHER));
-    root_resource_handle = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_RESOURCE, 0));
-    hdevice = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, ID_HDEVICE));
-    hrpc = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, ID_HRPC));
-    hacpi = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, ID_HACPI));
+    sysinfo_job_root = mx_get_startup_handle(PA_HND(PA_USER0, ID_HJOBROOT));
+    app_launcher = mx_get_startup_handle(PA_HND(PA_USER0, ID_HLAUNCHER));
+    root_resource_handle = mx_get_startup_handle(PA_HND(PA_RESOURCE, 0));
+    hdevice = mx_get_startup_handle(PA_HND(PA_USER0, ID_HDEVICE));
+    hrpc = mx_get_startup_handle(PA_HND(PA_USER0, ID_HRPC));
+    hacpi = mx_get_startup_handle(PA_HND(PA_USER0, ID_HACPI));
 
     //TODO: figure out why we need to do this
-    mx_handle_t vmo = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_VDSO_VMO, 0));
+    mx_handle_t vmo = mx_get_startup_handle(PA_HND(PA_VMO_VDSO, 0));
     vmo = launchpad_set_vdso_vmo(vmo);
 
     if (root_resource_handle <= 0) {
@@ -133,16 +133,16 @@ static int devhost_cmdline(int argc, char** argv) {
         // The "root" devhost is launched by devmgr and currently hosts
         // the drivers without bind programs (singletons like null or console,
         // bus drivers like pci, etc)
-        if ((status = device_create(&dev, &root_driver, "root", &root_ops)) < 0) {
+        if ((status = device_create("root", NULL, &root_ops, &root_driver, &dev)) < 0) {
             printf("devhost: cannot create root device: %d\n", status);
             return -1;
         }
         the_root_device = dev;
-        if ((status = device_create(&the_misc_device, &root_driver, "misc", &root_ops))) {
+        if ((status = device_create("misc", NULL, &root_ops, &root_driver, &the_misc_device)) < 0) {
             printf("devhost: cannot create misc device: %d\n", status);
             return -1;
         }
-        the_misc_device->protocol_id = MX_PROTOCOL_MISC_PARENT;
+        device_set_protocol(the_misc_device, MX_PROTOCOL_MISC_PARENT, NULL);
         as_root = true;
     } else if (!strncmp(argv[1], "pci=", 4)) {
         // The pci bus driver launches devhosts for pci devices.
@@ -154,11 +154,11 @@ static int devhost_cmdline(int argc, char** argv) {
         }
     } else if (!strcmp(argv[1], "soc")) {
         if (argc < 4) return -1;
-        if ((status = device_create(&dev, &root_driver, "soc", &root_ops)) < 0) {
+        if ((status = device_create("soc", NULL, &root_ops, &root_driver, &dev)) < 0) {
             printf("devhost: cannot create SoC device: %d\n", status);
             return -1;
         }
-        dev->protocol_id = MX_PROTOCOL_SOC;
+        device_set_protocol(dev, MX_PROTOCOL_SOC, NULL);
         dev->props = calloc(2, sizeof(mx_device_prop_t));
         dev->props[0].id = BIND_SOC_VID;
         dev->props[0].value = strtoul(argv[2],NULL,10);
@@ -166,11 +166,11 @@ static int devhost_cmdline(int argc, char** argv) {
         dev->props[1].value = strtoul(argv[3],NULL,10);
         dev->prop_count=2;
     } else if (!strcmp(argv[1], "acpi")) {
-        if ((status = device_create(&dev, &root_driver, "acpi", &root_ops)) < 0) {
+        if ((status = device_create("acpi", NULL, &root_ops, &root_driver, &dev)) < 0) {
             printf("devhost: cannot create ACPI bus device: %d\n", status);
             return -1;
         }
-        dev->protocol_id = MX_PROTOCOL_ACPI_BUS;
+        device_set_protocol(dev, MX_PROTOCOL_ACPI_BUS, NULL);
     } else {
         printf("devhost: unsupported mode: %s\n", argv[1]);
         return -1;

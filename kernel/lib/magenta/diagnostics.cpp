@@ -26,20 +26,12 @@ public:
     ProcessWalker(ProcessWalker&& other) : cb_(other.cb_) {}
 
 private:
-    bool Size(uint32_t proc_count, uint32_t job_count) final {
-        return true;
-    }
-
-    bool OnJob(JobDispatcher* job, uint32_t index) final {
-        return true;
-    }
-
-    bool OnProcess(ProcessDispatcher* process, uint32_t index) final {
+    bool OnProcess(ProcessDispatcher* process) final {
         cb_(process);
         return true;
     }
 
-    ProcessCallbackType cb_;
+    const ProcessCallbackType cb_;
 };
 
 template <typename ProcessCallbackType>
@@ -164,7 +156,7 @@ void DumpProcessList() {
                process->get_related_koid(),
                pname);
     });
-    GetRootJobDispatcher()->EnumerateChildren(&walker);
+    GetRootJobDispatcher()->EnumerateChildren(&walker, /* recurse */ true);
 }
 
 void DumpProcessHandles(mx_koid_t id) {
@@ -196,36 +188,33 @@ public:
     JobDumper(mx_koid_t self) : self_(self) {}
     JobDumper(const JobDumper&) = delete;
 
-private:
-    bool Size(uint32_t proc_count, uint32_t job_count) final {
-        if (!job_count)
-            printf("no jobs\n");
-        if (proc_count < 2)
-            printf("no processes\n");
-        return true;
-    }
+    // Returns true if this object has ever printed anything.
+    bool printed() const { return printed_; }
 
+private:
     // This is called by JobDispatcher::EnumerateChildren() which acquires JobDispatcher::lock_
     // first, making it safe to access job->process_count_ etc, but there's no reasonable way to
     // express this fact via thread safety annotations so we disable the analysis for this function.
-    bool OnJob(JobDispatcher* job, uint32_t index) final TA_NO_THREAD_SAFETY_ANALYSIS {
+    bool OnJob(JobDispatcher* job) final TA_NO_THREAD_SAFETY_ANALYSIS {
         printf("- %" PRIu64 " child job (%" PRIu32 " processes)\n",
             job->get_koid(), job->process_count());
+        printed_ = true;
         return true;
     }
 
-    bool OnProcess(ProcessDispatcher* proc, uint32_t index) final {
+    bool OnProcess(ProcessDispatcher* proc) final {
         auto id = proc->get_koid();
         if (id != self_) {
             char pname[MX_MAX_NAME_LEN];
             proc->get_name(pname);
             printf("- %" PRIu64 " proc [%s]\n", id, pname);
+            printed_ = true;
         }
-
         return true;
     }
 
-    mx_koid_t self_;
+    const mx_koid_t self_;
+    bool printed_ = false;
 };
 
 void DumpJobTreeForProcess(mx_koid_t id) {
@@ -257,7 +246,10 @@ void DumpJobTreeForProcess(mx_koid_t id) {
     printf("\n");
 
     JobDumper dumper(id);
-    job->EnumerateChildren(&dumper);
+    job->EnumerateChildren(&dumper, /* recurse */ true);
+    if (!dumper.printed()) {
+        printf("no jobs/processes\n");
+    }
 }
 
 void KillProcess(mx_koid_t id) {
@@ -413,11 +405,21 @@ status_t GetVmAspaceMaps(mxtl::RefPtr<VmAspace> aspace,
 void DumpProcessAddressSpace(mx_koid_t id) {
     auto pd = ProcessDispatcher::LookupProcessById(id);
     if (!pd) {
-        printf("process not found!\n");
+        printf("process %" PRIu64 " not found!\n", id);
         return;
     }
 
     pd->aspace()->Dump(true);
+}
+
+// Dumps an address space based on the arg.
+static void DumpAddressSpace(const cmd_args* arg) {
+    if (strncmp(arg->str, "kernel", strlen(arg->str)) == 0) {
+        // The arg is a prefix of "kernel".
+        VmAspace::kernel_aspace()->Dump(true);
+    } else {
+        DumpProcessAddressSpace(arg->u);
+    }
 }
 
 static size_t mwd_limit = 32 * 256;
@@ -432,7 +434,7 @@ void DumpProcessMemoryUsage(const char* prefix, size_t limit) {
             printf("%s%s: %zu MB\n", prefix, pname, pages / 256);
         }
     });
-    GetRootJobDispatcher()->EnumerateChildren(&walker);
+    GetRootJobDispatcher()->EnumerateChildren(&walker, /* recurse */ true);
 }
 
 static int mwd_thread(void* arg) {
@@ -449,12 +451,14 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
     notenoughargs:
         printf("not enough arguments:\n");
     usage:
-        printf("%s ps         : list processes\n", argv[0].str);
-        printf("%s mwd  <mb>  : memory watchdog\n", argv[0].str);
-        printf("%s ht   <pid> : dump process handles\n", argv[0].str);
-        printf("%s jb   <pid> : list job tree\n", argv[0].str);
-        printf("%s kill <pid> : kill process\n", argv[0].str);
-        printf("%s asd  <pid> : dump process address space\n", argv[0].str);
+        printf("%s ps                : list processes\n", argv[0].str);
+        printf("%s mwd  <mb>         : memory watchdog\n", argv[0].str);
+        printf("%s ht   <pid>        : dump process handles\n", argv[0].str);
+        printf("%s jb   <pid>        : list job tree\n", argv[0].str);
+        printf("%s kill <pid>        : kill process\n", argv[0].str);
+        printf("%s asd  <pid>|kernel : dump process/kernel address space\n",
+               argv[0].str);
+        printf("%s htinfo            : handle table info\n", argv[0].str);
         return -1;
     }
 
@@ -490,9 +494,13 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
     } else if (strcmp(argv[1].str, "asd") == 0) {
         if (argc < 3)
             goto usage;
-        DumpProcessAddressSpace(argv[2].u);
+        DumpAddressSpace(&argv[2]);
+    } else if (strcmp(argv[1].str, "htinfo") == 0) {
+        if (argc != 2)
+            goto usage;
+        internal::DumpHandleTableInfo();
     } else {
-        printf("unrecognized subcommand\n");
+        printf("unrecognized subcommand '%s'\n", argv[1].str);
         goto usage;
     }
     return rc;

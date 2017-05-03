@@ -26,6 +26,7 @@
 #define MXIO_PROTOCOL_REMOTE 2
 #define MXIO_PROTOCOL_VMOFILE 3
 #define MXIO_PROTOCOL_SOCKET 4
+#define MXIO_PROTOCOL_SERVICE 5
 
 // events for mxio_wait_fd()
 #define MXIO_EVT_READABLE EPOLLIN
@@ -36,7 +37,7 @@
 __BEGIN_CDECLS
 
 // wait until one or more events are pending
-mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* pending, mx_time_t timeout);
+mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* pending, mx_time_t deadline);
 
 // create a fd that works with wait APIs (epoll, select, etc.) from a handle
 // and expected signals (signals_in/signals_out correspond to EPOLLIN/EPOLLOUT
@@ -51,8 +52,9 @@ ssize_t mxio_ioctl(int fd, int op, const void* in_buf, size_t in_len, void* out_
 // for transport to another process
 mx_status_t mxio_pipe_half(mx_handle_t* handle, uint32_t* type);
 
-// If fd is a vmo-backed-file, return a read-only vmo containing
-// the contents of the file, at offset off, of length len.
-mx_status_t mxio_get_vmo(int fd, mx_handle_t* vmo, size_t* off, size_t* len);
+// Get a read-only VMO containing the whole contents of the file.
+// This uses an underlying VMO when possible, falling back to
+// eagerly reading the contents into a freshly-created VMO.
+mx_status_t mxio_get_vmo(int fd, mx_handle_t* out_vmo);
 
 __END_CDECLS

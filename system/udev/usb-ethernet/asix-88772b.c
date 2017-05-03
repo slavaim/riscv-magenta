@@ -303,8 +303,6 @@ static void ax88772b_free(ax88772b_t* eth) {
     while ((txn = list_remove_head_type(&eth->free_intr_reqs, iotxn_t, node)) != NULL) {
         iotxn_release(txn);
     }
-
-    free(eth->device);
     free(eth);
 }
 
@@ -453,7 +451,17 @@ static int ax88772b_start_thread(void* arg) {
            eth->mac_addr[0], eth->mac_addr[1], eth->mac_addr[2],
            eth->mac_addr[3], eth->mac_addr[4], eth->mac_addr[5]);
 
-    status = device_create(&eth->device, eth->driver, "usb-ethernet", &ax88772b_device_proto);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ax88772b",
+        .ctx = eth,
+        .driver = eth->driver,
+        .ops = &ax88772b_device_proto,
+        .proto_id = MX_PROTOCOL_ETHERMAC,
+        .proto_ops = &ethmac_ops,
+    };
+
+    status = device_add2(eth->usb_device, &args, &eth->device);
     if (status < 0) {
         printf("ax8872b: failed to create device: %d\n", status);
         goto fail;
@@ -462,12 +470,7 @@ static int ax88772b_start_thread(void* arg) {
     mtx_lock(&eth->mutex);
     queue_interrupt_requests_locked(eth);
     mtx_unlock(&eth->mutex);
-
-    eth->device->ctx = eth;
-    eth->device->protocol_id = MX_PROTOCOL_ETHERMAC;
-    eth->device->protocol_ops = &ethmac_ops;
-    status = device_add(eth->device, eth->usb_device);
-    if (status == NO_ERROR) return NO_ERROR;
+    return NO_ERROR;
 
 fail:
     ax88772b_free(eth);
@@ -572,14 +575,13 @@ fail:
     return status;
 }
 
-mx_driver_t _driver_ax88772b = {
-    .ops = {
-        .bind = ax88772b_bind,
-    },
+static mx_driver_ops_t ax88772b_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = ax88772b_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_ax88772b, "usb-ethernet-ax88772b", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(ethernet_ax88772b, ax88772b_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_USB),
     BI_ABORT_IF(NE, BIND_USB_VID, ASIX_VID),
     BI_MATCH_IF(EQ, BIND_USB_PID, ASIX_PID),
-MAGENTA_DRIVER_END(_driver_ax88772b)
+MAGENTA_DRIVER_END(ethernet_ax88772b)

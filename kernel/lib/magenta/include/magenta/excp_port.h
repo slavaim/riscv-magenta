@@ -22,7 +22,7 @@ class PortDispatcher;
 class ExceptionPort : public mxtl::DoublyLinkedListable<mxtl::RefPtr<ExceptionPort>>
                     , public mxtl::RefCounted<ExceptionPort> {
 public:
-    enum class Type { DEBUGGER, THREAD, PROCESS, SYSTEM };
+    enum class Type { NONE, DEBUGGER, THREAD, PROCESS, SYSTEM };
 
     static mx_status_t Create(Type type, mxtl::RefPtr<PortDispatcher> port,
                               uint64_t port_key,
@@ -34,6 +34,9 @@ public:
     mx_status_t SendReport(const mx_exception_report_t* packet);
 
     void OnThreadStart(UserThread* thread);
+
+    void OnThreadSuspending(UserThread* thread);
+    void OnThreadResuming(UserThread* thread);
 
     void OnProcessExit(ProcessDispatcher* process);
     void OnThreadExit(UserThread* thread);
@@ -75,7 +78,11 @@ private:
         return bound_to_system_ || (target_ != nullptr);
     }
 
-    void BuildReport(mx_exception_report_t* report, uint32_t type, mx_koid_t pid, mx_koid_t tid);
+    static void BuildReport(mx_exception_report_t* report, uint32_t type,
+                            mx_koid_t pid, mx_koid_t tid);
+
+    static void BuildSuspendResumeReport(mx_exception_report_t* report,
+                                         uint32_t type, UserThread* thread);
 
     mxtl::Canary<mxtl::magic("EXCP")> canary_;
 

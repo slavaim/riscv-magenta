@@ -8,17 +8,21 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := usertest
 
+MODULE_USERTEST_GROUP := fs
+
 MODULE_NAME := fs-bench-test
 
 MODULE_SRCS := \
     $(LOCAL_DIR)/main.cpp \
     $(LOCAL_DIR)/bench-basic.cpp \
 
+MODULE_STATIC_LIBS := \
+    system/ulib/mxcpp \
+    system/ulib/mxtl \
+
 MODULE_LIBS := \
     system/ulib/c \
-    system/ulib/mxcpp \
     system/ulib/mxio \
-    system/ulib/mxtl \
     system/ulib/fs-management \
     system/ulib/magenta \
     system/ulib/unittest \

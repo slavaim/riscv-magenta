@@ -26,14 +26,24 @@
     } while (0)
 #endif
 
+// Warn if free list length exceeds a multiple of FREE_LIST_MONITOR_LIMIT
+#define FREE_LIST_MONITOR_LIMIT 100
+
 #define IOTXN_PFLAG_CONTIGUOUS (1 << 0)   // the vmo is contiguous
 #define IOTXN_PFLAG_ALLOC      (1 << 1)   // the vmo is allocated by us
 #define IOTXN_PFLAG_PHYSMAP    (1 << 2)   // we performed physmap() on this vmo
 #define IOTXN_PFLAG_MMAP       (1 << 3)   // we performed mmap() on this vmo
 #define IOTXN_PFLAG_FREE       (1 << 4)   // this txn has been released
+#define IOTXN_PFLAG_QUEUED     (1 << 5)   // transaction has been queued and not yet released
+
+#define IOTXN_STATE_MASK       (IOTXN_PFLAG_FREE | IOTXN_PFLAG_QUEUED)
 
 static list_node_t free_list = LIST_INITIAL_VALUE(free_list);
 static mtx_t free_list_mutex = MTX_INIT;
+#if FREE_LIST_MONITOR_LIMIT
+static size_t free_list_length = 0;
+static size_t free_list_monitor_warned = 0;
+#endif
 
 // This assert will fail if we attempt to access the buffer of a cloned txn after it has been completed
 #define ASSERT_BUFFER_VALID(priv) MX_DEBUG_ASSERT(!(priv->flags & IOTXN_FLAG_DEAD))
@@ -56,8 +66,11 @@ static iotxn_t* find_in_free_list(uint32_t pflags, uint64_t data_size) {
     //xprintf("find_in_free_list pflags 0x%x data_size 0x%" PRIx64 "\n", pflags, data_size);
     mtx_lock(&free_list_mutex);
     list_for_every_entry (&free_list, txn, iotxn_t, node) {
-        //xprintf("find_in_free_list for_every txn %p\n", txn);
-        if ((txn->pflags & pflags) && (txn->vmo_length == data_size)) {
+        // txn->pflags has IOTXN_ALLOC_CONTIGUOUS set if the txn has a contiguous VMO we allocated,
+        // or zero otherwise. And the pflags passed into this function is either zero or
+        // IOTXN_ALLOC_CONTIGUOUS. So here we mask txn->pflags with IOTXN_ALLOC_CONTIGUOUS
+        // to compare just this bit and not get confused by IOTXN_PFLAG_FREE or other flags.
+        if ((txn->vmo_length == data_size) && (((txn->pflags & IOTXN_ALLOC_CONTIGUOUS) == pflags) || data_size == 0)) {
             found = true;
             break;
         }
@@ -65,6 +78,9 @@ static iotxn_t* find_in_free_list(uint32_t pflags, uint64_t data_size) {
     if (found) {
         txn->pflags &= ~IOTXN_PFLAG_FREE;
         list_delete(&txn->node);
+#if FREE_LIST_MONITOR_LIMIT
+        free_list_length--;
+#endif
     }
     mtx_unlock(&free_list_mutex);
     //xprintf("find_in_free_list found %d txn %p\n", found, txn);
@@ -111,6 +127,14 @@ static void iotxn_release_free_list(iotxn_t* txn) {
 
     mtx_lock(&free_list_mutex);
     list_add_head(&free_list, &txn->node);
+#if FREE_LIST_MONITOR_LIMIT
+    free_list_length++;
+    if (free_list_length % FREE_LIST_MONITOR_LIMIT == 0
+        && free_list_length > free_list_monitor_warned) {
+        printf("WARNING: iotxn free_list_length is %zu\n", free_list_length);
+        free_list_monitor_warned = free_list_length;
+    }
+#endif
     mtx_unlock(&free_list_mutex);
 
     xprintf("iotxn_release_free_list released txn %p\n", txn);
@@ -157,6 +181,10 @@ static void iotxn_release_static(iotxn_t* txn) {
 
 void iotxn_complete(iotxn_t* txn, mx_status_t status, mx_off_t actual) {
     xprintf("iotxn_complete txn %p\n", txn);
+
+    MX_DEBUG_ASSERT((txn->pflags & IOTXN_STATE_MASK) == IOTXN_PFLAG_QUEUED);
+    txn->pflags &= ~IOTXN_PFLAG_QUEUED;
+
     txn->actual = actual;
     txn->status = status;
     if (txn->complete_cb) {
@@ -191,24 +219,29 @@ static mx_status_t iotxn_physmap_contiguous(iotxn_t* txn) {
     uint64_t page_offset = ROUNDDOWN(txn->vmo_offset, PAGE_SIZE);
     mx_status_t status = mx_vmo_op_range(txn->vmo_handle, MX_VMO_OP_COMMIT, page_offset, txn->vmo_length, NULL, 0);
     if (status != NO_ERROR) {
-        return status;
+        goto fail;
     }
 
     status = mx_vmo_op_range(txn->vmo_handle, MX_VMO_OP_LOOKUP, page_offset, PAGE_SIZE, txn->phys, sizeof(mx_paddr_t));
     if (status != NO_ERROR) {
-        return status;
+        goto fail;
     }
 
+    txn->pflags |= IOTXN_PFLAG_PHYSMAP;
     txn->phys_count = 1;
     return NO_ERROR;
+fail:
+    free(txn->phys);
+    txn->phys = NULL;
+    return status;
 }
 
 static mx_status_t iotxn_physmap_paged(iotxn_t* txn) {
     // MX_VMO_OP_LOOKUP returns whole pages, so take into account unaligned vmo
     // offset and length when calculating the amount of pages returned
-    uint32_t page_offset = ROUNDDOWN(txn->vmo_offset, PAGE_SIZE);
-    uint32_t page_length = txn->vmo_length + (txn->vmo_offset - page_offset);
-    uint32_t pages = ROUNDUP(page_length, PAGE_SIZE) / PAGE_SIZE;
+    uint64_t page_offset = ROUNDDOWN(txn->vmo_offset, PAGE_SIZE);
+    uint64_t page_length = txn->vmo_length + (txn->vmo_offset - page_offset);
+    uint64_t pages = ROUNDUP(page_length, PAGE_SIZE) / PAGE_SIZE;
 
     mx_paddr_t* paddrs = malloc(sizeof(mx_paddr_t) * pages);
     if (paddrs == NULL) {
@@ -232,6 +265,7 @@ static mx_status_t iotxn_physmap_paged(iotxn_t* txn) {
         return status;
     }
 
+    txn->pflags |= IOTXN_PFLAG_PHYSMAP;
     txn->phys = paddrs;
     txn->phys_count = pages;
     return NO_ERROR;
@@ -269,15 +303,11 @@ mx_status_t iotxn_mmap(iotxn_t* txn, void** data) {
 
 mx_status_t iotxn_clone(iotxn_t* txn, iotxn_t** out) {
     xprintf("iotxn_clone txn %p\n", txn);
-    // look in clone list first
-    // TODO if out is set, init into out
-    // need to check the contiguous flag because they have preallocated space
-    // for phys
     iotxn_t* clone = NULL;
     if (*out != NULL) {
         clone = *out;
     } else {
-        clone = find_in_free_list(txn->pflags & IOTXN_PFLAG_CONTIGUOUS, 0);
+        clone = find_in_free_list(0, 0);
         if (clone == NULL) {
             clone = calloc(1, sizeof(iotxn_t));
             if (clone == NULL) {
@@ -352,6 +382,9 @@ mx_status_t iotxn_clone_partial(iotxn_t* txn, uint64_t vmo_offset, mx_off_t leng
 }
 
 void iotxn_release(iotxn_t* txn) {
+    // should not release a queued transaction
+    MX_DEBUG_ASSERT((txn->pflags & IOTXN_STATE_MASK) == 0);
+
     if (txn->release_cb) {
         txn->release_cb(txn);
     }
@@ -407,7 +440,9 @@ out:
 }
 
 void iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
-    dev->ops->iotxn_queue(dev, txn);
+    // don't assert not queued here, since iotxns are allowed to be requeued
+    txn->pflags |= IOTXN_PFLAG_QUEUED;
+    device_op_iotxn_queue(dev, txn);
 }
 
 void iotxn_init(iotxn_t* txn, mx_handle_t vmo_handle, uint64_t vmo_offset, uint64_t length) {
@@ -432,4 +467,92 @@ mx_status_t iotxn_alloc_vmo(iotxn_t** out, uint32_t alloc_flags, mx_handle_t vmo
     txn->length = length;
     *out = txn;
     return NO_ERROR;
+}
+
+void iotxn_phys_iter_init(iotxn_phys_iter_t* iter, iotxn_t* txn, size_t max_length) {
+    iter->txn = txn;
+    iter->offset = 0;
+    MX_DEBUG_ASSERT(max_length % PAGE_SIZE == 0);
+    if (max_length == 0) {
+        max_length = UINT64_MAX;
+    }
+    iter->max_length = max_length;
+    // iter->page is index of page containing txn->vmo_offset,
+    // and iter->last_page is index of page containing txn->vmo_offset + txn->length
+    iter->page = 0;
+    if (txn->length > 0) {
+        size_t align_adjust = txn->vmo_offset & (PAGE_SIZE - 1);
+        iter->last_page = (txn->length + align_adjust - 1) / PAGE_SIZE;
+    } else {
+        iter->last_page = 0;
+    }
+}
+
+size_t iotxn_phys_iter_next(iotxn_phys_iter_t* iter, mx_paddr_t* out_paddr) {
+    iotxn_t* txn = iter->txn;
+    mx_off_t offset = iter->offset;
+    size_t max_length = iter->max_length;
+    size_t length = txn->length;
+    if (offset >= length) {
+        return 0;
+    }
+    size_t remaining = length - offset;
+    mx_paddr_t* phys_addrs = txn->phys;
+    size_t align_adjust = txn->vmo_offset & (PAGE_SIZE - 1);
+    mx_paddr_t phys = phys_addrs[iter->page];
+    size_t return_length = 0;
+
+    if (txn->phys_count == 1) {
+        // simple contiguous case
+        *out_paddr = phys_addrs[0] + offset + align_adjust;
+        return_length = remaining;
+        if (return_length > max_length) {
+            // end on a page boundary
+            return_length = max_length - align_adjust;
+        }
+        iter->offset += return_length;
+        return return_length;
+    }
+
+    if (offset == 0 && align_adjust > 0) {
+        // if vmo_offset is unaligned we need to adjust out_paddr, accumulate partial page length
+        // in return_length and skip to next page.
+        // we will make sure the range ends on a page boundary so we don't need to worry about
+        // alignment for subsequent iterations.
+        *out_paddr = phys + align_adjust;
+        return_length = PAGE_SIZE - align_adjust;
+        iter->page = 1;
+    } else {
+        *out_paddr = phys;
+    }
+
+    // below is more complicated case where we need to watch for discontinuities
+    // in the physical address space.
+
+    bool discontiguous = false;
+
+    // loop through physical addresses looking for discontinuities
+    while (remaining > 0 && return_length < max_length && iter->page++ < iter->last_page) {
+        size_t increment = (PAGE_SIZE > remaining ? remaining : PAGE_SIZE);
+        return_length += increment;
+        remaining -= increment;
+
+        mx_paddr_t next = phys_addrs[iter->page];
+        if (phys + PAGE_SIZE != next) {
+            discontiguous = true;
+            break;
+        }
+        phys = next;
+    }
+
+    if (!discontiguous && remaining > 0) {
+        // if we did not hit a discontinuity, we can add any remaining length from last page
+        return_length += remaining;
+    }
+
+    if (return_length > max_length) {
+        return_length = max_length;
+    }
+    iter->offset += return_length;
+    return return_length;
 }

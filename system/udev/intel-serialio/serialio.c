@@ -25,7 +25,7 @@ static mx_status_t intel_serialio_bind(mx_driver_t* drv, mx_device_t* dev, void*
         return ERR_INVALID_ARGS;
     }
 
-    if (device_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
+    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
         return ERR_NOT_SUPPORTED;
 
     res = pci->get_config(dev, &pci_config, &config_handle);
@@ -69,14 +69,13 @@ static mx_status_t intel_serialio_bind(mx_driver_t* drv, mx_device_t* dev, void*
     return res;
 }
 
-mx_driver_t _intel_serialio = {
-    .ops = {
-        .bind = intel_serialio_bind,
-    },
+static mx_driver_ops_t intel_serialio_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = intel_serialio_bind,
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_intel_serialio, "intel-serialio", "magenta", "0.1", 14)
+MAGENTA_DRIVER_BEGIN(intel_serialio, intel_serialio_driver_ops, "magenta", "0.1", 14)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_VID, INTEL_VID),
     BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_WILDCAT_POINT_SERIALIO_DMA_DID),
@@ -91,4 +90,4 @@ MAGENTA_DRIVER_BEGIN(_intel_serialio, "intel-serialio", "magenta", "0.1", 14)
     BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_SUNRISE_POINT_SERIALIO_I2C1_DID),
     BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_SUNRISE_POINT_SERIALIO_I2C2_DID),
     BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_SUNRISE_POINT_SERIALIO_I2C3_DID),
-MAGENTA_DRIVER_END(_intel_serialio)
+MAGENTA_DRIVER_END(intel_serialio)

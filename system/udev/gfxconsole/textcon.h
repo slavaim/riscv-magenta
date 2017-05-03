@@ -13,6 +13,23 @@
 typedef struct textcon textcon_t;
 typedef uint16_t vc_char_t;
 
+inline vc_char_t vc_char_make(uint8_t ch, uint8_t fg_color, uint8_t bg_color) {
+    return static_cast<vc_char_t>(ch | ((fg_color & 0xf) << 8)
+                                  | ((bg_color & 0xf) << 12));
+}
+
+inline uint8_t vc_char_get_char(vc_char_t ch) {
+    return static_cast<uint8_t>(ch & 0xff);
+}
+
+inline uint8_t vc_char_get_fg_color(vc_char_t ch) {
+    return static_cast<uint8_t>((ch >> 8) & 0xf);
+}
+
+inline uint8_t vc_char_get_bg_color(vc_char_t ch) {
+    return static_cast<uint8_t>((ch >> 12) & 0xf);
+}
+
 typedef enum textcon_param {
     TC_INVALID,
     TC_SET_TITLE,
@@ -37,7 +54,7 @@ struct textcon {
     // callbacks to update visible display
     void (*invalidate)(void* cookie, int x, int y, int w, int h);
     void (*movecursor)(void* cookie, int x, int y);
-    void (*pushline)(void* cookie, int y);
+    void (*push_scrollback_line)(void* cookie, int y);
     void (*copy_lines)(void* cookie, int y_dest, int y_src, int count);
     void (*setparam)(void* cookie, int param, uint8_t* arg, size_t arglen);
     void* cookie;

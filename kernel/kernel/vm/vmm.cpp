@@ -12,8 +12,8 @@
 #include <kernel/auto_lock.h>
 #include <kernel/mutex.h>
 #include <kernel/vm.h>
-#include <kernel/vm/vm_aspace.h>
 #include <kernel/vm/vm_address_region.h>
+#include <kernel/vm/vm_aspace.h>
 #include <lib/console.h>
 #include <lib/ktrace.h>
 #include <string.h>
@@ -26,106 +26,6 @@
 // the older api.
 
 static void vmm_context_switch(VmAspace* oldspace, VmAspace* newaspace);
-
-status_t vmm_reserve_space(vmm_aspace_t* _aspace, const char* name, size_t size, vaddr_t vaddr) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    return aspace->ReserveSpace(name, size, vaddr);
-}
-
-status_t vmm_alloc_physical(vmm_aspace_t* _aspace, const char* name, size_t size, void** ptr,
-                            uint8_t align_pow2, size_t min_alloc_gap, paddr_t paddr, uint vmm_flags,
-                            uint arch_mmu_flags) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    return aspace->AllocPhysical(name, size, ptr, align_pow2, min_alloc_gap, paddr, vmm_flags,
-                                 arch_mmu_flags);
-}
-
-status_t vmm_alloc_contiguous(vmm_aspace_t* _aspace, const char* name, size_t size, void** ptr,
-                              uint8_t align_pow2, size_t min_alloc_gap, uint vmm_flags, uint arch_mmu_flags) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    return aspace->AllocContiguous(name, size, ptr, align_pow2, min_alloc_gap, vmm_flags, arch_mmu_flags);
-}
-
-status_t vmm_alloc(vmm_aspace_t* _aspace, const char* name, size_t size, void** ptr, uint8_t align_pow2,
-                   size_t min_alloc_gap, uint vmm_flags, uint arch_mmu_flags) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    return aspace->Alloc(name, size, ptr, align_pow2, min_alloc_gap, vmm_flags, arch_mmu_flags);
-}
-
-status_t vmm_protect_region(vmm_aspace_t* _aspace, vaddr_t va, uint arch_mmu_flags) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    auto r = aspace->FindRegion(va);
-    if (!r)
-        return ERR_NOT_FOUND;
-
-    auto vm_mapping = r->as_vm_mapping();
-    if (!vm_mapping)
-        return ERR_NOT_FOUND;
-
-    return vm_mapping->Protect(vm_mapping->base(), vm_mapping->size(), arch_mmu_flags);
-}
-
-status_t vmm_free_region(vmm_aspace_t* _aspace, vaddr_t vaddr) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    return aspace->FreeRegion(vaddr);
-}
-
-status_t vmm_create_aspace(vmm_aspace_t** _aspace, const char* name, uint flags) {
-
-    auto aspace = VmAspace::Create(flags, name ? name : "unnamed");
-
-    *_aspace = reinterpret_cast<vmm_aspace_t*>(aspace.get());
-
-    // Since we're allocating this with the C api,
-    // to keep it from going out of scope, add a ref here.
-    // The ref will be implicitly removed in vmm_free_aspace()
-    aspace->AddRef();
-
-    return NO_ERROR;
-}
-
-status_t vmm_free_aspace(vmm_aspace_t* _aspace) {
-    auto aspace = vmm_aspace_to_obj(_aspace);
-
-    if (!aspace)
-        return ERR_INVALID_ARGS;
-
-    // make sure the current thread does not map the aspace
-    thread_t* current_thread = get_current_thread();
-    if (current_thread->aspace == (void*)aspace) {
-        THREAD_LOCK(state);
-        current_thread->aspace = nullptr;
-        vmm_context_switch(aspace, nullptr);
-        THREAD_UNLOCK(state);
-    }
-
-    // tell it to destroy all of the regions
-    aspace->Destroy();
-
-    // drop the ref we grabbed in vmm_create_aspace
-    if (aspace->Release())
-        delete aspace;
-
-    return NO_ERROR;
-}
 
 static inline void vmm_context_switch(VmAspace* oldspace, VmAspace* newaspace) {
     DEBUG_ASSERT(thread_lock_held());
@@ -166,7 +66,7 @@ status_t vmm_page_fault_handler(vaddr_t addr, uint flags) {
     // this.
     if ((status == ERR_NOT_FOUND) && (flags & VMM_PF_FLAG_USER)) {
         printf("PageFault: %zu free pages\n", pmm_count_free_pages());
-        DumpProcessMemoryUsage("PageFault: MemoryUsed: ", 8*256);
+        DumpProcessMemoryUsage("PageFault: MemoryUsed: ", 8 * 256);
     }
 #endif
     return status;
@@ -216,9 +116,9 @@ static int cmd_vmm(int argc, const cmd_args* argv, uint32_t flags) {
         return ERR_INTERNAL;
     }
 
-    static vmm_aspace_t* test_aspace;
+    static mxtl::RefPtr<VmAspace> test_aspace;
     if (!test_aspace)
-        test_aspace = vmm_get_kernel_aspace();
+        test_aspace = mxtl::WrapRefPtr(VmAspace::kernel_aspace());
 
     if (!strcmp(argv[1].str, "aspaces")) {
         DumpAllAspaces(true);
@@ -228,68 +128,64 @@ static int cmd_vmm(int argc, const cmd_args* argv, uint32_t flags) {
 
         void* ptr = (void*)0x99;
         uint8_t align = (argc >= 4) ? (uint8_t)argv[3].u : 0u;
-        status_t err = vmm_alloc(test_aspace, "alloc test", argv[2].u, &ptr, align, 0, 0, 0);
-        printf("vmm_alloc returns %d, ptr %p\n", err, ptr);
+        status_t err = test_aspace->Alloc("alloc test", argv[2].u, &ptr, align, 0, 0);
+        printf("VmAspace::Alloc returns %d, ptr %p\n", err, ptr);
     } else if (!strcmp(argv[1].str, "alloc_physical")) {
         if (argc < 4)
             goto notenoughargs;
 
         void* ptr = (void*)0x99;
         uint8_t align = (argc >= 5) ? (uint8_t)argv[4].u : 0u;
-        status_t err = vmm_alloc_physical(test_aspace, "physical test", argv[3].u, &ptr, align, 0, argv[2].u,
+        status_t err = test_aspace->AllocPhysical("physical test", argv[3].u, &ptr, align, argv[2].u,
                                           0, ARCH_MMU_FLAG_UNCACHED_DEVICE | ARCH_MMU_FLAG_PERM_READ |
                                                  ARCH_MMU_FLAG_PERM_WRITE);
-        printf("vmm_alloc_physical returns %d, ptr %p\n", err, ptr);
+        printf("VmAspace::AllocPhysical returns %d, ptr %p\n", err, ptr);
     } else if (!strcmp(argv[1].str, "alloc_contig")) {
         if (argc < 3)
             goto notenoughargs;
 
         void* ptr = (void*)0x99;
         uint8_t align = (argc >= 4) ? (uint8_t)argv[3].u : 0u;
-        status_t err = vmm_alloc_contiguous(test_aspace, "contig test", argv[2].u, &ptr, align, 0, 0,
+        status_t err = test_aspace->AllocContiguous("contig test", argv[2].u, &ptr, align, 0,
                                             ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE);
-        printf("vmm_alloc_contig returns %d, ptr %p\n", err, ptr);
+        printf("VmAspace::AllocContiguous returns %d, ptr %p\n", err, ptr);
     } else if (!strcmp(argv[1].str, "free_region")) {
         if (argc < 2)
             goto notenoughargs;
 
-        status_t err = vmm_free_region(test_aspace, (vaddr_t)argv[2].u);
-        printf("vmm_free_region returns %d\n", err);
+        status_t err = test_aspace->FreeRegion(reinterpret_cast<vaddr_t>(argv[2].u));
+        printf("VmAspace::FreeRegion returns %d\n", err);
     } else if (!strcmp(argv[1].str, "create_aspace")) {
-        vmm_aspace_t* aspace;
-        status_t err = vmm_create_aspace(&aspace, "test", 0);
-        printf("vmm_create_aspace returns %d, aspace %p\n", err, aspace);
+        mxtl::RefPtr<VmAspace> aspace = VmAspace::Create(0, "test");
+        printf("VmAspace::Create aspace %p\n", aspace.get());
     } else if (!strcmp(argv[1].str, "create_test_aspace")) {
-        vmm_aspace_t* aspace;
-        status_t err = vmm_create_aspace(&aspace, "test", 0);
-        printf("vmm_create_aspace returns %d, aspace %p\n", err, aspace);
-        if (err < 0)
-            return err;
+        mxtl::RefPtr<VmAspace> aspace = VmAspace::Create(0, "test");
+        printf("VmAspace::Create aspace %p\n", aspace.get());
 
         test_aspace = aspace;
-        get_current_thread()->aspace = aspace;
+        get_current_thread()->aspace = reinterpret_cast<vmm_aspace_t*>(aspace.get());
         thread_sleep(1); // XXX hack to force it to reschedule and thus load the aspace
     } else if (!strcmp(argv[1].str, "free_aspace")) {
         if (argc < 2)
             goto notenoughargs;
 
-        vmm_aspace_t* aspace = (vmm_aspace_t*)(void*)argv[2].u;
+        mxtl::RefPtr<VmAspace> aspace = mxtl::WrapRefPtr((VmAspace*)(void*)argv[2].u);
         if (test_aspace == aspace)
             test_aspace = nullptr;
 
-        if (get_current_thread()->aspace == aspace) {
+        if (get_current_thread()->aspace == reinterpret_cast<vmm_aspace_t*>(aspace.get())) {
             get_current_thread()->aspace = nullptr;
             thread_sleep(1); // hack
         }
 
-        status_t err = vmm_free_aspace(aspace);
-        printf("vmm_free_aspace returns %d\n", err);
+        status_t err = aspace->Destroy();
+        printf("VmAspace::Destroy() returns %d\n", err);
     } else if (!strcmp(argv[1].str, "set_test_aspace")) {
         if (argc < 2)
             goto notenoughargs;
 
-        test_aspace = (vmm_aspace_t*)(void*)argv[2].u;
-        get_current_thread()->aspace = test_aspace;
+        test_aspace = mxtl::WrapRefPtr((VmAspace*)(void*)argv[2].u);
+        get_current_thread()->aspace = reinterpret_cast<vmm_aspace_t*>(test_aspace.get());
         thread_sleep(1); // XXX hack to force it to reschedule and thus load the aspace
     } else {
         printf("unknown command\n");

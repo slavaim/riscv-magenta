@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include <gfx/gfx.h>
+#include <mxtl/auto_lock.h>
 #include <mxtl/unique_ptr.h>
+#include <sys/param.h>
 #include <unittest/unittest.h>
 
 #include "textcon.h"
@@ -17,7 +19,7 @@ void invalidate_callback(void* cookie, int x, int y, int w, int h) {
 void movecursor_callback(void* cookie, int x, int y) {
 }
 
-void pushline_callback(void* cookie, int y) {
+void push_scrollback_line_callback(void* cookie, int y) {
 }
 
 void copy_lines_callback(void* cookie, int y_dest, int y_src, int line_count) {
@@ -48,7 +50,7 @@ public:
         textcon.cookie = &textcon;
         textcon.invalidate = invalidate_callback;
         textcon.movecursor = movecursor_callback;
-        textcon.pushline = pushline_callback;
+        textcon.push_scrollback_line = push_scrollback_line_callback;
         textcon.copy_lines = copy_lines_callback;
         textcon.setparam = setparam_callback;
         tc_init(&textcon, size_x, size_y, textbuf, 0, 0);
@@ -167,7 +169,7 @@ public:
         for (const char* ptr = str; *ptr; ++ptr)
             textcon.putc(&textcon, *ptr);
 
-        vc_device_write(&vc_dev->device, str, strlen(str), 0);
+        vc_device_write(vc_dev, str, strlen(str), 0);
         // Test that the incremental update of the display was correct.  We
         // do that by refreshing the entire display, and checking that
         // there was no change.
@@ -184,10 +186,10 @@ public:
         size_t len = strlen(str);
         EXPECT_LE(len, size_x, "");
         for (size_t i = 0; i < len; ++i)
-            EXPECT_EQ(str[i], TOCHAR(buf[size_x * line_num + i]), "");
+            EXPECT_EQ(str[i], vc_char_get_char(buf[size_x * line_num + i]), "");
         // The rest of the line should contain spaces.
         for (size_t i = len; i < size_x; ++i)
-            EXPECT_EQ(' ', TOCHAR(buf[size_x * line_num + i]), "");
+            EXPECT_EQ(' ', vc_char_get_char(buf[size_x * line_num + i]), "");
     }
 
     void AssertLineContains(int line_num, const char* str) {
@@ -227,7 +229,7 @@ bool test_display_update_comparison() {
     // Write some characters directly into the text buffer.
     auto SetChar = [&](int x, int y, char ch) {
         tc.vc_dev->text_buf[x + y * tc.size_x] =
-            CHARVAL(ch, tc.textcon.fg, tc.textcon.bg);
+            vc_char_make(ch, tc.textcon.fg, tc.textcon.bg);
     };
     SetChar(2, 1, 'x');
     SetChar(3, 1, 'y');
@@ -494,6 +496,190 @@ bool test_cursor_scroll_bug() {
     END_TEST;
 }
 
+// Test for a bug where scrolling the console viewport by a large delta
+// (e.g. going from the top to the bottom) can crash due to out-of-bounds
+// memory accesses.
+bool test_scroll_viewport_by_large_delta() {
+    BEGIN_TEST;
+
+    TextconHelper tc(2, 2);
+    tc.PutString("\n");
+    for (int lines = 1; lines < 100; ++lines) {
+        tc.PutString("\n");
+
+        // Keep the thread checker happy.
+        mxtl::AutoLock lock(&g_vc_lock);
+
+        // Scroll up, to show older lines.
+        vc_device_scroll_viewport_top(tc.vc_dev);
+        EXPECT_EQ(tc.vc_dev->viewport_y, -lines, "");
+
+        // Scroll down, to show newer lines.
+        vc_device_scroll_viewport_bottom(tc.vc_dev);
+        EXPECT_EQ(tc.vc_dev->viewport_y, 0, "");
+    }
+
+    END_TEST;
+}
+
+// When the console is displaying only the main console region (and no
+// scrollback), the console should keep displaying that as new lines are
+// outputted.
+bool test_viewport_scrolling_follows_bottom() {
+    BEGIN_TEST;
+
+    TextconHelper tc(1, 1);
+    for (unsigned i = 0; i < tc.vc_dev->scrollback_rows_max * 2; ++i) {
+        EXPECT_EQ(tc.vc_dev->viewport_y, 0, "");
+        tc.PutString("\n");
+    }
+
+    END_TEST;
+}
+
+// When the console is displaying some of the scrollback buffer, then as
+// new lines are outputted, the console should scroll the viewpoint to keep
+// displaying the same point, unless we're at the top of the scrollback
+// buffer.
+bool test_viewport_scrolling_follows_scrollback() {
+    BEGIN_TEST;
+
+    TextconHelper tc(1, 1);
+    // Add 3 lines to the scrollback buffer.
+    tc.PutString("\n\n\n");
+    {
+        mxtl::AutoLock lock(&g_vc_lock); // Keep the thread checker happy.
+        vc_device_scroll_viewport(tc.vc_dev, -2);
+    }
+    EXPECT_EQ(tc.vc_dev->viewport_y, -2, "");
+    int limit = tc.vc_dev->scrollback_rows_max;
+    for (int line = 3; line < limit * 2; ++line) {
+        // Output different strings on each line in order to test that the
+        // display is updated consistently when the console starts dropping
+        // lines from the scrollback region.
+        char str[3] = { static_cast<char>('0' + (line % 10)), '\n', '\0' };
+        tc.PutString(str);
+        EXPECT_EQ(tc.vc_dev->viewport_y, -MIN(line, limit), "");
+    }
+
+    END_TEST;
+}
+
+bool test_output_when_viewport_scrolled() {
+    BEGIN_TEST;
+
+    TextconHelper tc(10, 3);
+    // Line 1 will move into the scrollback region.
+    tc.PutString("1\n 2\n  3\n   4");
+    EXPECT_EQ(tc.vc_dev->viewport_y, 0, "");
+    {
+        mxtl::AutoLock lock(&g_vc_lock); // Keep the thread checker happy.
+        vc_device_scroll_viewport_top(tc.vc_dev);
+    }
+    EXPECT_EQ(tc.vc_dev->viewport_y, -1, "");
+    // Check redrawing consistency.
+    tc.PutString("");
+
+    // Test that output updates the display correctly when the viewport is
+    // scrolled.  Using two separate PutString() calls here was necessary
+    // for reproducing an incremental update bug.
+    tc.PutString("\x1b[1;1f"); // Move to top left
+    tc.PutString("Epilobium");
+    tc.AssertLineContains(0, "Epilobium");
+    tc.AssertLineContains(1, "  3");
+    tc.AssertLineContains(2, "   4");
+
+    // Test that erasing also updates the display correctly.  This
+    // changes the console contents without moving the cursor.
+    tc.PutString("\b\b\b\b"); // Move cursor left 3 chars
+    tc.PutString("\x1b[1K"); // Erase to beginning of line
+    tc.AssertLineContains(0, "      ium");
+    tc.AssertLineContains(1, "  3");
+    tc.AssertLineContains(2, "   4");
+
+    END_TEST;
+}
+
+bool test_scrolling_when_viewport_scrolled() {
+    BEGIN_TEST;
+
+    TextconHelper tc(10, 3);
+    // Line 1 will move into the scrollback region.
+    tc.PutString("1\n 2\n  3\n   4");
+    EXPECT_EQ(tc.vc_dev->viewport_y, 0, "");
+    {
+        mxtl::AutoLock lock(&g_vc_lock); // Keep the thread checker happy.
+        vc_device_scroll_viewport_top(tc.vc_dev);
+    }
+    EXPECT_EQ(tc.vc_dev->viewport_y, -1, "");
+    // Check redrawing consistency.
+    tc.PutString("");
+
+    // Test that the display is updated correctly when we scroll.
+    tc.PutString("\n5");
+    tc.AssertLineContains(0, "  3");
+    tc.AssertLineContains(1, "   4");
+    tc.AssertLineContains(2, "5");
+
+    END_TEST;
+}
+
+// Test that vc_device_get_scrollback_lines() gives the correct results.
+bool test_scrollback_lines_count() {
+    BEGIN_TEST;
+
+    TextconHelper tc(10, 3);
+    tc.PutString("\n\n");
+
+    // Reduce the scrollback limit to make the test faster.
+    const int kLimit = 20;
+    EXPECT_LE(kLimit, tc.vc_dev->scrollback_rows_max, "");
+    tc.vc_dev->scrollback_rows_max = kLimit;
+
+    for (int lines = 1; lines < kLimit * 4; ++lines) {
+        tc.PutString("\n");
+        EXPECT_EQ(MIN(lines, kLimit),
+                  vc_device_get_scrollback_lines(tc.vc_dev), "");
+    }
+
+    END_TEST;
+}
+
+// Test that the scrollback lines have the correct contents.
+bool test_scrollback_lines_contents() {
+    BEGIN_TEST;
+
+    // Use a 1-row-high console, which simplifies this test.
+    TextconHelper tc(3, 1);
+
+    // Reduce the scrollback limit to make the test faster.
+    const int kLimit = 20;
+    EXPECT_LE(kLimit, tc.vc_dev->scrollback_rows_max, "");
+    tc.vc_dev->scrollback_rows_max = kLimit;
+
+    vc_char_t test_val = 0;
+    for (int lines = 1; lines <= kLimit; ++lines) {
+        tc.vc_dev->text_buf[0] = test_val++;
+        tc.PutString("\n");
+
+        EXPECT_EQ(lines, vc_device_get_scrollback_lines(tc.vc_dev), "");
+        for (int i = 0; i < lines; ++i)
+            EXPECT_EQ(i, vc_device_get_scrollback_line_ptr(tc.vc_dev, i)[0], "");
+    }
+    for (int lines = 0; lines < kLimit * 3; ++lines) {
+        tc.vc_dev->text_buf[0] = test_val++;
+        tc.PutString("\n");
+
+        EXPECT_EQ(kLimit, vc_device_get_scrollback_lines(tc.vc_dev), "");
+        for (int i = 0; i < kLimit; ++i) {
+            EXPECT_EQ(test_val + i - kLimit,
+                      vc_device_get_scrollback_line_ptr(tc.vc_dev, i)[0], "");
+        }
+    }
+
+    END_TEST;
+}
+
 BEGIN_TEST_CASE(gfxconsole_textbuf_tests)
 RUN_TEST(test_simple)
 RUN_TEST(test_display_update_comparison)
@@ -513,6 +699,13 @@ RUN_TEST(test_move_cursor_up_and_scroll)
 RUN_TEST(test_move_cursor_down_and_scroll)
 RUN_TEST(test_cursor_hide_and_show)
 RUN_TEST(test_cursor_scroll_bug)
+RUN_TEST(test_scroll_viewport_by_large_delta)
+RUN_TEST(test_viewport_scrolling_follows_bottom)
+RUN_TEST(test_viewport_scrolling_follows_scrollback)
+RUN_TEST(test_output_when_viewport_scrolled)
+RUN_TEST(test_scrolling_when_viewport_scrolled)
+RUN_TEST(test_scrollback_lines_count)
+RUN_TEST(test_scrollback_lines_contents)
 END_TEST_CASE(gfxconsole_textbuf_tests)
 
 }

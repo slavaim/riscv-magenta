@@ -82,8 +82,13 @@ static mx_status_t xhci_address_device(xhci_t* xhci, uint32_t slot_id, uint32_t 
     xhci_endpoint_t* ep = &slot->eps[0];
     status = xhci_endpoint_init(ep, TRANSFER_RING_SIZE);
     if (status < 0) return status;
+    ep->transfer_state = calloc(1, sizeof(xhci_transfer_state_t));
+    if (!ep->transfer_state) {
+        return ERR_NO_MEMORY;
+    }
     xhci_transfer_ring_t* transfer_ring = &ep->transfer_ring;
 
+    mtx_lock(&xhci->input_context_lock);
     xhci_input_control_context_t* icc = (xhci_input_control_context_t*)xhci->input_context;
     mx_paddr_t icc_phys = xhci->input_context_phys;
     xhci_slot_context_t* sc = (xhci_slot_context_t*)&xhci->input_context[1 * xhci->context_size];
@@ -143,6 +148,8 @@ static mx_status_t xhci_address_device(xhci_t* xhci, uint32_t slot_id, uint32_t 
     xhci_post_command(xhci, TRB_CMD_ADDRESS_DEVICE, icc_phys,
                       (slot_id << TRB_SLOT_ID_START), &command.context);
     int cc = xhci_sync_command_wait(&command);
+    mtx_unlock(&xhci->input_context_lock);
+
     if (cc == TRB_CC_SUCCESS) {
         ep->enabled = true;
         return NO_ERROR;
@@ -200,6 +207,9 @@ static void xhci_disable_slot(xhci_t* xhci, uint32_t slot_id) {
 
     xprintf("cleaning up slot %d\n", slot_id);
     xhci_slot_t* slot = &xhci->slots[slot_id];
+    for (int i = 0; i < XHCI_NUM_EPS; i++) {
+        xhci_endpoint_free(&slot->eps[i]);
+    }
     io_buffer_release(&slot->buffer);
     memset(slot, 0, sizeof(*slot));
 }
@@ -260,6 +270,7 @@ static mx_status_t xhci_handle_enumerate_device(xhci_t* xhci, uint32_t hub_addre
     }
 
     // update the max packet size in our device context
+    mtx_lock(&xhci->input_context_lock);
     xhci_input_control_context_t* icc = (xhci_input_control_context_t*)xhci->input_context;
     mx_paddr_t icc_phys = xhci->input_context_phys;
     xhci_endpoint_context_t* ep0c = (xhci_endpoint_context_t*)&xhci->input_context[2 * xhci->context_size];
@@ -273,6 +284,7 @@ static mx_status_t xhci_handle_enumerate_device(xhci_t* xhci, uint32_t hub_addre
     xhci_post_command(xhci, TRB_CMD_EVAL_CONTEXT, icc_phys,
                       (slot_id << TRB_SLOT_ID_START), &command.context);
     cc = xhci_sync_command_wait(&command);
+    mtx_unlock(&xhci->input_context_lock);
     if (cc != TRB_CC_SUCCESS) {
         printf("TRB_CMD_EVAL_CONTEXT failed\n");
         result = ERR_INTERNAL;
@@ -308,29 +320,36 @@ static bool xhci_stop_endpoint(xhci_t* xhci, uint32_t slot_id, int ep_index) {
         // TRB_CC_CONTEXT_STATE_ERROR is normal here in the case of a disconnected device,
         // since by then the endpoint would already be in error state.
         printf("TRB_CMD_STOP_ENDPOINT failed cc: %d\n", cc);
+        return false;
     }
 
-    list_node_t list;
-    list_initialize(&list);
-    list_node_t* node;
+    free(ep->transfer_state);
+    ep->transfer_state = NULL;
+
+    list_node_t pending_copy;
+    list_node_t queued_copy;
+    list_initialize(&pending_copy);
+    list_initialize(&queued_copy);
 
     mtx_lock(&ep->lock);
 
-    // copy pending requests to a different list so we can complete them outside of the mutex
-    while ((node = list_remove_head(&ep->pending_requests)) != NULL) {
-        list_add_tail(&list, node);
-    }
+    // move pending_txns and queued_txns to a different list so we can complete them outside of the mutex
+    list_move(&ep->pending_txns, &pending_copy);
+    list_move(&ep->queued_txns, &queued_copy);
+
     ep->enabled = false;
 
     mtx_unlock(&ep->lock);
 
     // complete pending requests
     iotxn_t* txn;
-    while ((txn = list_remove_head_type(&list, iotxn_t, node)) != NULL) {
+    iotxn_t* temp;
+    list_for_every_entry_safe(&pending_copy, txn, temp, iotxn_t, node) {
         iotxn_complete(txn, ERR_PEER_CLOSED, 0);
     }
-    // and any deferred requests
-    xhci_process_deferred_txns(xhci, ep, true);
+    list_for_every_entry_safe(&queued_copy, txn, temp, iotxn_t, node) {
+        iotxn_complete(txn, ERR_PEER_CLOSED, 0);
+    }
     xhci_transfer_ring_free(transfer_ring);
 
     return true;
@@ -370,6 +389,7 @@ static mx_status_t xhci_handle_disconnect_device(xhci_t* xhci, uint32_t hub_addr
 
     xhci_remove_device(xhci, slot_id);
 
+    mtx_lock(&xhci->input_context_lock);
     xhci_input_control_context_t* icc = (xhci_input_control_context_t*)xhci->input_context;
     mx_paddr_t icc_phys = xhci->input_context_phys;
     memset((void*)icc, 0, xhci->context_size);
@@ -380,6 +400,7 @@ static mx_status_t xhci_handle_disconnect_device(xhci_t* xhci, uint32_t hub_addr
     xhci_post_command(xhci, TRB_CMD_CONFIGURE_EP, icc_phys,
                       (slot_id << TRB_SLOT_ID_START), &command.context);
     int cc = xhci_sync_command_wait(&command);
+    mtx_unlock(&xhci->input_context_lock);
     if (cc != TRB_CC_SUCCESS) {
         printf("TRB_CMD_EVAL_CONTEXT failed\n");
     }
@@ -488,6 +509,7 @@ mx_status_t xhci_enable_endpoint(xhci_t* xhci, uint32_t slot_id, usb_endpoint_de
     uint32_t index = xhci_endpoint_index(ep_desc->bEndpointAddress);
     xhci_endpoint_t* ep = &slot->eps[index];
 
+    mtx_lock(&xhci->input_context_lock);
     xhci_input_control_context_t* icc = (xhci_input_control_context_t*)xhci->input_context;
     mx_paddr_t icc_phys = xhci->input_context_phys;
     xhci_slot_context_t* sc = (xhci_slot_context_t*)&xhci->input_context[1 * xhci->context_size];
@@ -517,7 +539,10 @@ mx_status_t xhci_enable_endpoint(xhci_t* xhci, uint32_t slot_id, usb_endpoint_de
         memset((void*)epc, 0, xhci->context_size);
         // allocate a transfer ring for the endpoint
         mx_status_t status = xhci_endpoint_init(ep, TRANSFER_RING_SIZE);
-        if (status < 0) return status;
+        if (status < 0) {
+            mtx_unlock(&xhci->input_context_lock);
+            return status;
+        }
 
         mx_paddr_t tr_dequeue = xhci_transfer_ring_start_phys(&slot->eps[index].transfer_ring);
 
@@ -549,9 +574,14 @@ mx_status_t xhci_enable_endpoint(xhci_t* xhci, uint32_t slot_id, usb_endpoint_de
                       (slot_id << TRB_SLOT_ID_START), &command.context);
 
     xhci_sync_command_wait(&command);
+    mtx_unlock(&xhci->input_context_lock);
 
     // xhci_stop_endpoint() will handle the !enable case
     if (enable) {
+        ep->transfer_state = calloc(1, sizeof(xhci_transfer_state_t));
+        if (!ep->transfer_state) {
+            return ERR_NO_MEMORY;
+        }
         ep->enabled = true;
     }
 
@@ -568,23 +598,16 @@ mx_status_t xhci_configure_hub(xhci_t* xhci, uint32_t slot_id, usb_speed_t speed
     if (slot_id > xhci->max_slots) return ERR_INVALID_ARGS;
 
     xhci_slot_t* slot = &xhci->slots[slot_id];
-
-    io_buffer_t buffer;
-    mx_status_t status = io_buffer_init(&buffer, xhci->context_size * 2, IO_BUFFER_RW);
-    if (status != NO_ERROR) {
-        printf("io_buffer_init failed in xhci_configure_hub\n");
-        return status;
-    }
-    uint8_t* input_context = (uint8_t*)io_buffer_virt(&buffer);
-
     uint32_t num_ports = descriptor->bNbrPorts;
     uint32_t ttt = 0;
     if (speed == USB_SPEED_HIGH) {
         ttt = (descriptor->wHubCharacteristics >> 5) & 3;
     }
 
-    xhci_input_control_context_t* icc = (xhci_input_control_context_t*)input_context;
-    xhci_slot_context_t* sc = (xhci_slot_context_t*)&input_context[1 * xhci->context_size];
+    mtx_lock(&xhci->input_context_lock);
+    xhci_input_control_context_t* icc = (xhci_input_control_context_t*)xhci->input_context;
+    mx_paddr_t icc_phys = xhci->input_context_phys;
+    xhci_slot_context_t* sc = (xhci_slot_context_t*)&xhci->input_context[1 * xhci->context_size];
     memset((void*)icc, 0, xhci->context_size);
     memset((void*)sc, 0, xhci->context_size);
 
@@ -598,11 +621,10 @@ mx_status_t xhci_configure_hub(xhci_t* xhci, uint32_t slot_id, usb_speed_t speed
 
     xhci_sync_command_t command;
     xhci_sync_command_init(&command);
-    xhci_post_command(xhci, TRB_CMD_EVAL_CONTEXT, io_buffer_phys(&buffer),
+    xhci_post_command(xhci, TRB_CMD_EVAL_CONTEXT, icc_phys,
                       (slot_id << TRB_SLOT_ID_START), &command.context);
     int cc = xhci_sync_command_wait(&command);
-
-    io_buffer_release(&buffer);
+    mtx_unlock(&xhci->input_context_lock);
 
     if (cc != TRB_CC_SUCCESS) {
         printf("TRB_CMD_EVAL_CONTEXT failed\n");

@@ -353,7 +353,7 @@ status_t thread_suspend(thread_t *t)
     return NO_ERROR;
 }
 
-status_t thread_join(thread_t *t, int *retcode, lk_bigtime_t deadline)
+status_t thread_join(thread_t *t, int *retcode, lk_time_t deadline)
 {
     DEBUG_ASSERT(t->magic == THREAD_MAGIC);
 
@@ -649,6 +649,16 @@ __NO_RETURN static int idle_thread_routine(void *arg)
         arch_idle();
 }
 
+// On ARM64 with safe-stack, it's no longer possible to use the unsafe-sp
+// after set_current_thread (we'd now see newthread's unsafe-sp instead!).
+// Hence this function and everything it calls between this point and the
+// the low-level context switch must be marked with __NO_SAFESTACK.
+__NO_SAFESTACK static void final_context_switch(thread_t *oldthread,
+                                                thread_t *newthread) {
+    set_current_thread(newthread);
+    arch_context_switch(oldthread, newthread);
+}
+
 /**
  * @brief  Cause another thread to be executed.
  *
@@ -684,7 +694,7 @@ void thread_resched(void)
     if (newthread == oldthread)
         return;
 
-    lk_bigtime_t now = current_time_hires();
+    lk_time_t now = current_time();
     oldthread->runtime_ns += now - oldthread->last_started_running;
     newthread->last_started_running = now;
 
@@ -742,9 +752,6 @@ void thread_resched(void)
     /* set some optional target debug leds */
     target_set_debug_led(0, !thread_is_idle(newthread));
 
-    /* do the switch */
-    set_current_thread(newthread);
-
     TRACE_CONTEXT_SWITCH("cpu %u, old %p (%s, pri %d, flags 0x%x), new %p (%s, pri %d, flags 0x%x)\n",
             cpu, oldthread, oldthread->name, oldthread->priority,
             oldthread->flags, newthread, newthread->name,
@@ -782,7 +789,7 @@ void thread_resched(void)
     }
 
     /* do the low level context switch */
-    arch_context_switch(oldthread, newthread);
+    final_context_switch(oldthread, newthread);
 }
 
 /**
@@ -870,7 +877,7 @@ enum handler_return thread_timer_tick(void)
 }
 
 /* timer callback to wake up a sleeping thread */
-static enum handler_return thread_sleep_handler(timer_t *timer, lk_bigtime_t now, void *arg)
+static enum handler_return thread_sleep_handler(timer_t *timer, lk_time_t now, void *arg)
 {
     thread_t *t = (thread_t *)arg;
 
@@ -910,7 +917,7 @@ static enum handler_return thread_sleep_handler(timer_t *timer, lk_bigtime_t now
  * interruptable argument allows this routine to return early if the thread was signaled
  * for something.
  */
-status_t thread_sleep_etc(lk_bigtime_t deadline, bool interruptable)
+status_t thread_sleep_etc(lk_time_t deadline, bool interruptable)
 {
     thread_t *current_thread = get_current_thread();
     status_t blocked_status;
@@ -959,9 +966,9 @@ out:
     return blocked_status;
 }
 
-status_t thread_sleep_relative(lk_bigtime_t delay) {
+status_t thread_sleep_relative(lk_time_t delay) {
     if (delay != INFINITE_TIME) {
-        delay += current_time_hires();
+        delay += current_time();
     }
     return thread_sleep(delay);
 }
@@ -972,13 +979,13 @@ status_t thread_sleep_relative(lk_bigtime_t delay) {
  * This takes the thread_lock to ensure there are no races while calculating the
  * runtime of the thread.
  */
-lk_bigtime_t thread_runtime(const thread_t *t)
+lk_time_t thread_runtime(const thread_t *t)
 {
     THREAD_LOCK(state);
 
-    lk_bigtime_t runtime = t->runtime_ns;
+    lk_time_t runtime = t->runtime_ns;
     if (t->state == THREAD_RUNNING) {
-        runtime += current_time_hires() - t->last_started_running;
+        runtime += current_time() - t->last_started_running;
     }
 
     THREAD_UNLOCK(state);
@@ -1007,6 +1014,8 @@ void thread_construct_first(thread_t *t, const char *name)
     t->signals = 0;
     thread_set_last_cpu(t, cpu);
     thread_set_pinned_cpu(t, cpu);
+
+    arch_thread_construct_first(t);
 
     THREAD_LOCK(state);
     list_add_head(&thread_list, &t->thread_list_node);
@@ -1128,7 +1137,7 @@ void thread_secondary_cpu_init_early(thread_t *t)
     thread_construct_first(t, name);
 }
 
-__NO_SAFESTACK void thread_secondary_cpu_entry(void)
+void thread_secondary_cpu_entry(void)
 {
     uint cpu = arch_curr_cpu_num();
 
@@ -1214,9 +1223,9 @@ void dump_thread(thread_t *t, bool full_dump)
         dprintf(INFO, "dump_thread WARNING: thread at %p has bad magic\n", t);
     }
 
-    lk_bigtime_t runtime = t->runtime_ns;
+    lk_time_t runtime = t->runtime_ns;
     if (t->state == THREAD_RUNNING) {
-        runtime += current_time_hires() - t->last_started_running;
+        runtime += current_time() - t->last_started_running;
     }
 
     char oname[THREAD_NAME_LENGTH];
@@ -1301,7 +1310,7 @@ void wait_queue_init(wait_queue_t *wait)
     *wait = (wait_queue_t)WAIT_QUEUE_INITIAL_VALUE(*wait);
 }
 
-static enum handler_return wait_queue_timeout_handler(timer_t *timer, lk_bigtime_t now, void *arg)
+static enum handler_return wait_queue_timeout_handler(timer_t *timer, lk_time_t now, void *arg)
 {
     thread_t *thread = (thread_t *)arg;
 
@@ -1342,7 +1351,7 @@ static enum handler_return wait_queue_timeout_handler(timer_t *timer, lk_bigtime
  * @return ERR_TIMED_OUT on timeout, else returns the return
  * value specified when the queue was woken by wait_queue_wake_one().
  */
-status_t wait_queue_block(wait_queue_t *wait, lk_bigtime_t deadline)
+status_t wait_queue_block(wait_queue_t *wait, lk_time_t deadline)
 {
     timer_t timer;
 
@@ -1353,7 +1362,7 @@ status_t wait_queue_block(wait_queue_t *wait, lk_bigtime_t deadline)
     DEBUG_ASSERT(arch_ints_disabled());
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
 
-    if (deadline <= current_time_hires())
+    if (deadline <= current_time())
         return ERR_TIMED_OUT;
 
     if (current_thread->interruptable && unlikely(current_thread->signals)) {

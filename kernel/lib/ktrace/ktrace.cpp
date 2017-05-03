@@ -18,12 +18,12 @@
 #include <magenta/user_thread.h>
 
 #if __x86_64__
-extern "C" uint64_t get_tsc_ticks_per_ms(void);
+uint64_t get_tsc_ticks_per_ms(void);
 #define ktrace_timestamp() rdtsc();
 #define ktrace_ticks_per_ms() get_tsc_ticks_per_ms()
 #else
 #include <platform.h>
-#define ktrace_timestamp() current_time_hires()
+#define ktrace_timestamp() current_time()
 #define ktrace_ticks_per_ms() (1000000)
 #endif
 
@@ -204,7 +204,7 @@ void ktrace_init(unsigned level) {
 
     status_t status;
     VmAspace* aspace = VmAspace::kernel_aspace();
-    if ((status = aspace->Alloc("ktrace", mb, (void**)&ks->buffer, 0, 0, VMM_FLAG_COMMIT,
+    if ((status = aspace->Alloc("ktrace", mb, (void**)&ks->buffer, 0, VMM_FLAG_COMMIT,
                                 ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE)) < 0) {
         dprintf(INFO, "ktrace: cannot alloc buffer %d\n", status);
         return;

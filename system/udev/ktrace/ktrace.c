@@ -73,23 +73,22 @@ static mx_protocol_device_t ktrace_device_proto = {
 };
 
 static mx_status_t ktrace_bind(mx_driver_t* drv, mx_device_t* parent, void** cookie) {
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ktrace",
+        .driver = drv,
+        .ops = &ktrace_device_proto,
+    };
+
     mx_device_t* dev;
-    if (device_create(&dev, drv, "ktrace", &ktrace_device_proto) == NO_ERROR) {
-        mx_status_t status;
-        if ((status = device_add(dev, parent)) < 0) {
-            free(dev);
-            return status;
-        }
-    }
-    return NO_ERROR;
+    return device_add2(parent, &args, &dev);
 }
 
-mx_driver_t _driver_ktrace = {
-    .ops = {
-        .bind = ktrace_bind,
-    },
+static mx_driver_ops_t ktrace_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = ktrace_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_ktrace, "ktrace", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(ktrace, ktrace_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
-MAGENTA_DRIVER_END(_driver_ktrace)
+MAGENTA_DRIVER_END(ktrace)

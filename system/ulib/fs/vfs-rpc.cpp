@@ -22,11 +22,22 @@
 
 #define MXDEBUG 0
 
+typedef struct vfs_iostate {
+    Vnode* vn;
+    // Handle to event which allows client to refer to open vnodes in multi-patt
+    // operations (see: link, rename). Defaults to MX_HANDLE_INVALID.
+    // Validated on the server side using cookies.
+    mx_handle_t token;
+    vdircookie_t dircookie;
+    size_t io_off;
+    uint32_t io_flags;
+} vfs_iostate_t;
+
 namespace fs {
 namespace {
 
-void txn_handoff_open(mx_handle_t srv, mx_handle_t rh,
-                      const char* path, uint32_t flags, uint32_t mode) {
+static void txn_handoff_open(mx_handle_t srv, mx_handle_t rh,
+                             const char* path, uint32_t flags, uint32_t mode) {
     mxrio_msg_t msg;
     memset(&msg, 0, MXRIO_HDR_SZ);
     size_t len = strlen(path);
@@ -38,63 +49,69 @@ void txn_handoff_open(mx_handle_t srv, mx_handle_t rh,
     mxrio_txn_handoff(srv, rh, &msg);
 }
 
-void txn_handoff_clone(mx_handle_t srv, mx_handle_t rh) {
-    mxrio_msg_t msg;
-    memset(&msg, 0, MXRIO_HDR_SZ);
-    msg.op = MXRIO_CLONE;
-    mxrio_txn_handoff(srv, rh, &msg);
-}
-
 // Initializes io state for a vnode and attaches it to a dispatcher.
 void vfs_rpc_open(mxrio_msg_t* msg, mx_handle_t rh, fs::Vnode* vn, const char* path, uint32_t flags,
                   uint32_t mode) {
-    mxrio_object_t obj;
-    memset(&obj, 0, sizeof(obj));
-
     mx_status_t r;
+
+    // The pipeline directive instructs the VFS layer to open the vnode
+    // immediately, rather than describing the VFS object to the caller.
+    // We check it early so we can throw away the protocol part of flags.
+    bool pipeline = flags & MXRIO_OFLAG_PIPELINE;
+    uint32_t open_flags = flags & (~MXRIO_OFLAG_MASK);
 
     {
         mxtl::AutoLock lock(&vfs_lock);
-        r = Vfs::Open(vn, &vn, path, &path, flags, mode);
+        r = Vfs::Open(vn, &vn, path, &path, open_flags, mode);
     }
 
+    mxrio_object_t obj;
+    memset(&obj, 0, sizeof(obj));
     if (r < 0) {
         xprintf("vfs: open: r=%d\n", r);
         goto done;
-    }
-    if (r > 0) {
-        //TODO: unify remote vnodes and remote devices
-        //      eliminate vfs_get_handles() and the other
-        //      reply pipe path
+    } else if (r > 0) {
+        // Remote handoff, either to a remote device or a remote filesystem node.
         txn_handoff_open(r, rh, path, flags, mode);
         return;
     }
 
-    obj.esize = 0;
+    // Acquire the handles to the VFS object
     if ((r = vn->GetHandles(flags, obj.handle, &obj.type, obj.extra, &obj.esize)) < 0) {
         vn->Close();
         goto done;
     }
-    if (obj.type == 0) {
-        // device is non-local, handle is the server that
-        // can clone it for us, redirect the rpc to there
-        txn_handoff_open(obj.handle[0], rh, ".", flags, mode);
-        vn->RefRelease();
+
+done:
+    // If r >= 0, then we hold a reference to vn from open.
+    // Otherwise, vn is closed, and we're simply responding to the client.
+
+    if (pipeline && r > 0) {
+        // If a pipeline open was requested, but extra handles are required, then
+        // we cannot complete the open in a pipelined fashion.
+        while (r-- > 0) {
+            mx_handle_close(obj.handle[r]);
+        }
+        vn->Close();
+        mx_handle_close(rh);
         return;
     }
 
-    // drop the ref from VfsOpen
-    // the backend behind get_handles holds the on-going ref
-    vn->RefRelease();
-    obj.hcount = r;
-    r = NO_ERROR;
+    if (!pipeline) {
+        // Describe the VFS object to the caller in the non-pipelined case.
+        obj.status = (r < 0) ? r : NO_ERROR;
+        obj.hcount = (r > 0) ? r : 0;
+        mx_channel_write(rh, 0, &obj, static_cast<uint32_t>(MXRIO_OBJECT_MINSIZE + obj.esize),
+                         obj.handle, obj.hcount);
+        if (r < 0) {
+            mx_handle_close(rh);
+            return;
+        }
+    }
 
-done:
-    obj.status = r;
-    xprintf("vfs: open: r=%d h=%x\n", r, obj.handle[0]);
-    mx_channel_write(rh, 0, &obj, static_cast<uint32_t>(MXRIO_OBJECT_MINSIZE + obj.esize),
-                     obj.handle, obj.hcount);
-    mx_handle_close(rh);
+    vn->Serve(rh, open_flags);
+    // Drop the ref from Vfs::Open. Serve holds the on-going ref.
+    vn->RefRelease();
 }
 
 // Consumes rh.
@@ -109,32 +126,25 @@ void mxrio_reply_channel_status(mx_handle_t rh, mx_status_t status) {
 
 } // namespace anonymous
 
-mx_status_t Vnode::Serve(uint32_t flags, mx_handle_t* out, uint32_t* type) {
-    mx_handle_t h[2];
+mx_status_t Vnode::Serve(mx_handle_t h, uint32_t flags) {
     mx_status_t r;
     vfs_iostate_t* ios;
 
     if ((ios = static_cast<vfs_iostate_t*>(calloc(1, sizeof(vfs_iostate_t)))) == nullptr) {
+        mx_handle_close(h);
         return ERR_NO_MEMORY;
     }
     ios->vn = this;
     ios->io_flags = flags;
 
-    if ((r = mx_channel_create(0, &h[0], &h[1])) < 0) {
-        free(ios);
-        return r;
-    }
-    if ((r = mxio_dispatcher_add(vfs_dispatcher, h[0], (void*) vfs_handler, ios)) < 0) {
-        mx_handle_close(h[0]);
-        mx_handle_close(h[1]);
+    if ((r = AddDispatcher(h, ios)) < 0) {
+        mx_handle_close(h);
         free(ios);
         return r;
     }
     // take a ref for the dispatcher
     RefAcquire();
-    out[0] = h[1];
-    type[0] = MXIO_PROTOCOL_REMOTE;
-    return 1;
+    return NO_ERROR;
 }
 
 } // namespace fs
@@ -166,9 +176,7 @@ static mx_status_t iostate_get_token(uint64_t vnode_cookie, vfs_iostate* ios, mx
     return sizeof(mx_handle_t);
 }
 
-mx_status_t vfs_handler_generic(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) {
-    vfs_iostate_t* ios = static_cast<vfs_iostate_t*>(cookie);
-    Vnode* vn = ios->vn;
+mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mx_handle_t rh, Vnode* vn, vfs_iostate* ios) {
     uint32_t len = msg->datalen;
     int32_t arg = msg->arg;
     msg->datalen = 0;
@@ -218,11 +226,13 @@ mx_status_t vfs_handler_generic(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
         free(ios);
         return NO_ERROR;
     case MXRIO_CLONE: {
-        mxrio_object_t obj;
-        obj.status = vn->Serve(ios->io_flags, obj.handle, &obj.type);
-        mx_channel_write(msg->handle[0], 0, &obj, MXRIO_OBJECT_MINSIZE,
-                         obj.handle, (obj.status < 0) ? 0 : 1);
-        mx_handle_close(msg->handle[0]);
+        if (!(arg & MXRIO_OFLAG_PIPELINE)) {
+            mxrio_object_t obj;
+            memset(&obj, 0, MXRIO_OBJECT_MINSIZE);
+            obj.type = MXIO_PROTOCOL_REMOTE;
+            mx_channel_write(msg->handle[0], 0, &obj, MXRIO_OBJECT_MINSIZE, 0, 0);
+        }
+        vn->Serve(msg->handle[0], ios->io_flags);
         return ERR_DISPATCHER_INDIRECT;
     }
     case MXRIO_READ: {
@@ -484,4 +494,51 @@ mx_status_t vfs_handler_generic(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
         }
         return ERR_NOT_SUPPORTED;
     }
+}
+
+// TODO(orr): temporary; prevent multithread weirdness while we
+// make locking more fine grained
+static mtx_t vfs_big_lock = MTX_INIT;
+
+mx_status_t vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) {
+    vfs_iostate_t* ios = static_cast<vfs_iostate_t*>(cookie);
+
+    mtx_lock(&vfs_big_lock);
+    Vnode* vn = ios->vn;
+
+    mx_status_t status = vfs_handler_vn(msg, rh, vn, ios);
+
+    mtx_unlock(&vfs_big_lock);
+
+    return status;
+}
+
+mx_handle_t vfs_rpc_server(mx_handle_t h, Vnode* vn) {
+    vfs_iostate_t* ios;
+    mx_status_t r;
+
+    if ((ios = (vfs_iostate_t*)calloc(1, sizeof(vfs_iostate_t))) == NULL)
+        return ERR_NO_MEMORY;
+    ios->vn = vn;  // reference passed in by caller
+    ios->io_flags = 0;
+
+    if ((r = mxio_dispatcher_create(&vfs_dispatcher, mxrio_handler)) < 0) {
+        free(ios);
+        return r;
+    }
+
+    // Tell the calling process that we've mounted
+    if ((r = mx_object_signal_peer(h, 0, MX_USER_SIGNAL_0)) != NO_ERROR) {
+        free(ios);
+        return r;
+    }
+
+    if ((r = mxio_dispatcher_add(vfs_dispatcher, h, (void*) vfs_handler, ios)) < 0) {
+        free(ios);
+        return r;
+    }
+
+    // calling thread blocks
+    mxio_dispatcher_run(vfs_dispatcher);
+    return NO_ERROR;
 }

@@ -7,10 +7,10 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/protocol/ethernet.h>
-#include <ddk/protocol/bcm.h>
 #include <magenta/device/ethernet.h>
 #include <magenta/listnode.h>
 #include <sync/completion.h>
+#include <bcm/ioctl.h>
 
 #include <inttypes.h>
 #include <fcntl.h>
@@ -452,7 +452,6 @@ static void lan9514_free(lan9514_t* eth) {
     }
     mtx_unlock(&eth->mutex);
 
-    free(eth->device);
     free(eth);
 }
 
@@ -634,20 +633,26 @@ static int lan9514_start_thread(void* arg) {
 
     lan9514_reset(eth);
 
-    status = device_create(&eth->device, eth->driver, "usb-ethernet", &lan9514_device_proto);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "smsc-lan9514",
+        .ctx = eth,
+        .driver = eth->driver,
+        .ops = &lan9514_device_proto,
+        .proto_id = MX_PROTOCOL_ETHERMAC,
+        .proto_ops = &ethmac_ops,
+    };
+
+    status = device_add2(eth->usb_device, &args, &eth->device);
     if (status < 0) {
         printf("lan9514: failed to create device: %d\n", status);
-        goto fail;
+        lan9514_free(eth);
+        return status;
     }
 
     mtx_lock(&eth->mutex);
     queue_interrupt_requests_locked(eth);
     mtx_unlock(&eth->mutex);
-
-    eth->device->ctx = eth;
-    eth->device->protocol_id = MX_PROTOCOL_ETHERMAC;
-    eth->device->protocol_ops = &ethmac_ops;
-    status = device_add(eth->device, eth->usb_device);
 
     while (true) {
         uint16_t temp;
@@ -705,7 +710,6 @@ static int lan9514_start_thread(void* arg) {
     }
 teardown:
     lan9514_unbind(eth->device);
-fail:
     printf("LAN9514: driver failing with status=%d\n", status);
     return status;
 }
@@ -815,14 +819,13 @@ fail:
     return status;
 }
 
-mx_driver_t _driver_lan9514 = {
-    .ops = {
-        .bind = lan9514_bind,
-    },
+static mx_driver_ops_t lan9514_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = lan9514_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_lan9514, "usb-ethernet-lan9514", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(ethernet_lan9514, lan9514_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_USB),
     BI_ABORT_IF(NE, BIND_USB_VID, SMSC_VID),
     BI_MATCH_IF(EQ, BIND_USB_PID, SMSC_9514_LAN_PID),
-MAGENTA_DRIVER_END(_driver_lan9514)
+MAGENTA_DRIVER_END(ethernet_lan9514)

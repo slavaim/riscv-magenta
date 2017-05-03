@@ -89,8 +89,8 @@ static inline bool is_user_address(vaddr_t va) {
 
 static inline bool is_user_address_range(vaddr_t va, size_t len) {
     return va + len >= va &&
-            is_user_address(va) &&
-            (len == 0 || is_user_address(va + len - 1));
+           is_user_address(va) &&
+           (len == 0 || is_user_address(va + len - 1));
 }
 
 /* physical allocator */
@@ -186,47 +186,9 @@ struct vmm_aspace* vaddr_to_aspace(const void* ptr);
 /* retrieve the arch-specific information for this aspace */
 arch_aspace_t* vmm_get_arch_aspace(vmm_aspace_t* aspace);
 
-/* reserve a chunk of address space to prevent allocations from that space */
-status_t vmm_reserve_space(vmm_aspace_t* aspace, const char* name, size_t size, vaddr_t vaddr)
-    __NONNULL((1));
-
 /* For region creation routines */
 #define VMM_FLAG_VALLOC_SPECIFIC (1u << 0) /* allocate at specific address */
 #define VMM_FLAG_COMMIT (1u << 1)          /* commit memory up front (no demand paging) */
-
-/* allocate a region of virtual space that maps a physical piece of address space.
-   the physical pages that back this are not allocated from the pmm. */
-status_t vmm_alloc_physical(vmm_aspace_t* aspace, const char* name, size_t size, void** ptr,
-                            uint8_t align_log2, size_t min_alloc_gap,
-                            paddr_t paddr, uint vmm_flags, uint arch_mmu_flags)
-    __NONNULL((1));
-
-/* allocate a region of memory backed by newly allocated contiguous physical memory  */
-status_t vmm_alloc_contiguous(vmm_aspace_t* aspace, const char* name, size_t size, void** ptr,
-                              uint8_t align_log2, size_t min_alloc_gap,
-                              uint vmm_flags, uint arch_mmu_flags)
-    __NONNULL((1));
-
-/* allocate a region of memory backed by newly allocated physical memory */
-status_t vmm_alloc(vmm_aspace_t* aspace, const char* name, size_t size, void** ptr,
-                   uint8_t align_log2, size_t min_alloc_gap,
-                   uint vmm_flags, uint arch_mmu_flags) __NONNULL((1));
-
-/* Unmap previously allocated region and free physical memory pages backing it (if any) */
-status_t vmm_free_region(vmm_aspace_t* aspace, vaddr_t va);
-
-/* Change permissions on a previously allocated region */
-status_t vmm_protect_region(vmm_aspace_t* aspace, vaddr_t va, uint arch_mmu_flags);
-
-#define VMM_ASPACE_TYPE_USER (0 << 0)
-#define VMM_ASPACE_TYPE_KERNEL (1 << 0)
-#define VMM_ASPACE_TYPE_LOW_KERNEL (2 << 0)
-#define VMM_ASPACE_TYPE_MASK (3 << 0)
-/* allocate a new address space */
-status_t vmm_create_aspace(vmm_aspace_t** aspace, const char* name, uint flags) __NONNULL((1));
-
-/* destroy everything in the address space */
-status_t vmm_free_aspace(vmm_aspace_t* aspace) __NONNULL((1));
 
 /* internal kernel routines below, do not call directly */
 
@@ -248,7 +210,7 @@ void vmm_set_active_aspace(vmm_aspace_t* aspace);
 #define VMM_PF_FLAG_FAULT_MASK (VMM_PF_FLAG_HW_FAULT | VMM_PF_FLAG_SW_FAULT)
 
 /* convenience routine for convering page fault flags to a string */
-static const char *vmm_pf_flags_to_string(uint pf_flags, char str[5]) {
+static const char* vmm_pf_flags_to_string(uint pf_flags, char str[5]) {
     str[0] = (pf_flags & VMM_PF_FLAG_WRITE) ? 'w' : 'r';
     str[1] = (pf_flags & VMM_PF_FLAG_USER) ? 'u' : 's';
     str[2] = (pf_flags & VMM_PF_FLAG_INSTRUCTION) ? 'i' : 'd';
@@ -262,8 +224,8 @@ static const char *vmm_pf_flags_to_string(uint pf_flags, char str[5]) {
 status_t vmm_page_fault_handler(vaddr_t addr, uint pf_flags);
 
 /* return a pointer to the zero page */
-static inline vm_page_t *vm_get_zero_page(void) {
-    extern vm_page_t *zero_page;
+static inline vm_page_t* vm_get_zero_page(void) {
+    extern vm_page_t* zero_page;
     return zero_page;
 }
 

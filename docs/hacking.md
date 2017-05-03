@@ -2,7 +2,9 @@
 
 This file contains a random collection of notes for hacking on Magenta.
 
-## syscall generation
+[TOC]
+
+## Syscall generation
 
 Syscall support is generated from
 system/public/magenta/syscalls.sysgen.  A host tool called
@@ -21,6 +23,18 @@ its output.
 * Alt+Up/Down scrolls up and down by lines
 * Shift+PgUp/PgDown scrolls up and down by half page
 * Ctrl+Alt+Delete reboots
+
+## Kernel panics
+
+Since the kernel can't reliably draw to a framebuffer when the GPU is enabled,
+the system will reboot by default if the kernel crashes or panics.
+
+The `k prevpanic` command can get some information about the crash most of the
+time on Acer and NUC.  We're working on being able to get more extensive
+previous crash logs.
+
+To disable reboot-on-panic, pass the kernel commandline argument
+[`kernel.halt_on_panic=true`](kernel_cmdline.md#kernel_halt_on_panic_bool).
 
 ## Low level kernel development
 
@@ -49,7 +63,18 @@ EXTERNAL_KERNEL_DEFINES := ENABLE_KERNEL_LL_DEBUG=1
 
 More information on ``local.mk`` can be found via ``make help``
 
-## Requesting a backtrace from within a program
+## Changing the compiler optimization level of a module
+
+You can override the default `-On` level for a module by defining in its
+`rules.mk`:
+
+```
+MODULE_OPTFLAGS := -O0
+```
+
+## Requesting a backtrace
+
+### From within a user process
 
 For debugging purposes, the system crashlogger can print backtraces by
 request. It requires modifying your source, but in the absence of a
@@ -67,3 +92,13 @@ When crashlogger\_request\_backtrace is called, it causes an
 exception used by debuggers for breakpoint handling.
 If a debugger is not attached, the system crashlogger will
 process the exception, print a backtrace, and then resume the thread.
+
+### From a kernel thread
+
+```
+#include <kernel/thread.h>
+
+void my_function() {
+  thread_print_backtrace(get_current_thread(), __GET_FRAME(0));
+}
+```

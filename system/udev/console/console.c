@@ -85,25 +85,31 @@ static mx_protocol_device_t console_device_proto = {
 };
 
 static mx_status_t console_bind(mx_driver_t* drv, mx_device_t* parent, void** cookie) {
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "console",
+        .driver = drv,
+        .ops = &console_device_proto,
+    };
+
     mx_device_t* dev;
-    if (device_create(&dev, drv, "console", &console_device_proto) == NO_ERROR) {
-        if (device_add(dev, parent) < 0) {
-            printf("console: device_add() failed\n");
-            free(dev);
-        } else {
-            thrd_t t;
-            thrd_create_with_name(&t, debug_reader, dev, "debug-reader");
-        }
+    mx_status_t status = device_add2(parent, &args, &dev);
+    if (status != NO_ERROR) {
+        printf("console: device_add() failed\n");
+        return status;
     }
+
+    thrd_t t;
+    thrd_create_with_name(&t, debug_reader, dev, "debug-reader");
+
     return NO_ERROR;
 }
 
-mx_driver_t _driver_console = {
-    .ops = {
-        .bind = console_bind,
-    },
+static mx_driver_ops_t console_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = console_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_console, "console", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(console, console_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
-MAGENTA_DRIVER_END(_driver_console)
+MAGENTA_DRIVER_END(console)

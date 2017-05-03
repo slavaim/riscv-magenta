@@ -12,14 +12,16 @@
 #include <kernel/auto_lock.h>
 
 #include <magenta/process_dispatcher.h>
+#include <magenta/syscalls/policy.h>
 
 constexpr mx_rights_t kDefaultJobRights =
     MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_READ | MX_RIGHT_WRITE |
-    MX_RIGHT_ENUMERATE | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
+    MX_RIGHT_ENUMERATE | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY |
+    MX_RIGHT_SET_POLICY | MX_RIGHT_GET_POLICY;
 
 mxtl::RefPtr<JobDispatcher> JobDispatcher::CreateRootJob() {
     AllocChecker ac;
-    auto job = mxtl::AdoptRef(new (&ac) JobDispatcher(0u, nullptr));
+    auto job = mxtl::AdoptRef(new (&ac) JobDispatcher(0u, nullptr, kPolicyEmpty));
     return ac.check() ? job  : nullptr;
 }
 
@@ -28,7 +30,7 @@ status_t JobDispatcher::Create(uint32_t flags,
                                mxtl::RefPtr<Dispatcher>* dispatcher,
                                mx_rights_t* rights) {
     AllocChecker ac;
-    auto job = new (&ac) JobDispatcher(flags, parent);
+    auto job = new (&ac) JobDispatcher(flags, parent, parent->GetPolicy());
     if (!ac.check())
         return ERR_NO_MEMORY;
 
@@ -43,16 +45,19 @@ status_t JobDispatcher::Create(uint32_t flags,
 }
 
 JobDispatcher::JobDispatcher(uint32_t /*flags*/,
-                             mxtl::RefPtr<JobDispatcher> parent)
+                             mxtl::RefPtr<JobDispatcher> parent,
+                             pol_cookie_t policy)
     : parent_(mxtl::move(parent)),
       state_(State::READY),
       process_count_(0u), job_count_(0u),
-      state_tracker_(MX_JOB_NO_PROCESSES|MX_JOB_NO_JOBS) {
+      state_tracker_(MX_JOB_NO_PROCESSES|MX_JOB_NO_JOBS),
+      policy_(GetSystemPolicyManager()->ClonePolicy(policy)) {
 }
 
 JobDispatcher::~JobDispatcher() {
     if (parent_)
         parent_->RemoveChildJob(this);
+    GetSystemPolicyManager()->RemovePolicy(policy_);
 }
 
 void JobDispatcher::on_zero_handles() {
@@ -81,6 +86,7 @@ bool JobDispatcher::AddChildJob(JobDispatcher* job) {
     AutoLock lock(&lock_);
     if (state_ != State::READY)
         return false;
+
     jobs_.push_back(job);
     ++job_count_;
     UpdateSignalsIncrementLocked();
@@ -150,6 +156,11 @@ void JobDispatcher::UpdateSignalsIncrementLocked() {
     state_tracker_.UpdateState(clear, 0u);
 }
 
+pol_cookie_t JobDispatcher::GetPolicy() {
+    AutoLock lock(&lock_);
+    return policy_;
+}
+
 void JobDispatcher::Kill() {
     canary_.Assert();
 
@@ -190,35 +201,48 @@ void JobDispatcher::Kill() {
     }
 }
 
-bool JobDispatcher::EnumerateChildren(JobEnumerator* je) {
+status_t JobDispatcher::SetPolicy(
+    uint32_t mode, const mx_policy_basic* in_policy, size_t policy_count) {
+    // Can't set policy when there are active processes or jobs.
+    AutoLock lock(&lock_);
+
+    if (!procs_.is_empty() || !jobs_.is_empty())
+        return ERR_BAD_STATE;
+
+    pol_cookie_t new_policy;
+    auto status = GetSystemPolicyManager()->AddPolicy(
+        mode, policy_, in_policy, policy_count, &new_policy);
+
+    if (status < 0)
+        return status;
+
+    policy_ = new_policy;
+    return NO_ERROR;
+}
+
+bool JobDispatcher::EnumerateChildren(JobEnumerator* je, bool recurse) {
     canary_.Assert();
 
     AutoLock lock(&lock_);
 
-    uint32_t proc_index = 0u;
-    uint32_t job_index = 0u;
-
-    if (!je->Size(process_count_, job_count_))
-        return false;
-
-    bool completed = true;
-
     for (auto& proc : procs_) {
-        if (!je->OnProcess(&proc, proc_index++)) {
-            completed = false;
-            break;
+        if (!je->OnProcess(&proc)) {
+            return false;
         }
     }
 
     for (auto& job : jobs_) {
-        if (!je->OnJob(&job, job_index++)) {
-            completed = false;
-            break;
+        if (!je->OnJob(&job)) {
+            return false;
         }
-        // TODO(kulakowski) This recursive call can overflow the stack.
-        job.EnumerateChildren(je);
+        if (recurse) {
+            // TODO(kulakowski): This recursive call can overflow the stack.
+            if (!job.EnumerateChildren(je, /* recurse */ true)) {
+                return false;
+            }
+        }
     }
-    return completed;
+    return true;
 }
 
 mxtl::RefPtr<ProcessDispatcher> JobDispatcher::LookupProcessById(mx_koid_t koid) {

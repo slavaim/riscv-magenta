@@ -23,7 +23,7 @@
 #define AMD_KAVERI_R7_DID (0x130f)
 
 typedef struct kaveri_disp_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
 
     void* regs;
     uint64_t regs_size;
@@ -36,8 +36,6 @@ typedef struct kaveri_disp_device {
     mx_display_info_t info;
 } kaveri_disp_device_t;
 
-#define get_kaveri_disp_device(dev) containerof(dev, kaveri_disp_device_t, device)
-
 // implement display protocol
 static mx_status_t kaveri_disp_set_mode(mx_device_t* dev, mx_display_info_t* info) {
     return ERR_NOT_SUPPORTED;
@@ -45,7 +43,7 @@ static mx_status_t kaveri_disp_set_mode(mx_device_t* dev, mx_display_info_t* inf
 
 static mx_status_t kaveri_disp_get_mode(mx_device_t* dev, mx_display_info_t* info) {
     assert(info);
-    kaveri_disp_device_t* device = get_kaveri_disp_device(dev);
+    kaveri_disp_device_t* device = dev->ctx;
 
     memcpy(info, &device->info, sizeof(mx_display_info_t));
     return NO_ERROR;
@@ -53,7 +51,7 @@ static mx_status_t kaveri_disp_get_mode(mx_device_t* dev, mx_display_info_t* inf
 
 static mx_status_t kaveri_disp_get_framebuffer(mx_device_t* dev, void** framebuffer) {
     assert(framebuffer);
-    kaveri_disp_device_t* device = get_kaveri_disp_device(dev);
+    kaveri_disp_device_t* device = dev->ctx;
 
     (*framebuffer) = device->framebuffer;
     return NO_ERROR;
@@ -68,7 +66,7 @@ static mx_display_protocol_t kaveri_disp_display_proto = {
 // implement device protocol
 
 static mx_status_t kaveri_disp_release(mx_device_t* dev) {
-    kaveri_disp_device_t* device = get_kaveri_disp_device(dev);
+    kaveri_disp_device_t* device = dev->ctx;
 
     if (device->regs) {
         mx_handle_close(device->regs_handle);
@@ -80,6 +78,7 @@ static mx_status_t kaveri_disp_release(mx_device_t* dev) {
         device->framebuffer_handle = -1;
     }
 
+    free(device);
     return NO_ERROR;
 }
 
@@ -93,7 +92,7 @@ static mx_status_t kaveri_disp_bind(mx_driver_t* drv, mx_device_t* dev, void** c
     pci_protocol_t* pci;
     mx_status_t status;
 
-    if (device_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
+    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
         return ERR_NOT_SUPPORTED;
 
     status = pci->claim_device(dev);
@@ -123,9 +122,6 @@ static mx_status_t kaveri_disp_bind(mx_driver_t* drv, mx_device_t* dev, void** c
         goto fail;
     }
 
-    // create and add the display (char) device
-    device_init(&device->device, drv, "amd_kaveri_disp", &kaveri_disp_device_proto);
-
     mx_display_info_t* di = &device->info;
     uint32_t format, width, height, stride;
     status = mx_bootloader_fb_get_info(&format, &width, &height, &stride);
@@ -143,9 +139,22 @@ static mx_status_t kaveri_disp_bind(mx_driver_t* drv, mx_device_t* dev, void** c
     mx_set_framebuffer(get_root_resource(), device->framebuffer, device->framebuffer_size,
                        format, width, height, stride);
 
-    device->device.protocol_id = MX_PROTOCOL_DISPLAY;
-    device->device.protocol_ops = &kaveri_disp_display_proto;
-    device_add(&device->device, dev);
+
+    // create and add the display (char) device
+   device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "amd_kaveri_disp",
+        .ctx = device,
+        .driver = drv,
+        .ops = &kaveri_disp_device_proto,
+        .proto_id = MX_PROTOCOL_DISPLAY,
+        .proto_ops = &kaveri_disp_display_proto,
+    };
+
+    status = device_add2(dev, &args, &device->mxdev);
+    if (status != NO_ERROR) {
+        goto fail;
+    }
 
     printf("initialized amd kaveri R7 display driver, reg=%p regsize=0x%" PRIx64 " fb=%p fbsize=0x%" PRIx64 "\n",
            device->regs, device->regs_size, device->framebuffer, device->framebuffer_size);
@@ -153,20 +162,20 @@ static mx_status_t kaveri_disp_bind(mx_driver_t* drv, mx_device_t* dev, void** c
            device->info.width, device->info.height, device->info.stride, device->info.format);
 
     return NO_ERROR;
+
 fail:
     free(device);
     return status;
 }
 
-mx_driver_t _driver_kaveri_disp = {
-    .ops = {
-        .bind = kaveri_disp_bind,
-    },
+static mx_driver_ops_t kaveri_disp_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = kaveri_disp_bind,
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_kaveri_disp, "amd-kaveri-display", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(kaveri_disp, kaveri_disp_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_VID, AMD_GFX_VID),
     BI_MATCH_IF(EQ, BIND_PCI_DID, AMD_KAVERI_R7_DID),
-MAGENTA_DRIVER_END(_driver_kaveri_disp)
+MAGENTA_DRIVER_END(kaveri_disp)

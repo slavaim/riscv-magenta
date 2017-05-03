@@ -12,7 +12,11 @@
 
 __BEGIN_CDECLS
 
-#define INVALID_APIC_ID 0xffffffff
+#define INVALID_APIC_ID             0xffffffff
+#define APIC_PHYS_BASE              0xfee00000
+#define IA32_APIC_BASE_BSP          (1u << 8)
+#define IA32_APIC_BASE_XAPIC_ENABLE (1u << 11)
+#define NUM_ISA_IRQS 16
 
 enum apic_interrupt_delivery_mode {
     // Unless you know what you're doing, you want FIXED.
@@ -37,7 +41,7 @@ uint8_t apic_local_id(void);
 void apic_irq_set(unsigned int vector, bool enable);
 void apic_send_ipi(
         uint8_t vector,
-        uint8_t dst_apic_id,
+        uint32_t dst_apic_id,
         enum apic_interrupt_delivery_mode dm);
 void apic_send_self_ipi(uint8_t vector, enum apic_interrupt_delivery_mode dm);
 void apic_send_broadcast_ipi(
@@ -83,8 +87,13 @@ struct io_apic_isa_override {
 };
 
 // Functionality provided by the IO APICs
-#define IO_APIC_IRQ_MASK true
-#define IO_APIC_IRQ_UNMASK false
+#define IO_APIC_IOREGSEL    0x00
+#define IO_APIC_IOWIN       0x10
+
+#define IO_APIC_REG_ID      0x00
+#define IO_APIC_REG_VER     0x01
+#define IO_APIC_IRQ_MASK    true
+#define IO_APIC_IRQ_UNMASK  false
 
 void apic_io_init(
         struct io_apic_descriptor *io_apics_descs,

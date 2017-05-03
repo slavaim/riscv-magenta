@@ -17,17 +17,10 @@
 
 #include "textcon.h"
 
-typedef uint16_t vc_char_t;
-#define CHARVAL(ch, fg, bg) \
-    ((vc_char_t)(((ch)&0xff) | (((fg)&0xf) << 8) | (((bg)&0xf) << 12)))
-#define TOCHAR(ch) ((ch)&0xff)
-#define TOFG(ch) ((uint8_t)(((ch) >> 8) & 0xf))
-#define TOBG(ch) ((uint8_t)(((ch) >> 12) & 0xf))
-
 #define MAX_COLOR 0xf
 
 typedef struct vc_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
 
     char title[8];
     // vc title, shown in status bar
@@ -47,15 +40,20 @@ typedef struct vc_device {
 
     vc_char_t* text_buf;
     // text buffer
+
+    // Buffer containing scrollback lines.  This is a circular buffer.
     vc_char_t* scrollback_buf;
-    // scrollback buffer
+    // Maximum number of rows that may be stored in the scrollback buffer.
+    unsigned scrollback_rows_max;
+    // Number of rows currently stored in the scrollback buffer.
+    unsigned scrollback_rows_count;
+    // Offset, in rows, of the oldest row in the scrollback buffer.
+    unsigned scrollback_offset;
 
     unsigned rows, columns;
     // screen size
     unsigned charw, charh;
     // size of character cell
-    unsigned scrollback_rows;
-    // number of rows in scrollback
 
     int invy0, invy1;
     // offscreen invalid lines, tracked during textcon drawing
@@ -66,8 +64,6 @@ typedef struct vc_device {
     // cursor visibility
     int viewport_y;
     // viewport position, must be <= 0
-    unsigned scrollback_head, scrollback_tail;
-    // offsets into the scrollback buffer in rows
 
     uint32_t palette[16];
     uint8_t front_color;
@@ -85,11 +81,11 @@ typedef struct vc_device {
     // for virtual console list
 } vc_device_t;
 
-#define get_vc_device(dev) containerof(dev, vc_device_t, device)
-
-#define VC_FLAG_HASINPUT    (1 << 0)
-#define VC_FLAG_RESETSCROLL (1 << 1)
-#define VC_FLAG_FULLSCREEN  (1 << 2)
+// When VC_FLAG_HASOUTPUT is set, this indicates that there was output to
+// the console that hasn't been displayed yet, because this console isn't
+// visible.
+#define VC_FLAG_HASOUTPUT   (1 << 0)
+#define VC_FLAG_FULLSCREEN  (1 << 1)
 
 extern mtx_t g_vc_lock;
 
@@ -113,11 +109,16 @@ void vc_device_write_status(vc_device_t* dev) TA_REQ(g_vc_lock);
 void vc_device_render(vc_device_t* dev) TA_REQ(g_vc_lock);
 void vc_device_invalidate_all_for_testing(vc_device_t* dev);
 int vc_device_get_scrollback_lines(vc_device_t* dev);
+vc_char_t* vc_device_get_scrollback_line_ptr(vc_device_t* dev, unsigned row);
 void vc_device_scroll_viewport(vc_device_t* dev, int dir) TA_REQ(g_vc_lock);
+void vc_device_scroll_viewport_top(vc_device_t* dev) TA_REQ(g_vc_lock);
+void vc_device_scroll_viewport_bottom(vc_device_t* dev) TA_REQ(g_vc_lock);
 void vc_device_set_fullscreen(vc_device_t* dev, bool fullscreen)
     TA_REQ(g_vc_lock);
 
-ssize_t vc_device_write(mx_device_t* dev, const void* buf, size_t count,
+ssize_t vc_device_op_write(mx_device_t* dev, const void* buf, size_t count,
+                           mx_off_t off);
+ssize_t vc_device_write(vc_device_t* dev, const void* buf, size_t count,
                         mx_off_t off);
 
 static inline int vc_device_rows(vc_device_t* dev) {

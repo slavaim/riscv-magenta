@@ -38,7 +38,7 @@
 #define AMD_AHCI_VID        (0x1022)
 #define AMD_FCH_AHCI_DID    (0x7801)
 
-#define TRACE 1
+#define TRACE 0
 
 #if TRACE
 #define xprintf(fmt...) printf(fmt)
@@ -78,7 +78,7 @@ typedef struct ahci_port {
 } ahci_port_t;
 
 typedef struct ahci_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
 
     ahci_hba_t* regs;
     uint64_t regs_size;
@@ -99,8 +99,6 @@ typedef struct ahci_device {
 
     ahci_port_t ports[AHCI_MAX_PORTS];
 } ahci_device_t;
-
-#define get_ahci_device(dev) containerof(dev, ahci_device_t, device)
 
 static inline mx_status_t ahci_wait_for_clear(const volatile uint32_t* reg, uint32_t mask, mx_time_t timeout) {
     int i = 0;
@@ -264,13 +262,8 @@ static mx_status_t ahci_do_txn(ahci_device_t* dev, ahci_port_t* port, int slot, 
         completion_signal(&dev->worker_completion);
         return status;
     }
-    if (txn->phys_count != 1) {
-        printf("%s scatter/gather not implemented yet\n", __FUNCTION__);
-        iotxn_complete(txn, ERR_INVALID_ARGS, 0);
-        completion_signal(&dev->worker_completion);
-        return ERR_INVALID_ARGS;
-    }
-    mx_paddr_t phys = iotxn_phys(txn);
+    iotxn_phys_iter_t iter;
+    iotxn_phys_iter_init(&iter, txn, AHCI_PRD_MAX_SIZE);
 
     if (dev->cap & AHCI_CAP_NCQ) {
         if (pdata->cmd == SATA_CMD_READ_DMA_EXT) {
@@ -280,21 +273,12 @@ static mx_status_t ahci_do_txn(ahci_device_t* dev, ahci_port_t* port, int slot, 
         }
     }
 
-    //xprintf("ahci.%d: do_txn slot=%d cmd=0x%x device=0x%x lba=0x%lx count=%u data_sz=0x%lx offset=0x%lx sgl=0x%x\n", port->nr, slot, pdata->cmd, pdata->device, pdata->lba, pdata->count, txn->length, txn->offset, sgl);
-#if 0
-    xprintf("sg:\n");
-    for (unsigned u = 0; u < sgl; u++) {
-        xprintf("  [%u]: 0x%lx len 0x%lx" PRIx64 "\n", u, sg[u].paddr, sg[u].length);
-    }
-#endif
-
     // build the command
     ahci_cl_t* cl = port->cl + slot;
     // don't clear the cl since we set up ctba/ctbau at init
     cl->prdtl_flags_cfl = 0;
     cl->cfl = 5; // 20 bytes
     cl->w = cmd_is_write(pdata->cmd) ? 1 : 0;
-    cl->prdtl = 1;
     cl->prdbc = 0;
     memset(port->ct[slot], 0, sizeof(ahci_ct_t));
 
@@ -328,17 +312,37 @@ static mx_status_t ahci_do_txn(ahci_device_t* dev, ahci_port_t* port, int slot, 
         cfis[13] = 0; // normal priority
     }
 
-    ahci_prd_t* prd = NULL;
-    uint64_t length = txn->length;
-    for (int i = 0; i < cl->prdtl; i++) {
-        // TODO split this transaction
-        prd = (ahci_prd_t*)((void*)port->ct[slot] + sizeof(ahci_ct_t)) + i;
-        prd->dba = LO32(phys);
-        prd->dbau = HI32(phys);
-        prd->dbc = ((length - 1) & 0x3fffff); // 0-based byte count
-        phys += AHCI_PRD_MAX_SIZE;
-        length -= AHCI_PRD_MAX_SIZE;
+    cl->prdtl = 0;
+    ahci_prd_t* prd = (ahci_prd_t*)((void*)port->ct[slot] + sizeof(ahci_ct_t));
+    size_t length;
+    mx_paddr_t paddr;
+    for (;;) {
+        length = iotxn_phys_iter_next(&iter, &paddr);
+        xprintf("chunk %u length %zu\n", cl->prdtl, length);
+        if (length == 0) {
+            break;
+        } else if (length > AHCI_PRD_MAX_SIZE) {
+            printf("ahci.%d: chunk size > %zu is unsupported\n", port->nr, length);
+            status = ERR_NOT_SUPPORTED;
+            iotxn_complete(txn, status, 0);
+            completion_signal(&dev->worker_completion);
+            return status;
+        } else if (cl->prdtl == AHCI_MAX_PRDS) {
+            printf("ahci.%d: txn with more than %d chunks is unsupported\n", port->nr, cl->prdtl);
+            status = ERR_NOT_SUPPORTED;
+            iotxn_complete(txn, status, 0);
+            completion_signal(&dev->worker_completion);
+            return status;
+        }
+
+        prd->dba = LO32(paddr);
+        prd->dbau = HI32(paddr);
+        prd->dbc = ((length - 1) & (AHCI_PRD_MAX_SIZE - 1)); // 0-based byte count
+        cl->prdtl += 1;
+        prd += 1;
     }
+
+    xprintf("ahci.%d: do_txn slot=%d cmd=0x%x device=0x%x lba=0x%lx count=%u data_sz=0x%lx offset=0x%lx prdtl=%u\n", port->nr, slot, pdata->cmd, pdata->device, pdata->lba, pdata->count, txn->length, txn->offset, cl->prdtl);
 
     port->running |= (1 << slot);
     port->commands[slot] = txn;
@@ -451,11 +455,9 @@ static void ahci_hba_reset(ahci_device_t* dev) {
     }
 }
 
-// public api:
-
-void ahci_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
+static void ahci_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     sata_pdata_t* pdata = sata_iotxn_pdata(txn);
-    ahci_device_t* device = get_ahci_device(dev);
+    ahci_device_t* device = dev->ctx;
     ahci_port_t* port = &device->ports[pdata->port];
 
     assert(pdata->port < AHCI_MAX_PORTS);
@@ -468,6 +470,13 @@ void ahci_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
 
     // hit the worker thread
     completion_signal(&device->worker_completion);
+}
+
+static mx_status_t ahci_release(mx_device_t* dev) {
+    // FIXME - join threads created by this driver
+    ahci_device_t* device = dev->ctx;
+    free(device);
+    return NO_ERROR;
 }
 
 // worker thread (for iotxn queue):
@@ -629,6 +638,8 @@ static int ahci_irq_thread(void* arg) {
 // implement device protocol:
 
 static mx_protocol_device_t ahci_device_proto = {
+    .iotxn_queue = ahci_iotxn_queue,
+    .release = ahci_release,
 };
 
 extern mx_protocol_device_t ahci_port_device_proto;
@@ -690,7 +701,7 @@ static int ahci_init_thread(void* arg) {
         if (ahci_read(&port->regs->ssts) & AHCI_PORT_SSTS_DET_PRESENT) {
             port->flags |= AHCI_PORT_FLAG_PRESENT;
             if (ahci_read(&port->regs->sig) == AHCI_PORT_SIG_SATA) {
-                sata_bind(&dev->device, port->nr);
+                sata_bind(dev->mxdev, port->nr);
             }
         }
     }
@@ -705,7 +716,7 @@ fail:
 
 static mx_status_t ahci_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     pci_protocol_t* pci;
-    if (device_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci)) return ERR_NOT_SUPPORTED;
+    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci)) return ERR_NOT_SUPPORTED;
 
     mx_status_t status = pci->claim_device(dev);
     if (status < 0) {
@@ -719,8 +730,6 @@ static mx_status_t ahci_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) 
         xprintf("ahci: out of memory\n");
         return ERR_NO_MEMORY;
     }
-
-    device_init(&device->device, drv, "ahci", &ahci_device_proto);
 
     // map register window
     status = pci->map_mmio(dev, 5, MX_CACHE_POLICY_UNCACHED_DEVICE, (void*)&device->regs, &device->regs_size, &device->regs_handle);
@@ -789,7 +798,20 @@ static mx_status_t ahci_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) 
     }
 
     // add the device for the controller
-    device_add(&device->device, dev);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ahci",
+        .ctx = device,
+        .driver = drv,
+        .ops = &ahci_device_proto,
+        .flags = DEVICE_ADD_NON_BINDABLE,
+    };
+
+    status = device_add2(dev, &args, &device->mxdev);
+    if (status != NO_ERROR) {
+        xprintf("ahci: error %d in device_add\n", status);
+        goto fail;
+    }
 
     // initialize controller and detect devices
     thrd_t t;
@@ -801,19 +823,18 @@ static mx_status_t ahci_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) 
 
     return NO_ERROR;
 fail:
-    // FIXME unmap
+    // FIXME unmap, and join any threads created above
     free(device);
     return status;
 }
 
-mx_driver_t _driver_ahci = {
-    .ops = {
-        .bind = ahci_bind,
-    },
+static mx_driver_ops_t ahci_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = ahci_bind,
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_ahci, "ahci", "magenta", "0.1", 13)
+MAGENTA_DRIVER_BEGIN(ahci, ahci_driver_ops, "magenta", "0.1", 13)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_GOTO_IF(EQ, BIND_PCI_VID, AMD_AHCI_VID, 1),
     // intel devices
@@ -829,4 +850,4 @@ MAGENTA_DRIVER_BEGIN(_driver_ahci, "ahci", "magenta", "0.1", 13)
     BI_LABEL(1),
     BI_MATCH_IF(EQ, BIND_PCI_DID, AMD_FCH_AHCI_DID),
     BI_ABORT(),
-MAGENTA_DRIVER_END(_driver_ahci)
+MAGENTA_DRIVER_END(ahci)

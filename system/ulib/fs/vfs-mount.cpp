@@ -88,6 +88,29 @@ mx_status_t Vfs::InstallRemote(Vnode* vn, mx_handle_t h) {
     return NO_ERROR;
 }
 
+// Installs a remote filesystem on vn and adds it to the remote_list.
+mx_status_t Vfs::InstallRemoteLocked(Vnode* vn, mx_handle_t h) {
+    if (vn == nullptr) {
+        return ERR_ACCESS_DENIED;
+    }
+
+    // Allocate a node to track the remote handle
+    AllocChecker ac;
+    mxtl::unique_ptr<MountNode> mount_point(new (&ac) MountNode());
+    if (!ac.check()) {
+        return ERR_NO_MEMORY;
+    }
+    mx_status_t status = vn->AttachRemote(h);
+    if (status != NO_ERROR) {
+        return status;
+    }
+    // Save this node in the list of mounted vnodes
+    mount_point->SetNode(mxtl::move(vn));
+    remote_list.push_front(mxtl::move(mount_point));
+    return NO_ERROR;
+}
+
+
 // Uninstall the remote filesystem mounted on vn. Removes vn from the
 // remote_list, and sends its corresponding filesystem an 'unmount' signal.
 mx_status_t Vfs::UninstallRemote(Vnode* vn, mx_handle_t* h) {
@@ -109,7 +132,7 @@ mx_status_t Vfs::UninstallRemote(Vnode* vn, mx_handle_t* h) {
 
 // Uninstall all remote filesystems. Acts like 'UninstallRemote' for all
 // known remotes.
-mx_status_t vfs_uninstall_all(mx_time_t timeout) {
+mx_status_t vfs_uninstall_all(mx_time_t deadline) {
     mxtl::unique_ptr<fs::MountNode> mount_point;
     for (;;) {
         {
@@ -117,7 +140,7 @@ mx_status_t vfs_uninstall_all(mx_time_t timeout) {
             mount_point = fs::remote_list.pop_front();
         }
         if (mount_point) {
-            vfs_unmount_handle(mount_point->ReleaseRemote(), timeout);
+            vfs_unmount_handle(mount_point->ReleaseRemote(), deadline);
         } else {
             return NO_ERROR;
         }

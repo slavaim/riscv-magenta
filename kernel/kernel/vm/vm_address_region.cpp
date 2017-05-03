@@ -21,9 +21,8 @@
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
-
 VmAddressRegion::VmAddressRegion(VmAspace& aspace, vaddr_t base, size_t size, uint32_t vmar_flags)
-    : VmAddressRegionOrMapping(kMagic, base, size, vmar_flags | VMAR_CAN_RWX_FLAGS,
+    : VmAddressRegionOrMapping(base, size, vmar_flags | VMAR_CAN_RWX_FLAGS,
                                &aspace, nullptr, "root") {
 
     // We add in CAN_RWX_FLAGS above, since an address space can't usefully
@@ -34,28 +33,24 @@ VmAddressRegion::VmAddressRegion(VmAspace& aspace, vaddr_t base, size_t size, ui
 
 VmAddressRegion::VmAddressRegion(VmAddressRegion& parent, vaddr_t base, size_t size,
                                  uint32_t vmar_flags, const char* name)
-    : VmAddressRegionOrMapping(kMagic, base, size, vmar_flags, parent.aspace_.get(), &parent,
-                               name) {
+    : VmAddressRegionOrMapping(base, size, vmar_flags, parent.aspace_.get(),
+                               &parent, name) {
 
     LTRACEF("%p '%s'\n", this, name_);
 }
 
 VmAddressRegion::VmAddressRegion(VmAspace& kernel_aspace)
     : VmAddressRegion(kernel_aspace, kernel_aspace.base(), kernel_aspace.size(),
-                      VMAR_FLAG_CAN_MAP_SPECIFIC | VMAR_FLAG_COMPACT) {
+                      VMAR_FLAG_CAN_MAP_SPECIFIC) {
 
     // Activate the kernel root aspace immediately
     state_ = LifeCycleState::ALIVE;
 }
 
 VmAddressRegion::VmAddressRegion()
-    : VmAddressRegionOrMapping(kMagic, 0, 0, 0, nullptr, nullptr, "dummy") {
+    : VmAddressRegionOrMapping(0, 0, 0, nullptr, nullptr, "dummy") {
 
     LTRACEF("%p '%s'\n", this, name_);
-}
-
-VmAddressRegion::~VmAddressRegion() {
-    DEBUG_ASSERT(magic_ == kMagic);
 }
 
 status_t VmAddressRegion::CreateRoot(VmAspace& aspace, uint32_t vmar_flags,
@@ -95,7 +90,7 @@ status_t VmAddressRegion::CreateSubVmarInternal(size_t offset, size_t size, uint
         return ERR_ACCESS_DENIED;
     }
 
-    bool is_specific_overwrite  = static_cast<bool>(vmar_flags & VMAR_FLAG_SPECIFIC_OVERWRITE);
+    bool is_specific_overwrite = static_cast<bool>(vmar_flags & VMAR_FLAG_SPECIFIC_OVERWRITE);
     bool is_specific = static_cast<bool>(vmar_flags & VMAR_FLAG_SPECIFIC) || is_specific_overwrite;
     if (!is_specific && offset != 0) {
         return ERR_INVALID_ARGS;
@@ -129,9 +124,9 @@ status_t VmAddressRegion::CreateSubVmarInternal(size_t offset, size_t size, uint
         }
     } else {
         // If we're not mapping to a specific place, search for an opening.
-        new_base = AllocSpotLocked(size, align_pow2, arch_mmu_flags);
-        if (new_base == static_cast<vaddr_t>(-1)) {
-            return ERR_NO_MEMORY;
+        status_t status = AllocSpotLocked(size, align_pow2, arch_mmu_flags, &new_base);
+        if (status != NO_ERROR) {
+            return status;
         }
     }
 
@@ -139,11 +134,11 @@ status_t VmAddressRegion::CreateSubVmarInternal(size_t offset, size_t size, uint
     mxtl::RefPtr<VmAddressRegionOrMapping> vmar;
     if (vmo) {
         vmar = mxtl::AdoptRef(new (&ac)
-                              VmMapping(*this, new_base, size, vmar_flags,
-                                        mxtl::move(vmo), vmo_offset, arch_mmu_flags, name));
+                                  VmMapping(*this, new_base, size, vmar_flags,
+                                            mxtl::move(vmo), vmo_offset, arch_mmu_flags, name));
     } else {
         vmar = mxtl::AdoptRef(new (&ac)
-                              VmAddressRegion(*this, new_base, size, vmar_flags, name));
+                                  VmAddressRegion(*this, new_base, size, vmar_flags, name));
     }
 
     if (!ac.check()) {
@@ -165,8 +160,7 @@ status_t VmAddressRegion::CreateSubVmar(size_t offset, size_t size, uint8_t alig
     }
 
     // Check that only allowed flags have been set
-    if (vmar_flags & ~(VMAR_FLAG_SPECIFIC | VMAR_FLAG_CAN_MAP_SPECIFIC |
-                       VMAR_FLAG_COMPACT | VMAR_CAN_RWX_FLAGS)) {
+    if (vmar_flags & ~(VMAR_FLAG_SPECIFIC | VMAR_FLAG_CAN_MAP_SPECIFIC | VMAR_FLAG_COMPACT | VMAR_CAN_RWX_FLAGS)) {
         return ERR_INVALID_ARGS;
     }
 
@@ -189,8 +183,7 @@ status_t VmAddressRegion::CreateVmMapping(size_t mapping_offset, size_t size, ui
     LTRACEF("%p %#zx %#zx %x\n", this, mapping_offset, size, vmar_flags);
 
     // Check that only allowed flags have been set
-    if (vmar_flags & ~(VMAR_FLAG_SPECIFIC | VMAR_FLAG_SPECIFIC_OVERWRITE |
-                       VMAR_CAN_RWX_FLAGS)) {
+    if (vmar_flags & ~(VMAR_FLAG_SPECIFIC | VMAR_FLAG_SPECIFIC_OVERWRITE | VMAR_CAN_RWX_FLAGS)) {
         return ERR_INVALID_ARGS;
     }
 
@@ -232,10 +225,10 @@ status_t VmAddressRegion::CreateVmMapping(size_t mapping_offset, size_t size, ui
 }
 
 status_t VmAddressRegion::OverwriteVmMapping(vaddr_t base, size_t size, uint32_t vmar_flags,
-                            mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset,
-                            uint arch_mmu_flags, const char* name,
-                            mxtl::RefPtr<VmAddressRegionOrMapping>* out) {
-    DEBUG_ASSERT(magic_ == kMagic);
+                                             mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset,
+                                             uint arch_mmu_flags, const char* name,
+                                             mxtl::RefPtr<VmAddressRegionOrMapping>* out) {
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
     DEBUG_ASSERT(vmo);
     DEBUG_ASSERT(vmar_flags & VMAR_FLAG_SPECIFIC_OVERWRITE);
@@ -243,8 +236,8 @@ status_t VmAddressRegion::OverwriteVmMapping(vaddr_t base, size_t size, uint32_t
     AllocChecker ac;
     mxtl::RefPtr<VmAddressRegionOrMapping> vmar;
     vmar = mxtl::AdoptRef(new (&ac)
-                          VmMapping(*this, base, size, vmar_flags,
-                                    mxtl::move(vmo), vmo_offset, arch_mmu_flags, name));
+                              VmMapping(*this, base, size, vmar_flags,
+                                        mxtl::move(vmo), vmo_offset, arch_mmu_flags, name));
     if (!ac.check()) {
         return ERR_NO_MEMORY;
     }
@@ -260,7 +253,7 @@ status_t VmAddressRegion::OverwriteVmMapping(vaddr_t base, size_t size, uint32_t
 }
 
 status_t VmAddressRegion::DestroyLocked() {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
     LTRACEF("%p '%s'\n", this, name_);
 
@@ -304,7 +297,7 @@ mxtl::RefPtr<VmAddressRegionOrMapping> VmAddressRegion::FindRegion(vaddr_t addr)
 }
 
 mxtl::RefPtr<VmAddressRegionOrMapping> VmAddressRegion::FindRegionLocked(vaddr_t addr) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
 
     // Find the first region with a base greather than *addr*.  If a region
     // exists for *addr*, it will be immediately before it.
@@ -317,7 +310,7 @@ mxtl::RefPtr<VmAddressRegionOrMapping> VmAddressRegion::FindRegionLocked(vaddr_t
 }
 
 size_t VmAddressRegion::AllocatedPagesLocked() const {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
     if (state_ != LifeCycleState::ALIVE) {
@@ -332,7 +325,7 @@ size_t VmAddressRegion::AllocatedPagesLocked() const {
 }
 
 status_t VmAddressRegion::PageFault(vaddr_t va, uint pf_flags) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
     mxtl::RefPtr<VmAddressRegion> vmar(this);
@@ -466,8 +459,9 @@ not_found:
     return true; // not_found: stop search
 }
 
-vaddr_t VmAddressRegion::AllocSpotLocked(size_t size, uint8_t align_pow2, uint arch_mmu_flags) {
-    DEBUG_ASSERT(magic_ == kMagic);
+status_t VmAddressRegion::AllocSpotLocked(size_t size, uint8_t align_pow2, uint arch_mmu_flags,
+                                          vaddr_t* spot) {
+    canary_.Assert();
     DEBUG_ASSERT(size > 0 && IS_PAGE_ALIGNED(size));
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
@@ -475,13 +469,18 @@ vaddr_t VmAddressRegion::AllocSpotLocked(size_t size, uint8_t align_pow2, uint a
                   align_pow2);
 
     if (aspace_->is_aslr_enabled()) {
-        return NonCompactRandomizedRegionAllocatorLocked(size, align_pow2, arch_mmu_flags);
+        if (flags_ & VMAR_FLAG_COMPACT) {
+            return CompactRandomizedRegionAllocatorLocked(size, align_pow2, arch_mmu_flags, spot);
+        } else {
+            return NonCompactRandomizedRegionAllocatorLocked(size, align_pow2, arch_mmu_flags,
+                                                             spot);
+        }
     }
-    return LinearRegionAllocatorLocked(size, align_pow2, arch_mmu_flags);
+    return LinearRegionAllocatorLocked(size, align_pow2, arch_mmu_flags, spot);
 }
 
 bool VmAddressRegion::EnumerateChildrenLocked(VmEnumerator* ve, uint depth) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     DEBUG_ASSERT(ve != nullptr);
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
     for (auto& child : subregions_) {
@@ -507,7 +506,7 @@ bool VmAddressRegion::EnumerateChildrenLocked(VmEnumerator* ve, uint depth) {
 }
 
 void VmAddressRegion::Dump(uint depth, bool verbose) const {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
     for (uint i = 0; i < depth; ++i) {
         printf("  ");
     }
@@ -527,7 +526,7 @@ void VmAddressRegion::Activate() {
 }
 
 status_t VmAddressRegion::Unmap(vaddr_t base, size_t size) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
 
     if (size == 0 || !IS_PAGE_ALIGNED(base)) {
         return ERR_INVALID_ARGS;
@@ -614,7 +613,7 @@ status_t VmAddressRegion::UnmapInternalLocked(vaddr_t base, size_t size, bool ca
 }
 
 status_t VmAddressRegion::Protect(vaddr_t base, size_t size, uint new_arch_mmu_flags) {
-    DEBUG_ASSERT(magic_ == kMagic);
+    canary_.Assert();
 
     if (size == 0 || !IS_PAGE_ALIGNED(base)) {
         return ERR_INVALID_ARGS;
@@ -691,8 +690,8 @@ status_t VmAddressRegion::Protect(vaddr_t base, size_t size, uint new_arch_mmu_f
     return NO_ERROR;
 }
 
-vaddr_t VmAddressRegion::LinearRegionAllocatorLocked(size_t size, uint8_t align_pow2,
-                                                     uint arch_mmu_flags) {
+status_t VmAddressRegion::LinearRegionAllocatorLocked(size_t size, uint8_t align_pow2,
+                                                     uint arch_mmu_flags, vaddr_t* spot) {
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
 
     const vaddr_t base = 0;
@@ -707,19 +706,23 @@ vaddr_t VmAddressRegion::LinearRegionAllocatorLocked(size_t size, uint8_t align_
     auto after_iter = subregions_.begin();
 
     do {
-        vaddr_t spot;
-        if (CheckGapLocked(before_iter, after_iter, &spot, base, align, size, 0, arch_mmu_flags)) {
-            return spot;
+        if (CheckGapLocked(before_iter, after_iter, spot, base, align, size, 0, arch_mmu_flags)) {
+            if (*spot != static_cast<vaddr_t>(-1)) {
+                return NO_ERROR;
+            } else {
+                return ERR_NO_MEMORY;
+            }
         }
 
         before_iter = after_iter++;
     } while (before_iter.IsValid());
 
     // couldn't find anything
-    return -1;
+    return ERR_NO_MEMORY;
 }
 
-template <typename F> void VmAddressRegion::ForEachGap(F func, uint8_t align_pow2) {
+template <typename F>
+void VmAddressRegion::ForEachGap(F func, uint8_t align_pow2) {
     const vaddr_t align = 1UL << align_pow2;
 
     // Scan the regions list to find the gap to the left of each region.  We
@@ -758,9 +761,11 @@ constexpr size_t AllocationSpotsInRange(size_t range_size, size_t alloc_size, ui
 // Perform allocations for VMARs that aren't using the COMPACT policy.  This
 // allocator works by choosing uniformly at random from the set of positions
 // that could satisfy the allocation.
-vaddr_t VmAddressRegion::NonCompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
-                                                                   uint arch_mmu_flags) {
+status_t VmAddressRegion::NonCompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
+                                                                   uint arch_mmu_flags,
+                                                                   vaddr_t* spot) {
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
+    DEBUG_ASSERT(spot);
 
     align_pow2 = mxtl::max(align_pow2, static_cast<uint8_t>(PAGE_SIZE_SHIFT));
     const vaddr_t align = 1UL << align_pow2;
@@ -773,10 +778,11 @@ vaddr_t VmAddressRegion::NonCompactRandomizedRegionAllocatorLocked(size_t size, 
             candidate_spaces += AllocationSpotsInRange(gap_len, size, align_pow2);
         }
         return true;
-    }, align_pow2);
+    },
+               align_pow2);
 
     if (candidate_spaces == 0) {
-        return static_cast<vaddr_t>(-1);
+        return ERR_NO_MEMORY;
     }
 
     // Choose the index of the allocation to use.
@@ -798,7 +804,8 @@ vaddr_t VmAddressRegion::NonCompactRandomizedRegionAllocatorLocked(size_t size, 
         }
         selected_index -= spots;
         return true;
-    }, align_pow2);
+    },
+               align_pow2);
     ASSERT(alloc_spot != static_cast<vaddr_t>(-1));
     ASSERT(IS_ALIGNED(alloc_spot, align));
 
@@ -814,10 +821,79 @@ vaddr_t VmAddressRegion::NonCompactRandomizedRegionAllocatorLocked(size_t size, 
 
     ASSERT(before_iter == subregions_.end() || before_iter.IsValid());
 
-    vaddr_t spot;
-    if (CheckGapLocked(before_iter, after_iter, &spot, alloc_spot, align, size, 0,
-                       arch_mmu_flags) && spot != static_cast<vaddr_t>(-1)) {
-        return spot;
+    if (CheckGapLocked(before_iter, after_iter, spot, alloc_spot, align, size, 0,
+                       arch_mmu_flags) && *spot != static_cast<vaddr_t>(-1)) {
+        return NO_ERROR;
     }
     panic("Unexpected allocation failure\n");
+}
+
+// The COMPACT allocator begins by picking a random offset in the region to
+// start allocations at, and then places new allocations to the left and right
+// of the original region with small random-length gaps between.
+status_t VmAddressRegion::CompactRandomizedRegionAllocatorLocked(size_t size, uint8_t align_pow2,
+                                                                uint arch_mmu_flags,
+                                                                vaddr_t* spot) {
+    DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
+
+    align_pow2 = mxtl::max(align_pow2, static_cast<uint8_t>(PAGE_SIZE_SHIFT));
+    const vaddr_t align = 1UL << align_pow2;
+
+    if (unlikely(subregions_.size() == 0)) {
+        return NonCompactRandomizedRegionAllocatorLocked(size, align_pow2, arch_mmu_flags, spot);
+    }
+
+    // Decide if we're allocating before or after the existing allocations, and
+    // how many gap pages to use.
+    bool alloc_before;
+    size_t num_gap_pages;
+    {
+        uint8_t entropy;
+        aspace_->AslrPrng().Draw(&entropy, sizeof(entropy));
+        alloc_before = entropy & 1;
+        num_gap_pages = (entropy >> 1) + 1;
+    }
+
+    // Try our first choice for *num_gap_pages*, but if that fails, try fewer
+    for (size_t gap_pages = num_gap_pages; gap_pages > 0; gap_pages >>= 1) {
+        // Try our first choice for *alloc_before*, but if that fails, try the other
+        for (size_t i = 0; i < 2; ++i, alloc_before = !alloc_before) {
+            ChildList::iterator before_iter;
+            ChildList::iterator after_iter;
+            vaddr_t chosen_base;
+            if (alloc_before) {
+                before_iter = subregions_.end();
+                after_iter = subregions_.begin();
+
+                safeint::CheckedNumeric<vaddr_t> base = after_iter->base();
+                base -= size;
+                base -= PAGE_SIZE * gap_pages;
+                if (!base.IsValid()) {
+                    continue;
+                }
+
+                chosen_base = base.ValueOrDie();
+            } else {
+                before_iter = --subregions_.end();
+                after_iter = subregions_.end();
+                DEBUG_ASSERT(before_iter.IsValid());
+
+                safeint::CheckedNumeric<vaddr_t> base = before_iter->base();
+                base += before_iter->size();
+                base += PAGE_SIZE * gap_pages;
+                if (!base.IsValid()) {
+                    continue;
+                }
+
+                chosen_base = base.ValueOrDie();
+            }
+
+            if (CheckGapLocked(before_iter, after_iter, spot, chosen_base, align, size, 0,
+                               arch_mmu_flags) && *spot != static_cast<vaddr_t>(-1)) {
+                return NO_ERROR;
+            }
+        }
+    }
+
+    return ERR_NO_MEMORY;
 }

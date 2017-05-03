@@ -16,7 +16,7 @@
 #define HELPER "/boot/bin/thread-injection-injected"
 
 int main(void) {
-    mx_handle_t h = mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, 0));
+    mx_handle_t h = mx_get_startup_handle(PA_HND(PA_USER0, 0));
     if (h < 0) {
         fprintf(stderr, "mx_get_startup_handle: %d\n", h);
         return 1;
@@ -28,8 +28,8 @@ int main(void) {
     uint32_t bytes = sizeof(data);
     mx_handle_t handles[2];
     uint32_t nhandles = countof(handles);
-    mx_status_t status = mx_channel_read(h, 0, &data, bytes, &bytes,
-                                         handles, nhandles, &nhandles);
+    mx_status_t status = mx_channel_read(h, 0, &data, handles, bytes,
+                                         nhandles, &bytes, &nhandles);
     if (status != NO_ERROR) {
         fprintf(stderr, "mx_channel_read: %d\n", status);
         return 1;

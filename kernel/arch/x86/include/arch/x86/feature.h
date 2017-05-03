@@ -26,6 +26,8 @@ struct cpuid_leaf {
 enum x86_cpuid_leaf_num {
     X86_CPUID_BASE = 0,
     X86_CPUID_MODEL_FEATURES = 0x1,
+    X86_CPUID_CACHE_V1 = 0x2,
+    X86_CPUID_CACHE_V2 = 0x4,
     X86_CPUID_TOPOLOGY = 0xb,
     X86_CPUID_XSAVE = 0xd,
     X86_CPUID_PT = 0x14,
@@ -98,6 +100,7 @@ void x86_feature_debug(void);
 #define X86_FEATURE_SSSE3        X86_CPUID_BIT(0x1, 2, 9)
 #define X86_FEATURE_SSE4_1       X86_CPUID_BIT(0x1, 2, 19)
 #define X86_FEATURE_SSE4_2       X86_CPUID_BIT(0x1, 2, 20)
+#define X86_FEATURE_X2APIC       X86_CPUID_BIT(0x1, 2, 21)
 #define X86_FEATURE_TSC_DEADLINE X86_CPUID_BIT(0x1, 2, 24)
 #define X86_FEATURE_AESNI        X86_CPUID_BIT(0x1, 2, 25)
 #define X86_FEATURE_XSAVE        X86_CPUID_BIT(0x1, 2, 26)
@@ -193,8 +196,8 @@ struct x86_model_info {
     uint8_t model;
     uint8_t stepping;
 
-    uint16_t display_family;
-    uint8_t display_model;
+    uint32_t display_family;
+    uint32_t display_model;
 };
 
 const struct x86_model_info * x86_get_model(void);

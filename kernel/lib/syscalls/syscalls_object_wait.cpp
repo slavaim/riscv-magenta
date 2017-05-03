@@ -34,9 +34,10 @@ constexpr size_t kWaitManyInlineCount = 8u;
 
 mx_status_t sys_object_wait_one(mx_handle_t handle_value,
                                 mx_signals_t signals,
-                                mx_time_t timeout,
+                                mx_time_t deadline,
                                 user_ptr<mx_signals_t> _observed) {
     LTRACEF("handle %d\n", handle_value);
+    magenta_check_deadline("object_wait_one", deadline);
 
     WaitEvent event;
 
@@ -49,9 +50,9 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
 
         Handle* handle = up->GetHandleLocked(handle_value);
         if (!handle)
-            return up->BadHandle(handle_value, ERR_BAD_HANDLE);
+            return ERR_BAD_HANDLE;
         if (!magenta_rights_check(handle, MX_RIGHT_READ))
-            return up->BadHandle(handle_value, ERR_ACCESS_DENIED);
+            return ERR_ACCESS_DENIED;
 
         result = wait_state_observer.Begin(&event, handle, signals);
         if (result != NO_ERROR)
@@ -60,19 +61,14 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
 
 #if WITH_LIB_KTRACE
     auto koid = static_cast<uint32_t>(up->GetKoidForHandle(handle_value));
-    ktrace(TAG_WAIT_ONE, koid, signals, (uint32_t)timeout, (uint32_t)(timeout >> 32));
+    ktrace(TAG_WAIT_ONE, koid, signals, (uint32_t)deadline, (uint32_t)(deadline >> 32));
 #endif
 
-    lk_bigtime_t lk_deadline = timeout;
-    if (timeout != MX_TIME_INFINITE && timeout != 0) {
-        lk_deadline += current_time_hires();
-    }
-
     // event_wait() will return NO_ERROR if already signaled,
-    // even if timeout is 0.  It will return ERR_TIMED_OUT
-    // after the timeout expires if the event has not been
+    // even if the deadline has passed.  It will return ERR_TIMED_OUT
+    // after the deadline passes if the event has not been
     // signaled.
-    result = event.Wait(lk_deadline);
+    result = event.Wait(deadline);
 
     // Regardless of wait outcome, we must call End().
     auto signals_state = wait_state_observer.End();
@@ -92,11 +88,12 @@ mx_status_t sys_object_wait_one(mx_handle_t handle_value,
     return result;
 }
 
-mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count, mx_time_t timeout) {
+mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count, mx_time_t deadline) {
     LTRACEF("count %u\n", count);
+    magenta_check_deadline("object_wait_many", deadline);
 
     if (!count) {
-        mx_status_t result = magenta_sleep(timeout);
+        mx_status_t result = magenta_sleep(deadline);
         if (result != NO_ERROR)
             return result;
         return ERR_TIMED_OUT;
@@ -130,7 +127,7 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
         for (; num_added != count; ++num_added) {
             Handle* handle = up->GetHandleLocked(items[num_added].handle);
             if (!handle) {
-                result = up->BadHandle(items[num_added].handle, ERR_BAD_HANDLE);
+                result = ERR_BAD_HANDLE;
                 break;
             }
             if (!magenta_rights_check(handle, MX_RIGHT_READ)) {
@@ -149,16 +146,11 @@ mx_status_t sys_object_wait_many(user_ptr<mx_wait_item_t> _items, uint32_t count
         return result;
     }
 
-    lk_bigtime_t lk_deadline = timeout;
-    if (timeout != MX_TIME_INFINITE && timeout != 0) {
-        lk_deadline += current_time_hires();
-    }
-
     // event_wait() will return NO_ERROR if already signaled,
-    // even if timeout is 0.  It will return ERR_TIMED_OUT
-    // after the timeout expires if the event has not been
+    // even if deadline has passed.  It will return ERR_TIMED_OUT
+    // after the deadline passes if the event has not been
     // signaled.
-    result = event.Wait(lk_deadline);
+    result = event.Wait(deadline);
 
     // Regardless of wait outcome, we must call End().
     mx_signals_t combined = 0;
@@ -190,7 +182,7 @@ mx_status_t sys_object_wait_async(mx_handle_t handle_value, mx_handle_t port_han
         AutoLock lock(up->handle_table_lock());
         Handle* handle = up->GetHandleLocked(handle_value);
         if (!handle)
-            return up->BadHandle(handle_value, ERR_BAD_HANDLE);
+            return ERR_BAD_HANDLE;
         if (!magenta_rights_check(handle, MX_RIGHT_READ))
             return ERR_ACCESS_DENIED;
 

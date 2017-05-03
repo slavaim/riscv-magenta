@@ -17,20 +17,20 @@ $(error $(LOCAL_DIR)/rules.mk doesnt have logic for arm core $(ARM_CPU))
 endif
 
 MODULE_SRCS += \
-	$(LOCAL_DIR)/arch.c \
+	$(LOCAL_DIR)/arch.cpp \
 	$(LOCAL_DIR)/asm.S \
 	$(LOCAL_DIR)/cache-ops.S \
-	$(LOCAL_DIR)/debugger.c \
+	$(LOCAL_DIR)/debugger.cpp \
 	$(LOCAL_DIR)/exceptions.S \
-	$(LOCAL_DIR)/exceptions_c.c \
-	$(LOCAL_DIR)/fpu.c \
+	$(LOCAL_DIR)/exceptions_c.cpp \
+	$(LOCAL_DIR)/fpu.cpp \
 	$(LOCAL_DIR)/hypervisor.cpp \
 	$(LOCAL_DIR)/mmu.cpp \
 	$(LOCAL_DIR)/spinlock.S \
 	$(LOCAL_DIR)/start.S \
-	$(LOCAL_DIR)/thread.c \
+	$(LOCAL_DIR)/thread.cpp \
 	$(LOCAL_DIR)/user_copy.S \
-	$(LOCAL_DIR)/user_copy_c.c \
+	$(LOCAL_DIR)/user_copy_c.cpp \
 	$(LOCAL_DIR)/uspace_entry.S
 
 MODULE_DEPS += \
@@ -54,7 +54,7 @@ SMP_MAX_CPUS ?= 16
 SMP_WITH_SMP ?= 1
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/mp.c
+    $(LOCAL_DIR)/mp.cpp
 
 else
 
@@ -119,10 +119,17 @@ KERNEL_DEFINES += WITH_NO_FP=1
 KEEP_FRAME_POINTER_COMPILEFLAGS += -mno-omit-leaf-frame-pointer
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+
 ifndef ARCH_arm64_CLANG_TARGET
 ARCH_arm64_CLANG_TARGET := aarch64-fuchsia
 endif
 GLOBAL_COMPILEFLAGS += --target=$(ARCH_arm64_CLANG_TARGET)
+
+KERNEL_COMPILEFLAGS += -mcmodel=kernel
+
+# Clang now supports -fsanitize=safe-stack with -mcmodel=kernel.
+KERNEL_COMPILEFLAGS += $(SAFESTACK)
+
 endif
 
 # make sure some bits were set up

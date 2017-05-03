@@ -1,3 +1,7 @@
+// Copyright 2017 The Fuchsia Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -7,9 +11,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/binding.h>
-#include <ddk/protocol/bcm.h>
-
-
+#include <bcm/ioctl.h>
 
 void devhost_launch_devhost(mx_device_t* parent, const char* name, uint32_t protocol_id,
                             const char* procname, int argc, char** argv);
@@ -40,13 +42,12 @@ static mx_status_t bcm_root_init(mx_driver_t* driver) {
 
 #ifdef RASPBERRY_PI
 
-mx_driver_t _driver_bcmroot = {
-    .ops = {
-        .init = bcm_root_init,
-    },
+static mx_driver_ops_t bcmroot_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .init = bcm_root_init,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_bcmroot, "soc", "magenta", "0.1", 0)
-MAGENTA_DRIVER_END(_driver_bcmroot)
+MAGENTA_DRIVER_BEGIN(bcmroot, bcmroot_driver_ops, "magenta", "0.1", 0)
+MAGENTA_DRIVER_END(bcmroot)
 
 #endif

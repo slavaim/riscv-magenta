@@ -12,18 +12,19 @@
 #include <string.h>
 #include <magenta/listnode.h>
 
+// created by MAGENTA_DRIVER_BEGIN macro
+extern mx_driver_t _driver_test;
+
 typedef struct test_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
     mx_handle_t output;
     mx_handle_t control;
     test_func_t test_func;
     void* cookie;
 } test_device_t;
 
-#define get_test_device(dev) containerof(dev, test_device_t, device)
-
 static void test_device_set_output_socket(mx_device_t* dev, mx_handle_t handle) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     if (device->output != MX_HANDLE_INVALID) {
         mx_handle_close(device->output);
     }
@@ -31,12 +32,12 @@ static void test_device_set_output_socket(mx_device_t* dev, mx_handle_t handle) 
 }
 
 static mx_handle_t test_device_get_output_socket(mx_device_t* dev) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     return device->output;
 }
 
 static void test_device_set_control_channel(mx_device_t* dev, mx_handle_t handle) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     if (device->control != MX_HANDLE_INVALID) {
         mx_handle_close(device->control);
     }
@@ -44,18 +45,18 @@ static void test_device_set_control_channel(mx_device_t* dev, mx_handle_t handle
 }
 
 static mx_handle_t test_device_get_control_channel(mx_device_t* dev) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     return device->control;
 }
 
 static void test_device_set_test_func(mx_device_t* dev, test_func_t func, void* cookie) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     device->test_func = func;
     device->cookie = cookie;
 }
 
 static mx_status_t test_device_run_tests(mx_device_t* dev, test_report_t* report, const void* arg, size_t arglen) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     if (device->test_func != NULL) {
         return device->test_func(device->cookie, report, arg, arglen);
     } else {
@@ -110,7 +111,7 @@ static ssize_t test_device_ioctl(mx_device_t* dev, uint32_t op, const void* in, 
 }
 
 static mx_status_t test_device_release(mx_device_t* dev) {
-    test_device_t* device = get_test_device(dev);
+    test_device_t* device = dev->ctx;
     if (device->output != MX_HANDLE_INVALID) {
         mx_handle_close(device->output);
     }
@@ -150,12 +151,18 @@ static ssize_t test_ioctl(mx_device_t* dev, uint32_t op, const void* in, size_t 
         return ERR_NO_MEMORY;
     }
 
-    device_init(&device->device, dev->driver, devname, &test_device_proto);
-    device->device.protocol_id = MX_PROTOCOL_TEST;
-    device->device.protocol_ops = &test_test_proto;
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = devname,
+        .ctx = device,
+        .driver = &_driver_test,
+        .ops = &test_device_proto,
+        .proto_id = MX_PROTOCOL_TEST,
+        .proto_ops = &test_test_proto,
+    };
 
     mx_status_t status;
-    if ((status = device_add(&device->device, dev)) != NO_ERROR) {
+    if ((status = device_add2(dev, &args, &device->mxdev)) != NO_ERROR) {
         free(device);
         return status;
     }
@@ -168,22 +175,22 @@ static mx_protocol_device_t test_root_proto = {
 };
 
 static mx_status_t test_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
+    device_add_args_t args = {
+       .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "test",
+        .driver = drv,
+        .ops = &test_root_proto,
+    };
+
     mx_device_t* device;
-    if (device_create(&device, drv, "test", &test_root_proto) == NO_ERROR) {
-        if (device_add(device, dev) < 0) {
-            printf("test: device_add() failed\n");
-            free(device);
-        }
-    }
-    return NO_ERROR;
+    return device_add2(dev, &args, &device);
 }
 
-mx_driver_t _driver_test = {
-    .ops = {
-        .bind = test_bind,
-    },
+static mx_driver_ops_t test_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = test_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_test, "test", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(test, test_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
-MAGENTA_DRIVER_END(_driver_test)
+MAGENTA_DRIVER_END(test)

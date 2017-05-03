@@ -11,6 +11,7 @@
 #include <mxtl/auto_lock.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/param.h>
 
 #include "trace.h"
@@ -82,19 +83,14 @@ ssize_t BlockDevice::virtio_block_ioctl(mx_device_t* dev, uint32_t op, const voi
     BlockDevice* bd = static_cast<BlockDevice*>(dev->ctx);
 
     switch (op) {
-    case IOCTL_BLOCK_GET_SIZE: {
-        uint64_t* size = static_cast<uint64_t*>(reply);
-        if (max < sizeof(*size))
+    case IOCTL_BLOCK_GET_INFO: {
+        block_info_t* info = reinterpret_cast<block_info_t*>(reply);
+        if (max < sizeof(*info))
             return ERR_BUFFER_TOO_SMALL;
-        *size = bd->GetSize();
-        return sizeof(*size);
-    }
-    case IOCTL_BLOCK_GET_BLOCKSIZE: {
-        uint64_t* blksize = static_cast<uint64_t*>(reply);
-        if (max < sizeof(*blksize))
-            return ERR_BUFFER_TOO_SMALL;
-        *blksize = bd->GetBlockSize();
-        return sizeof(*blksize);
+        memset(info, 0, sizeof(*info));
+        info->block_size = bd->GetBlockSize();
+        info->block_count = bd->GetSize() / bd->GetBlockSize();
+        return sizeof(*info);
     }
     case IOCTL_BLOCK_RR_PART: {
         // rebind to reread the partition table
@@ -165,18 +161,24 @@ mx_status_t BlockDevice::Init() {
     StatusDriverOK();
 
     // initialize the mx_device and publish us
+    // point the ctx of our DDK device at ourself
     device_ops_.iotxn_queue = &virtio_block_iotxn_queue;
     device_ops_.get_size = &virtio_block_get_size;
     device_ops_.ioctl = &virtio_block_ioctl;
-    device_init(&device_, driver_, "virtio-block", &device_ops_);
 
-    // point the ctx of our embedded device structure at ourself
-    device_.ctx = this;
+    device_add_args_t args = {};
+    args.version = DEVICE_ADD_ARGS_VERSION;
+    args.name = "virtio-block";
+    args.ctx = this;
+    args.driver = driver_;
+    args.ops = &device_ops_;
+    args.proto_id = MX_PROTOCOL_BLOCK;
 
-    device_.protocol_id = MX_PROTOCOL_BLOCK;
-    auto status = device_add(&device_, bus_device_);
-    if (status < 0)
+    auto status = device_add2(bus_device_, &args, &device_);
+    if (status < 0) {
+        device_ = nullptr;
         return status;
+    }
 
     return NO_ERROR;
 }

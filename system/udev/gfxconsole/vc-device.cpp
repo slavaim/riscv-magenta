@@ -50,7 +50,9 @@ static mx_status_t vc_device_setup(vc_device_t* dev) {
     // calculate how many rows/columns we have
     dev->rows = dev->gfx->height / dev->charh;
     dev->columns = dev->gfx->width / dev->charw;
-    dev->scrollback_rows = SCROLLBACK_ROWS;
+    dev->scrollback_rows_max = SCROLLBACK_ROWS;
+    dev->scrollback_rows_count = 0;
+    dev->scrollback_offset = 0;
 
     // allocate the text buffer
     dev->text_buf = reinterpret_cast<vc_char_t*>(
@@ -60,7 +62,7 @@ static mx_status_t vc_device_setup(vc_device_t* dev) {
 
     // allocate the scrollback buffer
     dev->scrollback_buf = reinterpret_cast<vc_char_t*>(
-        calloc(1, dev->scrollback_rows * dev->columns * sizeof(vc_char_t)));
+        calloc(1, dev->scrollback_rows_max * dev->columns * sizeof(vc_char_t)));
     if (!dev->scrollback_buf) {
         free(dev->text_buf);
         return ERR_NO_MEMORY;
@@ -77,22 +79,32 @@ static mx_status_t vc_device_setup(vc_device_t* dev) {
 static void vc_device_invalidate(void* cookie, int x0, int y0, int w, int h) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
 
-    assert(y0 <= static_cast<int>(dev->rows));
     assert(h >= 0);
-    assert(y0 + h <= static_cast<int>(dev->rows));
+    int y1 = y0 + h;
+    assert(y0 <= static_cast<int>(dev->rows));
+    assert(y1 <= static_cast<int>(dev->rows));
 
-    for (int y = y0; y < y0 + h; y++) {
-        int sc = 0;
+    // Clip the y range so that we don't unnecessarily draw characters
+    // outside the visible range, and so that we don't draw characters into
+    // the bottom margin.
+    int visible_y0 = dev->viewport_y;
+    int visible_y1 = dev->viewport_y + vc_device_rows(dev);
+    y0 = MAX(y0, visible_y0);
+    y1 = MIN(y1, visible_y1);
+
+    for (int y = y0; y < y1; y++) {
         if (y < 0) {
-            sc = dev->scrollback_tail + y;
-            if (sc < 0)
-                sc += dev->scrollback_rows;
-        }
-        for (int x = x0; x < x0 + w; x++) {
-            if (y < 0) {
-                vc_gfx_draw_char(dev, dev->scrollback_buf[x + sc * dev->columns],
-                                 x, y - dev->viewport_y, /* invert= */ false);
-            } else {
+            // Scrollback row.
+            vc_char_t* row = vc_device_get_scrollback_line_ptr(
+                dev, y + dev->scrollback_rows_count);
+            for (int x = x0; x < x0 + w; x++) {
+                vc_gfx_draw_char(dev, row[x], x, y - dev->viewport_y,
+                                 /* invert= */ false);
+            }
+        } else {
+            // Row in the main console region (non-scrollback).
+            vc_char_t* row = &dev->text_buf[y * dev->columns];
+            for (int x = x0; x < x0 + w; x++) {
                 // Check whether we should display the cursor at this
                 // position.  Note that it's possible that the cursor is
                 // outside the display area (dev->cursor_x ==
@@ -102,8 +114,7 @@ static void vc_device_invalidate(void* cookie, int x0, int y0, int w, int h) {
                 bool invert = (!dev->hide_cursor &&
                                static_cast<unsigned>(x) == dev->cursor_x &&
                                static_cast<unsigned>(y) == dev->cursor_y);
-                vc_gfx_draw_char(dev, dev->text_buf[x + y * dev->columns],
-                                 x, y - dev->viewport_y, invert);
+                vc_gfx_draw_char(dev, row[x], x, y - dev->viewport_y, invert);
             }
         }
     }
@@ -124,12 +135,6 @@ static inline void vc_invalidate_lines(vc_device_t* dev, int y, int h) {
 static void vc_tc_invalidate(void* cookie, int x0, int y0,
                              int w, int h) TA_REQ(g_vc_lock) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
-    if (dev->flags & VC_FLAG_RESETSCROLL) {
-        dev->flags &= ~VC_FLAG_RESETSCROLL;
-        vc_device_scroll_viewport(dev, -dev->viewport_y);
-    }
-    if (dev->viewport_y < 0)
-        return;
     vc_device_invalidate(cookie, x0, y0, w, h);
     vc_invalidate_lines(dev, y0, h);
 }
@@ -151,18 +156,50 @@ static void vc_tc_movecursor(void* cookie, int x, int y) {
     }
 }
 
-static void vc_tc_pushline(void* cookie, int y) {
+static void vc_tc_push_scrollback_line(void* cookie, int y) TA_REQ(g_vc_lock) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
-    vc_char_t* dst = &dev->scrollback_buf[dev->scrollback_tail * dev->columns];
+
+    unsigned dest_row;
+    assert(dev->scrollback_rows_count <= dev->scrollback_rows_max);
+    if (dev->scrollback_rows_count < dev->scrollback_rows_max) {
+        // Add a row without dropping any existing rows.
+        assert(dev->scrollback_offset == 0);
+        dest_row = dev->scrollback_rows_count++;
+    } else {
+        // Add a row and drop an existing row.
+        assert(dev->scrollback_offset < dev->scrollback_rows_max);
+        dest_row = dev->scrollback_offset++;
+        if (dev->scrollback_offset == dev->scrollback_rows_max)
+            dev->scrollback_offset = 0;
+    }
+    vc_char_t* dst = &dev->scrollback_buf[dest_row * dev->columns];
     vc_char_t* src = &dev->text_buf[y * dev->columns];
     memcpy(dst, src, dev->columns * sizeof(vc_char_t));
-    dev->scrollback_tail += 1;
-    if (dev->viewport_y < 0)
-        dev->viewport_y -= 1;
-    if (dev->scrollback_tail >= dev->scrollback_rows) {
-        dev->scrollback_tail -= dev->scrollback_rows;
-        if (dev->scrollback_tail >= dev->scrollback_head)
-            dev->scrollback_head = dev->scrollback_tail + 1;
+
+    // If we're displaying only the main console region (and no
+    // scrollback), then keep displaying that (i.e. don't modify
+    // viewport_y).
+    if (dev->viewport_y < 0) {
+        // We are displaying some of the scrollback buffer.
+        if (dev->viewport_y > -static_cast<int>(dev->scrollback_rows_max)) {
+            // Scroll the viewport to continue displaying the same point in
+            // the scrollback buffer.
+            --dev->viewport_y;
+        } else {
+            // We were displaying the line at the top of the scrollback
+            // buffer, but we dropped that line from the buffer.  We could
+            // leave the display as it was (which is what gnome-terminal
+            // does) and not scroll the display.  However, that causes
+            // problems.  If the user later scrolls down, we won't
+            // necessarily be able to display the lines below -- we might
+            // have dropped those too.  So, instead, let's scroll the
+            // display and remove the scrollback line that was lost.
+            //
+            // For simplicity, fall back to redrawing everything.
+            vc_device_invalidate(dev, 0, -dev->scrollback_rows_max,
+                                 dev->columns, vc_device_rows(dev));
+            vc_device_render(dev);
+        }
     }
 }
 
@@ -177,8 +214,16 @@ static void vc_set_cursor_hidden(vc_device_t* dev, bool hide) {
 static void vc_tc_copy_lines(void* cookie, int y_dest, int y_src,
                              int line_count) TA_REQ(g_vc_lock) {
     vc_device_t* dev = reinterpret_cast<vc_device_t*>(cookie);
-    if (dev->viewport_y < 0)
+    if (dev->viewport_y < 0) {
+        tc_copy_lines(&dev->textcon, y_dest, y_src, line_count);
+
+        // The viewport is scrolled.  For simplicity, fall back to
+        // redrawing all of the non-scrollback lines in this case.
+        int rows = vc_device_rows(dev);
+        vc_device_invalidate(dev, 0, 0, dev->columns, rows);
+        vc_invalidate_lines(dev, 0, rows);
         return;
+    }
 
     // Remove the cursor from the display before copying the lines on
     // screen, otherwise we might be copying a rendering of the cursor to a
@@ -238,7 +283,7 @@ static void vc_device_reset(vc_device_t* dev) {
     dev->textcon.cookie = dev;
     dev->textcon.invalidate = vc_tc_invalidate;
     dev->textcon.movecursor = vc_tc_movecursor;
-    dev->textcon.pushline = vc_tc_pushline;
+    dev->textcon.push_scrollback_line = vc_tc_push_scrollback_line;
     dev->textcon.copy_lines = vc_tc_copy_lines;
     dev->textcon.setparam = vc_tc_setparam;
 
@@ -246,7 +291,7 @@ static void vc_device_reset(vc_device_t* dev) {
     size_t count = dev->rows * dev->columns;
     vc_char_t* ptr = dev->text_buf;
     while (count--) {
-        *ptr++ = CHARVAL(' ', dev->front_color, dev->back_color);
+        *ptr++ = vc_char_make(' ', dev->front_color, dev->back_color);
     }
 
     vc_device_clear_gfx(dev);
@@ -345,34 +390,64 @@ void vc_device_invalidate_all_for_testing(vc_device_t* dev) {
     mxtl::AutoLock lock(&g_vc_lock);
 
     vc_device_clear_gfx(dev);
-    vc_device_invalidate(dev, 0, 0, dev->columns, dev->rows);
+    int scrollback_lines = vc_device_get_scrollback_lines(dev);
+    vc_device_invalidate(dev, 0, -scrollback_lines,
+                         dev->columns, scrollback_lines + dev->rows);
 }
 
 int vc_device_get_scrollback_lines(vc_device_t* dev) {
-    if (dev->scrollback_tail >= dev->scrollback_head)
-        return dev->scrollback_tail - dev->scrollback_head;
-    return dev->scrollback_rows - 1;
+    return dev->scrollback_rows_count;
 }
 
-void vc_device_scroll_viewport(vc_device_t* dev, int dir) {
-    int vpy = MAX(MIN(dev->viewport_y + dir, 0),
-                  -vc_device_get_scrollback_lines(dev));
-    int delta = ABS(dev->viewport_y - vpy);
-    if (delta == 0)
+vc_char_t* vc_device_get_scrollback_line_ptr(vc_device_t* dev, unsigned row) {
+    assert(row < dev->scrollback_rows_count);
+    row += dev->scrollback_offset;
+    if (row >= dev->scrollback_rows_max)
+        row -= dev->scrollback_rows_max;
+    return &dev->scrollback_buf[row * dev->columns];
+}
+
+static void vc_device_scroll_viewport_abs(vc_device_t* dev,
+                                          int vpy) TA_REQ(g_vc_lock) {
+    vpy = MIN(vpy, 0);
+    vpy = MAX(vpy, -vc_device_get_scrollback_lines(dev));
+    int diff = vpy - dev->viewport_y;
+    if (diff == 0)
         return;
+    int diff_abs = ABS(diff);
     dev->viewport_y = vpy;
-    unsigned rows = vc_device_rows(dev);
-    if (dir > 0) {
-        gfx_copyrect(dev->gfx, 0, delta * dev->charh,
-                     dev->gfx->width, (rows - delta) * dev->charh, 0, 0);
-        vc_device_invalidate(dev, 0, vpy + rows - delta, dev->columns, delta);
+    int rows = vc_device_rows(dev);
+    if (diff_abs >= rows) {
+        // We are scrolling the viewport by a large delta.  Invalidate all
+        // of the visible area of the console.
+        vc_device_invalidate(dev, 0, vpy, dev->columns, rows);
     } else {
-        gfx_copyrect(dev->gfx, 0, 0, dev->gfx->width,
-                     (rows - delta) * dev->charh, 0, delta * dev->charh);
-        vc_device_invalidate(dev, 0, vpy, dev->columns, delta);
+        if (diff > 0) {
+            gfx_copyrect(dev->gfx, 0, diff_abs * dev->charh,
+                         dev->gfx->width, (rows - diff_abs) * dev->charh, 0, 0);
+            vc_device_invalidate(dev, 0, vpy + rows - diff_abs, dev->columns,
+                                 diff_abs);
+        } else {
+            gfx_copyrect(dev->gfx, 0, 0, dev->gfx->width,
+                         (rows - diff_abs) * dev->charh, 0,
+                         diff_abs * dev->charh);
+            vc_device_invalidate(dev, 0, vpy, dev->columns, diff_abs);
+        }
     }
     gfx_flush(dev->gfx);
     vc_device_render(dev);
+}
+
+void vc_device_scroll_viewport(vc_device_t* dev, int dir) {
+    vc_device_scroll_viewport_abs(dev, dev->viewport_y + dir);
+}
+
+void vc_device_scroll_viewport_top(vc_device_t* dev) {
+    vc_device_scroll_viewport_abs(dev, INT_MIN);
+}
+
+void vc_device_scroll_viewport_bottom(vc_device_t* dev) {
+    vc_device_scroll_viewport_abs(dev, 0);
 }
 
 void vc_device_set_fullscreen(vc_device_t* dev, bool fullscreen) {
@@ -461,12 +536,15 @@ fail:
 }
 
 void vc_device_free(vc_device_t* device) {
-    if (device->st_gfx)
+    if (device->st_gfx) {
         gfx_surface_destroy(device->st_gfx);
-    if (device->gfx_vmo)
+    }
+    if (device->gfx_vmo) {
         mx_handle_close(device->gfx_vmo);
-    if (device->gfx)
+    }
+    if (device->gfx) {
         free(device->gfx);
+    }
     free(device->text_buf);
     free(device->scrollback_buf);
     free(device);

@@ -156,14 +156,13 @@ typedef struct __attribute__((packed)) {
 } magenta_note_driver_t;
 
 typedef struct magenta_driver_info {
-    list_node_t node;
     mx_driver_t* driver;
     const magenta_note_driver_t* note;
-    const mx_bind_inst_t* binding;
-    uint32_t binding_size;
 } magenta_driver_info_t;
 
 #define MAGENTA_DRIVER_PASTE(a,b) a##b
+#define MAGENTA_STRINGIFY(x) #x
+#define MAGENTA_TOSTRING(x) MAGENTA_STRINGIFY(x)
 
 #if MAGENTA_BUILTIN_DRIVERS
 #define MAGENTA_DRIVER_ATTR_DECL
@@ -182,7 +181,27 @@ typedef struct magenta_driver_info {
 #define MAGENTA_DRIVER_SYMBOL(Driver) __magenta_driver__
 #endif
 
-#define MAGENTA_DRIVER_BEGIN(Driver,DriverName,VendorName,Version,BindCount) \
+#if DEVHOST_V2
+#define MAGENTA_DRIVER_DEF(Driver,Ops,Flags) \
+mx_driver_t MAGENTA_DRIVER_PASTE(_driver_,Driver) = {\
+    /* .name */ MAGENTA_TOSTRING(Driver),\
+    /* .ops */ &Ops,\
+    /* .flags */ Flags,\
+};
+#else
+#define MAGENTA_DRIVER_DEF(Driver,Ops,Flags) \
+mx_driver_t MAGENTA_DRIVER_PASTE(_driver_,Driver) = {\
+    /* .name */ MAGENTA_TOSTRING(Driver),\
+    /* .ops */ &Ops,\
+    /* .flags */ Flags,\
+    /* .node */ {0, 0},\
+    /* .binding */ 0,\
+    /* .binding_size */ 0,\
+};
+#endif
+
+#define MAGENTA_DRIVER_BEGIN_ETC(Driver,Ops,Flags,VendorName,Version,BindCount) \
+MAGENTA_DRIVER_DEF(Driver, Ops, Flags) \
 MAGENTA_DRIVER_NOTE(Driver)\
 const struct __attribute__((packed)) {\
     magenta_note_header_t note;\
@@ -198,20 +217,20 @@ const struct __attribute__((packed)) {\
     /* .driver = */ {\
         /* .bindcount = */ (BindCount),\
         /* .reserved = */ 0,\
-        /* .name = */ DriverName,\
+        /* .name = */ MAGENTA_TOSTRING(Driver),\
         /* .vendor = */ VendorName,\
         /* .version = */ Version,\
     },\
     /* .binding = */ {
 
+#define MAGENTA_DRIVER_BEGIN(Driver,Ops,VendorName,Version,BindCount) \
+    MAGENTA_DRIVER_BEGIN_ETC(Driver,Ops,0,VendorName,Version,BindCount) \
+
 #define MAGENTA_DRIVER_END(Driver) }};\
 extern magenta_driver_info_t MAGENTA_DRIVER_SYMBOL(Driver) MAGENTA_DRIVER_ATTR_DECL; \
 magenta_driver_info_t MAGENTA_DRIVER_SYMBOL(Driver) MAGENTA_DRIVER_ATTR_DEF = { \
-    /* .node = */ {},\
-    /* .driver = */ &Driver,\
+    /* .driver = */ &MAGENTA_DRIVER_PASTE(_driver_,Driver),\
     /* .note = */ &MAGENTA_DRIVER_PASTE(__magenta_driver_note__,Driver).driver,\
-    /* .binding = */ MAGENTA_DRIVER_PASTE(__magenta_driver_note__,Driver).binding,\
-    /* .binding_size = */ sizeof(MAGENTA_DRIVER_PASTE(__magenta_driver_note__,Driver)).binding,\
 };
 
 __END_CDECLS;

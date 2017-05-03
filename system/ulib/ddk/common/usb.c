@@ -20,8 +20,11 @@ mx_status_t usb_control(mx_device_t* device, uint8_t request_type, uint8_t reque
                         uint16_t value, uint16_t index, void* data, size_t length) {
     iotxn_t* txn;
 
-    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, length);
-    if (status != NO_ERROR) return status;
+    uint32_t flags = (length == 0 ? IOTXN_ALLOC_POOL : 0);
+    mx_status_t status = iotxn_alloc(&txn, flags, length);
+    if (status != NO_ERROR) {
+        return status;
+    }
     txn->protocol = MX_PROTOCOL_USB;
 
     static_assert(sizeof(usb_protocol_data_t) <= sizeof(iotxn_proto_data_t), "");
@@ -68,51 +71,10 @@ mx_status_t usb_get_descriptor(mx_device_t* device, uint8_t request_type, uint16
                        type << 8 | index, 0, data, length);
 }
 
-mx_status_t usb_get_string_descriptor(mx_device_t* device, uint8_t id, char** out_string) {
-    char string[256];
-    uint16_t buffer[128];
-    uint16_t languages[128];
-    int languageCount = 0;
-
-    string[0] = 0;
-    *out_string = NULL;
-    memset(languages, 0, sizeof(languages));
-
-    // read list of supported languages
-    mx_status_t result = usb_control(device,
-            USB_DIR_IN | USB_TYPE_STANDARD |  USB_RECIP_DEVICE, USB_REQ_GET_DESCRIPTOR,
-            (USB_DT_STRING << 8) | 0, 0, languages, sizeof(languages));
-    if (result < 0) return result;
-    languageCount = (result - 2) / 2;
-
-    for (int i = 1; i <= languageCount; i++) {
-        memset(buffer, 0, sizeof(buffer));
-
-        result = usb_control(device,
-                USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_DEVICE, USB_REQ_GET_DESCRIPTOR,
-                (USB_DT_STRING << 8) | id, le16toh(languages[i]), buffer, sizeof(buffer));
-        if (result > 0) {
-            // skip first word, and copy the rest to the string, changing shorts to bytes.
-            result /= 2;
-            int j;
-            for (j = 1; j < result; j++) {
-                string[j - 1] = le16toh(buffer[j]);
-            }
-            string[j - 1] = 0;
-            break;
-        }
-    }
-
-    char* s = strdup(string);
-    if (!s) return ERR_NO_MEMORY;
-    *out_string = s;
-    return NO_ERROR;
-}
-
 usb_speed_t usb_get_speed(mx_device_t* device) {
     int speed;
-    ssize_t result = device->ops->ioctl(device, IOCTL_USB_GET_DEVICE_SPEED, NULL, 0,
-                                        &speed, sizeof(speed));
+    ssize_t result = device_op_ioctl(device, IOCTL_USB_GET_DEVICE_SPEED, NULL, 0,
+                                     &speed, sizeof(speed));
     if (result == sizeof(speed)) {
         return (usb_speed_t)speed;
     } else {
@@ -133,7 +95,7 @@ mx_status_t usb_set_configuration(mx_device_t* device, int config) {
 
 mx_status_t usb_set_interface(mx_device_t* device, int interface_number, int alt_setting) {
     int args[2] = {interface_number, alt_setting};
-    return device->ops->ioctl(device, IOCTL_USB_SET_INTERFACE, args, sizeof(args), NULL, 0);
+    return device_op_ioctl(device, IOCTL_USB_SET_INTERFACE, args, sizeof(args), NULL, 0);
 }
 
 mx_status_t usb_set_feature(mx_device_t* device, uint8_t request_type, int feature, int index) {
@@ -146,7 +108,7 @@ mx_status_t usb_clear_feature(mx_device_t* device, uint8_t request_type, int fea
 
 mx_status_t usb_reset_endpoint(mx_device_t* device, uint8_t ep_address) {
     usb_protocol_t* usb_protocol;
-    if (device_get_protocol(device, MX_PROTOCOL_USB, (void**)&usb_protocol)) {
+    if (device_op_get_protocol(device, MX_PROTOCOL_USB, (void**)&usb_protocol)) {
         return ERR_NOT_SUPPORTED;
     }
 
@@ -155,7 +117,7 @@ mx_status_t usb_reset_endpoint(mx_device_t* device, uint8_t ep_address) {
 
 size_t usb_get_max_transfer_size(mx_device_t* device, uint8_t ep_address) {
     usb_protocol_t* usb_protocol;
-    if (device_get_protocol(device, MX_PROTOCOL_USB, (void**)&usb_protocol)) {
+    if (device_op_get_protocol(device, MX_PROTOCOL_USB, (void**)&usb_protocol)) {
         return 0;
     }
 
@@ -166,7 +128,7 @@ size_t usb_get_max_transfer_size(mx_device_t* device, uint8_t ep_address) {
 iotxn_t* usb_alloc_iotxn(uint8_t ep_address, size_t data_size) {
     iotxn_t* txn;
 
-    mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, data_size);
+    mx_status_t status = iotxn_alloc(&txn, 0, data_size);
     if (status != NO_ERROR) {
         return NULL;
     }
@@ -184,8 +146,8 @@ mx_status_t usb_desc_iter_init(mx_device_t* device, usb_desc_iter_t* iter) {
     memset(iter, 0, sizeof(*iter));
 
     int desc_size;
-    ssize_t result = device->ops->ioctl(device, IOCTL_USB_GET_DESCRIPTORS_SIZE, NULL, 0,
-                                        &desc_size, sizeof(desc_size));
+    ssize_t result = device_op_ioctl(device, IOCTL_USB_GET_DESCRIPTORS_SIZE, NULL, 0,
+                                     &desc_size, sizeof(desc_size));
     if (result != sizeof(desc_size)) goto fail;
 
     uint8_t* desc = malloc(desc_size);
@@ -194,7 +156,7 @@ mx_status_t usb_desc_iter_init(mx_device_t* device, usb_desc_iter_t* iter) {
     iter->desc_end = desc + desc_size;
     iter->current = desc;
 
-    result = device->ops->ioctl(device, IOCTL_USB_GET_DESCRIPTORS, NULL, 0, desc, desc_size);
+    result = device_op_ioctl(device, IOCTL_USB_GET_DESCRIPTORS, NULL, 0, desc, desc_size);
     if (result != desc_size) goto fail;
     return NO_ERROR;
 

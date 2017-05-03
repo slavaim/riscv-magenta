@@ -10,28 +10,56 @@
 
 #include <stdlib.h>
 #include <stdint.h>
-#ifdef __Fuchsia__
-#include <threads.h>
-#endif
 #include <sys/types.h>
 
 #include <magenta/assert.h>
 #include <magenta/compiler.h>
 #include <magenta/types.h>
 
-#include <mxio/vfs.h>
 #include <mxio/dispatcher.h>
+#include <mxio/vfs.h>
+
+#ifdef __Fuchsia__
+#include <threads.h>
+#include <mxio/io.h>
+#endif
+
+#define NO_DOTDOT true
 
 // VFS Helpers (vfs.c)
 #define V_FLAG_DEVICE                 1
 #define V_FLAG_MOUNT_READY            2
 #define V_FLAG_RESERVED_MASK 0x0000FFFF
 
+__BEGIN_CDECLS
+// A lock which should be used to protect lookup and walk operations
+#ifdef __Fuchsia__
+extern mtx_t vfs_lock;
+#endif
+
+typedef struct vfs_iostate vfs_iostate_t;
+
+__END_CDECLS
+
 #ifdef __cplusplus
+
+#include <mxtl/macros.h>
 
 namespace fs {
 
-#include <mxtl/macros.h>
+// RemoteContainer adds support for mounting remote handles on nodes.
+class RemoteContainer {
+public:
+    bool IsRemote() const;
+    mx_handle_t DetachRemote(uint32_t &flags_);
+    // Access the remote handle if it's ready -- otherwise, return an error.
+    mx_handle_t WaitForRemote(uint32_t &flags_);
+    mx_handle_t GetRemote() const;
+    void SetRemote(mx_handle_t remote);
+    constexpr RemoteContainer() : remote_(MX_HANDLE_INVALID) {};
+private:
+    mx_handle_t remote_;
+};
 
 // The VFS interface declares a default abtract Vnode class with
 // common operations that may be overwritten.
@@ -49,17 +77,19 @@ public:
     void RefRelease();
 
 #ifdef __Fuchsia__
-    // Allocate iostate, create a channel, register it with the dispatcher
-    // and return the other end.
+    // Allocate iostate and register the transferred handle with a dispatcher.
     // Allows Vnode to act as server.
-    mx_status_t Serve(uint32_t flags, mx_handle_t* out, uint32_t* type);
+    //
+    // Serve ALWAYS consumes 'h'.
+    virtual mx_status_t Serve(mx_handle_t h, uint32_t flags);
 
     // Extract handle(s), type, and extra info from a vnode.
-    //  - type == '0' means the vn represents a non-local device.
-    //  - If the vnode can be acquired, it is acquired by this function.
-    //  - Returns the number of handles acquired.
+    // Returns the number of handles which should be returned on the requesting handle.
     virtual mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
-                                   uint32_t* type, void* extra, uint32_t* esize) = 0;
+                                   uint32_t* type, void* extra, uint32_t* esize) {
+        *type = MXIO_PROTOCOL_REMOTE;
+        return 0;
+    }
 #endif
 
     virtual mx_status_t IoctlWatchDir(const void* in_buf, size_t in_len, void* out_buf, size_t out_len) {
@@ -157,39 +187,37 @@ public:
         return ERR_NOT_SUPPORTED;
     }
 
-    // Attaches a handle to the vnode, if possible. Otherwise, returns an error.
-    virtual mx_status_t AttachRemote(mx_handle_t h) {
-        return ERR_NOT_SUPPORTED;
-    }
-
     virtual ~Vnode() {};
 
+#ifdef __Fuchsia__
+    virtual mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie);
+#endif
+
+    // Attaches a handle to the vnode, if possible. Otherwise, returns an error.
+    virtual mx_status_t AttachRemote(mx_handle_t h) { return ERR_NOT_SUPPORTED; }
+
+    // The following methods are required to mount sub-filesystems. The logic
+    // (and storage) necessary to implement these functions exists within the
+    // "RemoteContainer" class, which may be composed inside Vnodes that wish
+    // to act as mount points.
+
     // The vnode is acting as a mount point for a remote filesystem or device.
-    bool IsRemote() const { return remote_ > 0; }
+    virtual bool IsRemote() const { return false; }
+    virtual mx_handle_t DetachRemote() { return MX_HANDLE_INVALID; }
+    virtual mx_handle_t WaitForRemote() { return ERR_UNAVAILABLE; }
+    virtual mx_handle_t GetRemote() const { return MX_HANDLE_INVALID; }
+    virtual void SetRemote(mx_handle_t remote) { MX_DEBUG_ASSERT(false); }
+
     // The vnode is a device. Devices may opt to reveal themselves as directories
     // or endpoints, depending on context. For the purposes of our VFS layer,
     // during path traversal, devices are NOT treated as mount points, even though
     // they contain remote handles.
-    bool IsDevice() const { return (flags_ & V_FLAG_DEVICE) && IsRemote(); }
-    // The vnode is "open elsewhere".
-    bool IsBusy() const { return refcount_ > 1; }
-
-    mx_handle_t DetachRemote() {
-        mx_handle_t h = remote_;
-        remote_ = MX_HANDLE_INVALID;
-        flags_ &= ~V_FLAG_MOUNT_READY;
-        return h;
-    }
-
-    // TODO(smklein): Encapsulate the "remote_" flag more, here and in "GetHandles",
-    // so we can avoid leaking information outside the Vnode / Vfs classes.
-    mx_handle_t WaitForRemote();
+    bool IsDevice() { return (flags_ & V_FLAG_DEVICE) && IsRemote(); }
 protected:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Vnode);
-    Vnode() : flags_(0), remote_(MX_HANDLE_INVALID), refcount_(1) {};
+    Vnode() : flags_(0), refcount_(1) {};
 
     uint32_t flags_;
-    mx_handle_t remote_;
 private:
     uint32_t refcount_;
 };
@@ -211,10 +239,13 @@ struct Vfs {
     static ssize_t Ioctl(Vnode* vn, uint32_t op, const void* in_buf, size_t in_len,
                          void* out_buf, size_t out_len);
 
+#ifdef __Fuchsia__
     // Pins a handle to a remote filesystem onto a vnode, if possible.
     static mx_status_t InstallRemote(Vnode* vn, mx_handle_t h);
+    static mx_status_t InstallRemoteLocked(Vnode* vn, mx_handle_t h) __TA_REQUIRES(vfs_lock);
     // Unpin a handle to a remote filesystem from a vnode, if one exists.
     static mx_status_t UninstallRemote(Vnode* vn, mx_handle_t* h);
+#endif  // ifdef __Fuchsia__
 };
 
 mx_status_t vfs_fill_dirent(vdirent_t* de, size_t delen,
@@ -240,37 +271,19 @@ typedef struct vdircookie {
     void* p;
 } vdircookie_t;
 
-// A lock which should be used to protect lookup and walk operations
-#ifdef __Fuchsia__
-extern mtx_t vfs_lock;
-#endif
 extern mxio_dispatcher_t* vfs_dispatcher;
 
-// The following function must be defined by the filesystem linking
-// with this VFS layer.
-
-// Handle incoming mxrio messages.
+// Handle incoming mxrio messages, dispatching them to vnode operations.
 mx_status_t vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie);
 
-typedef struct vfs_iostate {
-    Vnode* vn;
-    // Handle to event which allows client to refer to open vnodes in multi-path
-    // operations (see: link, rename). Defaults to MX_HANDLE_INVALID.
-    // Validated on the server side using cookies.
-    mx_handle_t token;
-    vdircookie_t dircookie;
-    size_t io_off;
-    uint32_t io_flags;
-} vfs_iostate_t;
-
 // Send an unmount signal on a handle to a filesystem and await a response.
-mx_status_t vfs_unmount_handle(mx_handle_t h, mx_time_t timeout);
+mx_status_t vfs_unmount_handle(mx_handle_t h, mx_time_t deadline);
 
 // Unpins all remote filesystems in the current filesystem, and waits for the
-// response of each one with the provided timeout.
-mx_status_t vfs_uninstall_all(mx_time_t timeout);
+// response of each one with the provided deadline.
+mx_status_t vfs_uninstall_all(mx_time_t deadline);
 
-// Generic implementation of vfs_handler, which dispatches messages to fs operations.
-mx_status_t vfs_handler_generic(mxrio_msg_t* msg, mx_handle_t rh, void* cookie);
+// vfs dispatch  (NOTE: only used for mounted roots)
+mx_handle_t vfs_rpc_server(mx_handle_t h, Vnode* vn);
 
 __END_CDECLS

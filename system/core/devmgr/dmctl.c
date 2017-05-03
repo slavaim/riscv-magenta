@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "acpi.h"
 #include "devhost.h"
 #include "devcoordinator.h"
@@ -162,14 +161,16 @@ mx_status_t dmctl_init(mx_driver_t* driver) {
     // uses the device's presence as an invitation to use it.
     mxio_force_local_loader_service();
 
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "dmctl",
+        .driver = driver,
+        .ops = &dmctl_device_proto,
+    };
+
     mx_device_t* dev;
-    mx_status_t s = device_create(&dev, driver, "dmctl", &dmctl_device_proto);
+    mx_status_t s = device_add2(driver_get_misc_device(), &args, &dev);
     if (s != NO_ERROR) {
-        return s;
-    }
-    s = device_add(dev, driver_get_misc_device());
-    if (s != NO_ERROR) {
-        free(dev);
         return s;
     }
     dmctl_handle = dev->rpc;
@@ -186,9 +187,10 @@ mx_status_t dmctl_init(mx_driver_t* driver) {
     return NO_ERROR;
 }
 
-mx_driver_t _driver_dmctl = {
-    .name = "dmctl",
-    .ops = {
-        .init = dmctl_init,
-    },
+static mx_driver_ops_t dmctl_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .init = dmctl_init,
 };
+
+MAGENTA_DRIVER_BEGIN(dmctl, dmctl_driver_ops, "magenta", "0.1", 0)
+MAGENTA_DRIVER_END(dmctl)

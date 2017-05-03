@@ -11,10 +11,12 @@ MODULE_TYPE := driver
 # exported via sysroot, which is what userboot is too
 
 MODULE_SRCS += \
+    $(LOCAL_DIR)/bootdata.c \
     $(LOCAL_DIR)/bootfs.c \
     $(LOCAL_DIR)/userboot-elf.c \
     $(LOCAL_DIR)/option.c \
     $(LOCAL_DIR)/start.c \
+    $(LOCAL_DIR)/loader-service.c \
     $(LOCAL_DIR)/util.c
 
 MODULE_NAME := userboot

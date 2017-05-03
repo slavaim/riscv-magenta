@@ -54,7 +54,7 @@ typedef struct ethdev0 {
 
     ethmac_info_t info;
 
-    mx_device_t dev;
+    mx_device_t* mxdev;
 } ethdev0_t;
 
 static void eth0_downref(ethdev0_t* edev0) {
@@ -107,7 +107,7 @@ typedef struct ethdev {
     // fifo thread
     thrd_t tx_thr;
 
-    mx_device_t dev;
+    mx_device_t* mxdev;
 
     uint32_t fail_rx_read;
     uint32_t fail_rx_write;
@@ -115,9 +115,6 @@ typedef struct ethdev {
 } ethdev_t;
 
 #define FAIL_REPORT_RATE 50
-
-#define get_ethdev(d) containerof(d, ethdev_t, dev)
-#define get_ethdev0(d) containerof(d, ethdev0_t, dev)
 
 static void eth_handle_rx(ethdev_t* edev, const void* data, size_t len, uint32_t extra) {
     eth_fifo_entry_t e;
@@ -416,7 +413,7 @@ static ssize_t eth_ioctl(mx_device_t* dev, uint32_t op,
                          const void* in_buf, size_t in_len,
                          void* out_buf, size_t out_len) {
 
-    ethdev_t* edev = get_ethdev(dev);
+    ethdev_t* edev = dev->ctx;
     mtx_lock(&edev->edev0->lock);
     mx_status_t status;
     if (edev->state & ETHDEV_DEAD) {
@@ -460,8 +457,7 @@ static ssize_t eth_ioctl(mx_device_t* dev, uint32_t op,
         break;
     default:
         // TODO: consider if we want this under the edev0->lock or not
-        status = edev->edev0->mac->ops->ioctl(edev->edev0->mac, op, in_buf, in_len,
-                    out_buf, out_len);
+        status = device_op_ioctl(edev->edev0->mac, op, in_buf, in_len, out_buf, out_len);
         break;
     }
 
@@ -514,14 +510,14 @@ static void eth_kill_locked(ethdev_t* edev) {
 }
 
 static mx_status_t eth_release(mx_device_t* dev) {
-    ethdev_t* edev = get_ethdev(dev);
+    ethdev_t* edev = dev->ctx;
     eth0_downref(edev->edev0);
     free(edev);
     return ERR_NOT_SUPPORTED;
 }
 
 static mx_status_t eth_close(mx_device_t* dev, uint32_t flags) {
-    ethdev_t* edev = get_ethdev(dev);
+    ethdev_t* edev = dev->ctx;
 
     mtx_lock(&edev->edev0->lock);
     eth_stop_locked(edev);
@@ -540,23 +536,30 @@ static mx_protocol_device_t ethdev_ops = {
 
 static ethernet_protocol_t ethernet_ops = {};
 
-extern mx_driver_t _driver_ethernet;
+mx_driver_t _driver_ethernet;
 
 static mx_status_t eth0_open(mx_device_t* dev, mx_device_t** out, uint32_t flags) {
-    ethdev0_t* edev0 = get_ethdev0(dev);
+    ethdev0_t* edev0 = dev->ctx;
 
     ethdev_t* edev;
     if ((edev = calloc(1, sizeof(ethdev_t))) == NULL) {
         return ERR_NO_MEMORY;
     }
-
-    device_init(&edev->dev, &_driver_ethernet, "ethernet", &ethdev_ops);
-    edev->dev.protocol_id = MX_PROTOCOL_ETHERNET;
-    edev->dev.protocol_ops = &ethernet_ops;
     edev->edev0 = edev0;
 
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ethernet",
+        .ctx = edev,
+        .driver = &_driver_ethernet,
+        .ops = &ethdev_ops,
+        .proto_id = MX_PROTOCOL_ETHERNET,
+        .proto_ops = &ethernet_ops,
+        .flags = DEVICE_ADD_INSTANCE,
+    };
+
     mx_status_t status;
-    if ((status = device_add_instance(&edev->dev, dev)) < 0) {
+    if ((status = device_add2(dev, &args, &edev->mxdev)) < 0) {
         free(edev);
         return status;
     }
@@ -566,12 +569,12 @@ static mx_status_t eth0_open(mx_device_t* dev, mx_device_t** out, uint32_t flags
     list_add_tail(&edev0->list_idle, &edev->node);
     mtx_unlock(&edev0->lock);
 
-    *out = &edev->dev;
+    *out = edev->mxdev;
     return NO_ERROR;
 }
 
 static void eth0_unbind(mx_device_t* dev) {
-    ethdev0_t* edev0 = get_ethdev0(dev);
+    ethdev0_t* edev0 = dev->ctx;
 
     mtx_lock(&edev0->lock);
 
@@ -591,7 +594,7 @@ static void eth0_unbind(mx_device_t* dev) {
 }
 
 static mx_status_t eth0_release(mx_device_t* dev) {
-    ethdev0_t* edev0 = get_ethdev0(dev);
+    ethdev0_t* edev0 = dev->ctx;
     eth0_downref(edev0);
     return NO_ERROR;
 }
@@ -612,7 +615,7 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     }
 
     mx_status_t status;
-    if (device_get_protocol(dev, MX_PROTOCOL_ETHERMAC, (void**)&edev0->macops)) {
+    if (device_op_get_protocol(dev, MX_PROTOCOL_ETHERMAC, (void**)&edev0->macops)) {
         printf("eth: bind: no ethermac protocol\n");
         status = ERR_INTERNAL;
         goto fail;
@@ -630,7 +633,6 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
         goto fail;
     }
 
-    device_init(&edev0->dev, drv, "ethernet", &ethdev0_ops);
     mtx_init(&edev0->lock, mtx_plain);
     list_initialize(&edev0->list_active);
     list_initialize(&edev0->list_idle);
@@ -639,9 +641,17 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     edev0->refcount = 1;
 
     edev0->mac = dev;
-    edev0->dev.protocol_id = MX_PROTOCOL_ETHERNET;
 
-    if ((status = device_add(&edev0->dev, dev)) < 0) {
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ethernet",
+        .ctx = edev0,
+        .driver = drv,
+        .ops = &ethdev0_ops,
+        .proto_id = MX_PROTOCOL_ETHERNET,
+    };
+
+    if ((status = device_add2(dev, &args, &edev0->mxdev)) < 0) {
         goto fail;
     }
 
@@ -652,12 +662,11 @@ fail:
     return status;
 }
 
-mx_driver_t _driver_ethernet = {
-    .ops = {
-        .bind = eth_bind,
-    },
+static mx_driver_ops_t eth_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = eth_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_ethernet, "ethernet", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(ethernet, eth_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_ETHERMAC),
-MAGENTA_DRIVER_END(_driver_ethernet)
+MAGENTA_DRIVER_END(ethernet)

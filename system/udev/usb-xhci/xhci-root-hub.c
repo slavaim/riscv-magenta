@@ -217,12 +217,15 @@ static void xhci_reset_port(xhci_t* xhci, xhci_root_hub_t* rh, int rh_port_index
     volatile uint32_t* portsc = &xhci->op_regs->port_regs[rh_port_index].portsc;
     uint32_t temp = XHCI_READ32(portsc);
     temp = (temp & PORTSC_CONTROL_BITS) | PORTSC_PR;
+    if (rh->speed == USB_SPEED_SUPER) {
+        temp |= PORTSC_WPR;
+    }
     XHCI_WRITE32(portsc, temp);
 
     int port_index = xhci->rh_port_map[rh_port_index];
     usb_port_status_t* status = &rh->port_status[port_index];
     status->wPortStatus |= USB_PORT_RESET;
-    status->wPortChange |= USB_PORT_RESET;
+    status->wPortChange |= USB_C_PORT_RESET;
 }
 
 mx_status_t xhci_root_hub_init(xhci_t* xhci, int rh_index) {
@@ -282,25 +285,14 @@ static mx_status_t xhci_start_root_hub(xhci_t* xhci, xhci_root_hub_t* rh, int rh
 
     memcpy(device_desc, rh->device_desc, sizeof(usb_device_descriptor_t));
     memcpy(config_desc, rh->config_desc, le16toh(rh->config_desc->wTotalLength));
+    rh->speed = xhci_rh_speeds[rh_index];
 
     // Notify bus driver that our emulated hub exists
-    return xhci_add_device(xhci, xhci->max_slots + rh_index + 1, 0, xhci_rh_speeds[rh_index]);
+    return xhci_add_device(xhci, xhci->max_slots + rh_index + 1, 0, rh->speed);
 }
 
 mx_status_t xhci_start_root_hubs(xhci_t* xhci) {
     xprintf("xhci_start_root_hubs\n");
-
-    // reset all the root hub ports first to make sure we start off with a clean slate
-    for (uint32_t i = 0; i < xhci->rh_num_ports; i++) {
-        volatile uint32_t* portsc = &xhci->op_regs->port_regs[i].portsc;
-        uint32_t temp = XHCI_READ32(portsc);
-#if DEBUG_PORTSC
-        print_portsc(i, temp);
-#endif
-        // reset the port
-        temp = (temp & PORTSC_CONTROL_BITS) | PORTSC_PR;
-        XHCI_WRITE32(portsc, temp);
-    }
 
     for (int i = 0; i < XHCI_RH_COUNT; i++) {
         mx_status_t status = xhci_start_root_hub(xhci, &xhci->root_hubs[i], i);
@@ -373,8 +365,8 @@ static mx_status_t xhci_rh_control(xhci_t* xhci, xhci_root_hub_t* rh, usb_setup_
     uint16_t value = le16toh(setup->wValue);
     uint16_t index = le16toh(setup->wIndex);
 
-    xprintf("xhci_rh_control type: 0x%02X req: %d value: %d index: %d length: %d\n",
-            request_type, request, value, index, le16toh(setup->wLength));
+//    xprintf("xhci_rh_control type: 0x%02X req: %d value: %d index: %d length: %d\n",
+//            request_type, request, value, index, le16toh(setup->wLength));
 
     if ((request_type & USB_DIR_MASK) == USB_DIR_IN && request == USB_REQ_GET_DESCRIPTOR) {
         return xhci_rh_get_descriptor(request_type, rh, value, index, le16toh(setup->wLength), txn);
@@ -402,19 +394,19 @@ static mx_status_t xhci_rh_control(xhci_t* xhci, xhci_root_hub_t* rh, usb_setup_
 
             switch (value) {
                 case USB_FEATURE_C_PORT_CONNECTION:
-                    *change_bits &= ~USB_PORT_CONNECTION;
+                    *change_bits &= ~USB_C_PORT_CONNECTION;
                     break;
                 case USB_FEATURE_C_PORT_ENABLE:
-                    *change_bits &= ~USB_PORT_ENABLE;
+                    *change_bits &= ~USB_C_PORT_ENABLE;
                     break;
                 case USB_FEATURE_C_PORT_SUSPEND:
-                    *change_bits &= ~USB_PORT_SUSPEND;
+                    *change_bits &= ~USB_C_PORT_SUSPEND;
                     break;
                 case USB_FEATURE_C_PORT_OVER_CURRENT:
-                    *change_bits &= ~USB_PORT_OVER_CURRENT;
+                    *change_bits &= ~USB_C_PORT_OVER_CURRENT;
                     break;
                 case USB_FEATURE_C_PORT_RESET:
-                    *change_bits &= ~USB_PORT_RESET;
+                    *change_bits &= ~USB_C_PORT_RESET;
                     break;
             }
 
@@ -444,7 +436,7 @@ static mx_status_t xhci_rh_control(xhci_t* xhci, xhci_root_hub_t* rh, usb_setup_
 }
 
 static void xhci_rh_handle_intr_req(xhci_root_hub_t* rh, iotxn_t* txn) {
-    xprintf("xhci_rh_handle_intr_req\n");
+//    xprintf("xhci_rh_handle_intr_req\n");
     uint8_t status_bits[128 / 8];
     bool have_status = 0;
     uint8_t* ptr = status_bits;
@@ -476,7 +468,7 @@ static void xhci_rh_handle_intr_req(xhci_root_hub_t* rh, iotxn_t* txn) {
 }
 
 mx_status_t xhci_rh_iotxn_queue(xhci_t* xhci, iotxn_t* txn, int rh_index) {
-    xprintf("xhci_rh_iotxn_queue rh_index: %d\n", rh_index);
+//    xprintf("xhci_rh_iotxn_queue rh_index: %d\n", rh_index);
 
     usb_protocol_data_t* data = iotxn_pdata(txn, usb_protocol_data_t);
     xhci_root_hub_t* rh = &xhci->root_hubs[rh_index];
@@ -525,21 +517,21 @@ void xhci_handle_root_hub_change(xhci_t* xhci) {
                      status->wPortStatus |= USB_PORT_CONNECTION;
                 } else {
                     if (status->wPortStatus & USB_PORT_ENABLE) {
-                        status->wPortChange |= USB_PORT_ENABLE;
+                        status->wPortChange |= USB_C_PORT_ENABLE;
                     }
                     status->wPortStatus = 0;
                 }
-                status->wPortChange |= USB_PORT_CONNECTION;
+                status->wPortChange |= USB_C_PORT_CONNECTION;
             }
             if (portsc & PORTSC_PRC) {
                 // port reset change
                 xprintf("port %d PORTSC_PRC enabled: %d\n", i, enabled);
                 if (enabled) {
                     status->wPortStatus &= ~USB_PORT_RESET;
-                    status->wPortChange |= USB_PORT_RESET;
+                    status->wPortChange |= USB_C_PORT_RESET;
                     if (!(status->wPortStatus & USB_PORT_ENABLE)) {
                         status->wPortStatus |= USB_PORT_ENABLE;
-                        status->wPortChange |= USB_PORT_ENABLE;
+                        status->wPortChange |= USB_C_PORT_ENABLE;
                     }
 
                     if (speed == USB_SPEED_LOW) {

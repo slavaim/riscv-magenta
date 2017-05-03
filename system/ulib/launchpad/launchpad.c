@@ -32,10 +32,13 @@ enum special_handles {
 struct launchpad {
     uint32_t argc;
     uint32_t envc;
+    uint32_t namec;
     char* args;
     size_t args_len;
     char* env;
     size_t env_len;
+    char* names;
+    size_t names_len;
 
     size_t num_script_args;
     char* script_args;
@@ -129,8 +132,8 @@ mx_status_t launchpad_create_with_process(mx_handle_t proc,
         lp->errmsg = "no error";
     }
 
-    launchpad_add_handle(lp, proc, MX_HND_TYPE_PROC_SELF);
-    launchpad_add_handle(lp, vmar, MX_HND_TYPE_VMAR_ROOT);
+    launchpad_add_handle(lp, proc, PA_PROC_SELF);
+    launchpad_add_handle(lp, vmar, PA_VMAR_ROOT);
 
     *result = lp;
     return lp->error;
@@ -153,7 +156,7 @@ mx_status_t launchpad_create_with_jobs(mx_handle_t creation_job, mx_handle_t tra
         lp_error(lp, status, "create: mx_process_create() failed");
 
     if (transfered_job != MX_HANDLE_INVALID) {
-        launchpad_add_handle(lp, transfered_job, MX_HND_INFO(MX_HND_TYPE_JOB, 0));
+        launchpad_add_handle(lp, transfered_job, PA_JOB_DEFAULT);
     }
 
     *result = lp;
@@ -177,33 +180,47 @@ mx_handle_t launchpad_get_root_vmar_handle(launchpad_t* lp) {
     return lp_vmar(lp);
 }
 
-mx_status_t launchpad_set_args(launchpad_t* lp,
-                                int argc, const char* const* argv) {
+static mx_status_t build_stringtable(launchpad_t* lp,
+                                    int count, const char* const* item,
+                                    size_t* total_out, char** out) {
     if (lp->error)
         return lp->error;
-    if (argc < 0)
-        return lp_error(lp, ERR_INVALID_ARGS, "arguments: negative argc");
+    if (count < 0)
+        return lp_error(lp, ERR_INVALID_ARGS, "negative string array count");
 
     size_t total = 0;
-    for (int i = 0; i < argc; ++i)
-        total += strlen(argv[i]) + 1;
+    for (int i = 0; i < count; ++i)
+        total += strlen(item[i]) + 1;
 
     char* buffer = NULL;
     if (total > 0) {
         buffer = malloc(total);
         if (buffer == NULL)
-            return lp_error(lp, ERR_NO_MEMORY, "arguments: out of memory");
+            return lp_error(lp, ERR_NO_MEMORY, "out of memory for string array");
 
         char* p = buffer;
-        for (int i = 0; i < argc; ++i)
-            p = stpcpy(p, argv[i]) + 1;
+        for (int i = 0; i < count; ++i)
+            p = stpcpy(p, item[i]) + 1;
 
         if ((size_t) (p - buffer) != total) {
             // The strings changed in parallel.  Not kosher!
             free(buffer);
-            return lp_error(lp, ERR_INVALID_ARGS, "arguments: trickery");
+            return lp_error(lp, ERR_INVALID_ARGS, "string array modified during use");
         }
     }
+
+    *total_out = total;
+    *out = buffer;
+    return NO_ERROR;
+}
+
+mx_status_t launchpad_set_args(launchpad_t* lp,
+                               int argc, const char* const* argv) {
+    size_t total;
+    char* buffer;
+    mx_status_t r = build_stringtable(lp, argc, argv, &total, &buffer);
+    if (r < 0)
+        return r;
 
     free(lp->args);
     lp->argc = argc;
@@ -212,39 +229,37 @@ mx_status_t launchpad_set_args(launchpad_t* lp,
     return NO_ERROR;
 }
 
+mx_status_t launchpad_set_nametable(launchpad_t* lp,
+                                    size_t count, const char* const* names) {
+    size_t total;
+    char* buffer;
+    mx_status_t r = build_stringtable(lp, count, names, &total, &buffer);
+    if (r < 0)
+        return r;
+
+    free(lp->names);
+    lp->namec = count;
+    lp->names = buffer;
+    lp->names_len = total;
+    return NO_ERROR;
+}
+
 mx_status_t launchpad_set_environ(launchpad_t* lp, const char* const* envp) {
-    if (lp->error)
-        return lp->error;
-
-    size_t total = 0;
-    char* buffer = NULL;
-    uint32_t envc = 0;
-
+    uint32_t count = 0;
     if (envp != NULL) {
         for (const char* const* ep = envp; *ep != NULL; ++ep) {
-            total += strlen(*ep) + 1;
-            ++envc;
+            ++count;
         }
     }
 
-    if (total > 0) {
-        buffer = malloc(total);
-        if (buffer == NULL)
-            return lp_error(lp, ERR_NO_MEMORY, "environ: out of memory");
-
-        char* p = buffer;
-        for (const char* const* ep = envp; *ep != NULL; ++ep)
-            p = stpcpy(p, *ep) + 1;
-
-        if ((size_t) (p - buffer) != total) {
-            // The strings changed in parallel.  Not kosher!
-            free(buffer);
-            return lp_error(lp, ERR_INVALID_ARGS, "environ: trickery");
-        }
-    }
+    size_t total;
+    char* buffer;
+    mx_status_t r = build_stringtable(lp, count, envp, &total, &buffer);
+    if (r < 0)
+        return r;
 
     free(lp->env);
-    lp->envc = envc;
+    lp->envc = count;
     lp->env = buffer;
     lp->env_len = total;
     return NO_ERROR;
@@ -321,7 +336,7 @@ mx_status_t launchpad_add_pipe(launchpad_t* lp, int* fd_out, int target_fd) {
         return lp_error(lp, status, "add_pipe: failed to create pipe");
     }
     fd = status;
-    if ((status = launchpad_add_handle(lp, handle, MX_HND_INFO(MX_HND_INFO_TYPE(id), target_fd))) < 0) {
+    if ((status = launchpad_add_handle(lp, handle, PA_HND(PA_HND_TYPE(id), target_fd))) < 0) {
         close(fd);
         mx_handle_close(handle);
         return status;
@@ -358,7 +373,7 @@ mx_status_t launchpad_elf_load_basic(launchpad_t* lp, mx_handle_t vmo) {
     if (status == NO_ERROR) {
         lp->loader_message = false;
         launchpad_add_handle(lp, segments_vmar,
-                             MX_HND_INFO(MX_HND_TYPE_VMAR_LOADED, 0));
+                             PA_HND(PA_VMAR_LOADED, 0));
     }
 
 done:
@@ -570,7 +585,7 @@ static mx_status_t launchpad_elf_load_body(launchpad_t* lp, const char* hdr_buf,
                     lp->loader_message = false;
                     launchpad_add_handle(
                         lp, segments_vmar,
-                        MX_HND_INFO(MX_HND_TYPE_VMAR_LOADED, 0));
+                        PA_HND(PA_VMAR_LOADED, 0));
                 }
             } else {
                 if ((status = handle_interp(lp, vmo, interp, interp_len))) {
@@ -755,8 +770,7 @@ static void vdso_unlock(void) {
 }
 static mx_handle_t vdso_get_vmo(void) {
     if (vdso_vmo == MX_HANDLE_INVALID)
-        vdso_vmo = mx_get_startup_handle(
-            MX_HND_INFO(MX_HND_TYPE_VDSO_VMO, 0));
+        vdso_vmo = mx_get_startup_handle(PA_HND(PA_VMO_VDSO, 0));
     return vdso_vmo;
 }
 
@@ -788,7 +802,7 @@ mx_status_t launchpad_add_vdso_vmo(launchpad_t* lp) {
     if (vdso < 0)
         return lp_error(lp, vdso, "add_vdso_vmo: get_vdso_vmo failed");
     mx_status_t status = launchpad_add_handle(
-        lp, vdso, MX_HND_INFO(MX_HND_TYPE_VDSO_VMO, 0));
+        lp, vdso, PA_HND(PA_VMO_VDSO, 0));
     if (status != NO_ERROR)
         mx_handle_close(vdso);
     return status;
@@ -842,7 +856,8 @@ mx_handle_t launchpad_use_loader_service(launchpad_t* lp, mx_handle_t svc) {
 // TODO(mcgrathr): One day we'll have a gather variant of message_write
 // and then we can send this without copying into a temporary buffer.
 static mx_status_t build_message(launchpad_t* lp, size_t num_handles,
-                                 void** msg_buf, size_t* buf_size) {
+                                 void** msg_buf, size_t* buf_size,
+                                 bool with_names) {
 
     size_t msg_size = sizeof(mx_proc_args_t);
     static_assert(sizeof(mx_proc_args_t) % sizeof(uint32_t) == 0,
@@ -851,6 +866,7 @@ static mx_status_t build_message(launchpad_t* lp, size_t num_handles,
     msg_size += lp->script_args_len;
     msg_size += lp->args_len;
     msg_size += lp->env_len;
+    msg_size += lp->names_len;
     void* msg = malloc(msg_size);
     if (msg == NULL)
         return ERR_NO_MEMORY;
@@ -884,6 +900,13 @@ static mx_status_t build_message(launchpad_t* lp, size_t num_handles,
         memcpy(env_start, lp->env, lp->env_len);
     }
 
+    if (with_names && (lp->namec > 0)) {
+        header->names_off = header->args_off + total_args_len + lp->env_len;
+        header->names_num = lp->namec;
+        uint8_t* names_start = (uint8_t*)msg + header->names_off;
+        memcpy(names_start, lp->names, lp->names_len);
+    }
+
     *msg_buf = msg;
     *buf_size = msg_size;
     return NO_ERROR;
@@ -896,7 +919,7 @@ static mx_status_t send_loader_message(launchpad_t* lp,
     size_t msg_size;
     size_t num_handles = HND_SPECIAL_COUNT + HND_LOADER_COUNT;
 
-    mx_status_t status = build_message(lp, num_handles, &msg, &msg_size);
+    mx_status_t status = build_message(lp, num_handles, &msg, &msg_size, false);
     if (status != NO_ERROR)
         return status;
 
@@ -937,24 +960,24 @@ static mx_status_t send_loader_message(launchpad_t* lp,
                 return status;
             }
             handles[nhandles] = proc;
-            msg_handle_info[nhandles] = MX_HND_TYPE_PROC_SELF;
+            msg_handle_info[nhandles] = PA_PROC_SELF;
             handles[nhandles + 1] = vmar;
-            msg_handle_info[nhandles + 1] = MX_HND_TYPE_VMAR_ROOT;
+            msg_handle_info[nhandles + 1] = PA_VMAR_ROOT;
             handles[nhandles + 2] = thread;
-            msg_handle_info[nhandles + 2] = MX_HND_TYPE_THREAD_SELF;
+            msg_handle_info[nhandles + 2] = PA_THREAD_SELF;
             nhandles += HND_LOADER_COUNT;
             continue;
 
         case HND_LOADER_SVC:
-            id = MX_HND_TYPE_LOADER_SVC;
+            id = PA_SVC_LOADER;
             break;
 
         case HND_EXEC_VMO:
-            id = MX_HND_TYPE_EXEC_VMO;
+            id = PA_VMO_EXECUTABLE;
             break;
 
         case HND_SEGMENTS_VMAR:
-            id = MX_HND_TYPE_VMAR_LOADED;
+            id = PA_VMAR_LOADED;
             break;
         }
         if (lp->special_handles[i] != MX_HANDLE_INVALID) {
@@ -1019,8 +1042,7 @@ static mx_status_t prepare_start(launchpad_t* lp, const char* thread_name,
             mx_handle_close(*thread);
             return lp_error(lp, status, "cannot duplicate thread handle");
         }
-        status = launchpad_add_handle(lp, thread_copy,
-                                      MX_HND_TYPE_THREAD_SELF);
+        status = launchpad_add_handle(lp, thread_copy, PA_THREAD_SELF);
         if (status != NO_ERROR) {
             mx_handle_close(*thread);
             return status;
@@ -1040,8 +1062,8 @@ static mx_status_t prepare_start(launchpad_t* lp, const char* thread_name,
     void *msg = NULL;
     size_t size;
 
-    if (build_message(lp, lp->handle_count + (allocate_stack ? 1 : 0), &msg, &size) !=
-        NO_ERROR) {
+    if (build_message(lp, lp->handle_count + (allocate_stack ? 1 : 0),
+                      &msg, &size, true) != NO_ERROR) {
         mx_handle_close(*thread);
         return lp_error(lp, ERR_NO_MEMORY, "out of memory assembling procargs message");
     }
@@ -1050,7 +1072,7 @@ static mx_status_t prepare_start(launchpad_t* lp, const char* thread_name,
                                     lp->handles_info,
                                     lp->handle_count * sizeof(lp->handles_info[0]));
     if (allocate_stack)
-        *next_handle = MX_HND_TYPE_STACK_VMO;
+        *next_handle = PA_VMO_STACK;
 
     // Figure out how big an initial thread to allocate.
     size_t stack_size;
@@ -1105,8 +1127,7 @@ static mx_status_t prepare_start(launchpad_t* lp, const char* thread_name,
             // built the bootstrap message.  We shoved an extra info
             // slot with MX_HND_TYPE_STACK_VMO into the message, so
             // now this new final handle will correspond to that slot.
-            status = launchpad_add_handle(lp, stack_vmo,
-                                          MX_HND_TYPE_STACK_VMO);
+            status = launchpad_add_handle(lp, stack_vmo, PA_VMO_STACK);
         }
         if (status != NO_ERROR) {
             mx_handle_close(stack_vmo);

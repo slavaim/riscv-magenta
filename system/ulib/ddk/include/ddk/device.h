@@ -77,7 +77,7 @@ struct mx_device {
 };
 
 // mx_device_t objects must be created or initialized by the driver manager's
-// device_create() and device_init() functions.  Drivers MAY NOT touch any
+// device_create() function.  Drivers MAY NOT touch any
 // fields in the mx_device_t, except for the protocol_id and protocol_ops
 // fields which it may fill out after init and before device_add() is called,
 // and the ctx field which may be used to store driver-specific data.
@@ -94,7 +94,7 @@ typedef struct mx_protocol_device {
     // that child device instead).  If dev_out is not modified the device itself
     // is opened.
     //
-    // The per-instance child should be created with device_create() or device_init(),
+    // The per-instance child should be created with device_create(),
     // but added with device_add_instance() instead of device_add().
     //
     // open is also called whenever a device is cloned (a new handle is obtained).
@@ -151,8 +151,36 @@ typedef struct mx_protocol_device {
 } mx_protocol_device_t;
 
 // Device Convenience Wrappers
-static inline mx_status_t device_get_protocol(mx_device_t* dev, uint32_t proto_id, void** protocol) {
+static inline const char* device_get_name(mx_device_t* dev) {
+    return dev->name;
+}
+
+static inline mx_status_t device_op_get_protocol(mx_device_t* dev, uint32_t proto_id,
+                                                 void** protocol) {
     return dev->ops->get_protocol(dev, proto_id, protocol);
+}
+
+static inline ssize_t device_op_read(mx_device_t* dev, void* buf, size_t count, mx_off_t off) {
+    return dev->ops->read(dev, buf, count, off);
+}
+
+static inline ssize_t device_op_write(mx_device_t* dev, const void* buf, size_t count,
+                                      mx_off_t off) {
+    return dev->ops->write(dev, buf, count, off);
+}
+
+static inline void device_op_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
+    dev->ops->iotxn_queue(dev, txn);
+}
+
+static inline mx_off_t device_op_get_size(mx_device_t* dev) {
+    return dev->ops->get_size(dev);
+}
+
+static inline ssize_t device_op_ioctl(mx_device_t* dev, uint32_t op,
+                                      const void* in_buf, size_t in_len,
+                                      void* out_buf, size_t out_len) {
+    return dev->ops->ioctl(dev, op, in_buf, in_len, out_buf, out_len);
 }
 
 // State change functions

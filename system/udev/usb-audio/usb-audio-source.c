@@ -15,8 +15,8 @@
 #define READ_REQ_COUNT 20
 
 typedef struct {
-    mx_device_t device;
-    mx_device_t* usb_device;
+    mx_device_t* mxdev;
+    mx_device_t* usb_mxdev;
     uint8_t ep_addr;
     uint8_t interface_number;
     uint8_t alternate_setting;
@@ -45,7 +45,6 @@ typedef struct {
     // the last signals we reported
     mx_signals_t signals;
 } usb_audio_source_t;
-#define get_usb_audio_source(dev) containerof(dev, usb_audio_source_t, device)
 
 static void update_signals(usb_audio_source_t* source) {
     mx_signals_t new_signals = 0;
@@ -55,7 +54,8 @@ static void update_signals(usb_audio_source_t* source) {
         new_signals |= DEV_STATE_READABLE;
     }
     if (new_signals != source->signals) {
-        device_state_set_clr(&source->device, new_signals & ~source->signals, source->signals & ~new_signals);
+        device_state_set_clr(source->mxdev, new_signals & ~source->signals,
+                             source->signals & ~new_signals);
         source->signals = new_signals;
     }
 }
@@ -80,25 +80,23 @@ static void usb_audio_source_read_complete(iotxn_t* txn, void* cookie) {
                           source->completed_read_count == READ_REQ_COUNT) {
             txn = list_remove_head_type(&source->completed_reads, iotxn_t, node);
             source->completed_read_count--;
-            iotxn_queue(source->usb_device, txn);
+            iotxn_queue(source->usb_mxdev, txn);
         }
     } else {
-        iotxn_queue(source->usb_device, txn);
+        iotxn_queue(source->usb_mxdev, txn);
     }
     update_signals(source);
     mtx_unlock(&source->mutex);
 }
 
-static void usb_audio_source_unbind(mx_device_t* device) {
-    usb_audio_source_t* source = get_usb_audio_source(device);
+static void usb_audio_source_unbind(mx_device_t* dev) {
+    usb_audio_source_t* source = dev->ctx;
     source->dead = true;
     update_signals(source);
-    device_remove(&source->device);
+    device_remove(source->mxdev);
 }
 
-static mx_status_t usb_audio_source_release(mx_device_t* device) {
-    usb_audio_source_t* source = get_usb_audio_source(device);
-
+static void usb_audio_source_free(usb_audio_source_t* source) {
     iotxn_t* txn;
     while ((txn = list_remove_head_type(&source->free_read_reqs, iotxn_t, node)) != NULL) {
         iotxn_release(txn);
@@ -108,6 +106,11 @@ static mx_status_t usb_audio_source_release(mx_device_t* device) {
     }
     free(source->sample_rates);
     free(source);
+}
+
+static mx_status_t usb_audio_source_release(mx_device_t* dev) {
+    usb_audio_source_t* source = dev->ctx;
+    usb_audio_source_free(source);
     return NO_ERROR;
 }
 
@@ -125,17 +128,17 @@ static mx_status_t usb_audio_source_start(usb_audio_source_t* source) {
 
     // switch to alternate interface if necessary
     if (source->alternate_setting != 0) {
-        usb_set_interface(source->usb_device, source->interface_number, source->alternate_setting);
+        usb_set_interface(source->usb_mxdev, source->interface_number, source->alternate_setting);
     }
 
     // queue up reads, including stale completed reads
     iotxn_t* txn;
     while ((txn = list_remove_head_type(&source->completed_reads, iotxn_t, node)) != NULL) {
-        iotxn_queue(source->usb_device, txn);
+        iotxn_queue(source->usb_mxdev, txn);
     }
     source->completed_read_count = 0;
     while ((txn = list_remove_head_type(&source->free_read_reqs, iotxn_t, node)) != NULL) {
-        iotxn_queue(source->usb_device, txn);
+        iotxn_queue(source->usb_mxdev, txn);
     }
 
 out:
@@ -157,7 +160,7 @@ static mx_status_t usb_audio_source_stop(usb_audio_source_t* source) {
 
     // switch back to primary interface
     if (source->alternate_setting != 0) {
-        usb_set_interface(source->usb_device, source->interface_number, 0);
+        usb_set_interface(source->usb_mxdev, source->interface_number, 0);
     }
 
 out:
@@ -166,7 +169,7 @@ out:
 }
 
 static mx_status_t usb_audio_source_open(mx_device_t* dev, mx_device_t** dev_out, uint32_t flags) {
-    usb_audio_source_t* source = get_usb_audio_source(dev);
+    usb_audio_source_t* source = dev->ctx;
     mx_status_t result;
 
     mtx_lock(&source->mutex);
@@ -182,7 +185,7 @@ static mx_status_t usb_audio_source_open(mx_device_t* dev, mx_device_t** dev_out
 }
 
 static mx_status_t usb_audio_source_close(mx_device_t* dev, uint32_t flags) {
-    usb_audio_source_t* source = get_usb_audio_source(dev);
+    usb_audio_source_t* source = dev->ctx;
 
     mtx_lock(&source->mutex);
     source->open = false;
@@ -193,7 +196,7 @@ static mx_status_t usb_audio_source_close(mx_device_t* dev, uint32_t flags) {
 }
 
 static ssize_t usb_audio_source_read(mx_device_t* dev, void* data, size_t length, mx_off_t offset) {
-    usb_audio_source_t* source = get_usb_audio_source(dev);
+    usb_audio_source_t* source = dev->ctx;
 
     if (source->dead) {
         return ERR_PEER_CLOSED;
@@ -238,7 +241,7 @@ static ssize_t usb_audio_source_read(mx_device_t* dev, void* data, size_t length
     if (source->dead) {
         iotxn_release(txn);
     } else {
-        iotxn_queue(source->usb_device, txn);
+        iotxn_queue(source->usb_mxdev, txn);
     }
 
 out:
@@ -249,7 +252,7 @@ out:
 
 static ssize_t usb_audio_source_ioctl(mx_device_t* dev, uint32_t op, const void* in_buf,
                                     size_t in_len, void* out_buf, size_t out_len) {
-    usb_audio_source_t* source = get_usb_audio_source(dev);
+    usb_audio_source_t* source = dev->ctx;
 
     switch (op) {
     case IOCTL_AUDIO_GET_DEVICE_TYPE: {
@@ -290,7 +293,7 @@ static ssize_t usb_audio_source_ioctl(mx_device_t* dev, uint32_t op, const void*
         if (i == source->sample_rate_count) {
             return ERR_INVALID_ARGS;
         }
-        mx_status_t status = usb_audio_set_sample_rate(source->usb_device, source->ep_addr,
+        mx_status_t status = usb_audio_set_sample_rate(source->usb_mxdev, source->ep_addr,
                                                        sample_rate);
         if (status == NO_ERROR) {
             source->sample_rate = sample_rate;
@@ -340,11 +343,11 @@ mx_status_t usb_audio_source_create(mx_driver_t* driver, mx_device_t* device, in
         return ERR_NO_MEMORY;
     }
     source->channels = format_desc->bNrChannels;
-
+    
     list_initialize(&source->free_read_reqs);
     list_initialize(&source->completed_reads);
 
-    source->usb_device = device;
+    source->usb_mxdev = device;
     source->ep_addr = ep->bEndpointAddress;
     source->interface_number = intf->bInterfaceNumber;
     source->alternate_setting = intf->bAlternateSetting;
@@ -353,8 +356,10 @@ mx_status_t usb_audio_source_create(mx_driver_t* driver, mx_device_t* device, in
 
     for (int i = 0; i < READ_REQ_COUNT; i++) {
         iotxn_t* txn = usb_alloc_iotxn(source->ep_addr, packet_size);
-        if (!txn)
+        if (!txn) {
+            usb_audio_source_free(source);
             return ERR_NO_MEMORY;
+        }
         txn->length = packet_size;
         txn->complete_cb = usb_audio_source_read_complete;
         txn->cookie = source;
@@ -363,18 +368,25 @@ mx_status_t usb_audio_source_create(mx_driver_t* driver, mx_device_t* device, in
 
     source->sample_rate = source->sample_rates[0];
     // this may stall if only one sample rate is supported, so ignore error
-    usb_audio_set_sample_rate(source->usb_device, source->ep_addr, source->sample_rate);
+    usb_audio_set_sample_rate(source->usb_mxdev, source->ep_addr, source->sample_rate);
+
 
     char name[MX_DEVICE_NAME_MAX];
     snprintf(name, sizeof(name), "usb-audio-source-%d\n", index);
-    device_init(&source->device, driver, name, &usb_audio_source_device_proto);
 
-    source->device.protocol_id = MX_PROTOCOL_AUDIO;
-    source->device.protocol_ops = NULL;
-    mx_status_t status = device_add(&source->device, source->usb_device);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = name,
+        .ctx = source,
+        .driver = driver,
+        .ops = &usb_audio_source_device_proto,
+        .proto_id = MX_PROTOCOL_AUDIO,
+    };
+
+    mx_status_t status = device_add2(device, &args, &source->mxdev);
     if (status != NO_ERROR) {
-        printf("device_add failed in usb_audio_bind\n");
-        usb_audio_source_release(&source->device);
+        printf("device_add failed in usb_audio_source_create\n");
+        usb_audio_source_free(source);
     }
 
     return status;

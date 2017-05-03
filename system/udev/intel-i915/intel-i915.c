@@ -36,7 +36,7 @@
 #endif
 
 typedef struct intel_i915_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
     void* regs;
     uint64_t regs_size;
     mx_handle_t regs_handle;
@@ -50,8 +50,6 @@ typedef struct intel_i915_device {
 } intel_i915_device_t;
 
 #define FLAGS_BACKLIGHT 1
-
-#define get_i915_device(dev) containerof(dev, intel_i915_device_t, device)
 
 static void intel_i915_enable_backlight(intel_i915_device_t* dev, bool enable) {
     if (dev->flags & FLAGS_BACKLIGHT) {
@@ -75,14 +73,14 @@ static mx_status_t intel_i915_set_mode(mx_device_t* dev, mx_display_info_t* info
 
 static mx_status_t intel_i915_get_mode(mx_device_t* dev, mx_display_info_t* info) {
     assert(info);
-    intel_i915_device_t* device = get_i915_device(dev);
+    intel_i915_device_t* device = dev->ctx;
     memcpy(info, &device->info, sizeof(mx_display_info_t));
     return NO_ERROR;
 }
 
 static mx_status_t intel_i915_get_framebuffer(mx_device_t* dev, void** framebuffer) {
     assert(framebuffer);
-    intel_i915_device_t* device = get_i915_device(dev);
+    intel_i915_device_t* device = dev->ctx;
     (*framebuffer) = device->framebuffer;
     return NO_ERROR;
 }
@@ -96,7 +94,7 @@ static mx_display_protocol_t intel_i915_display_proto = {
 // implement device protocol
 
 static mx_status_t intel_i915_open(mx_device_t* dev, mx_device_t** out, uint32_t flags) {
-    intel_i915_device_t* device = get_i915_device(dev);
+    intel_i915_device_t* device = dev->ctx;
     intel_i915_enable_backlight(device, true);
     return NO_ERROR;
 }
@@ -106,7 +104,7 @@ static mx_status_t intel_i915_close(mx_device_t* dev, uint32_t flags) {
 }
 
 static mx_status_t intel_i915_release(mx_device_t* dev) {
-    intel_i915_device_t* device = get_i915_device(dev);
+    intel_i915_device_t* device = dev->ctx;
     intel_i915_enable_backlight(device, false);
 
     if (device->regs) {
@@ -119,6 +117,7 @@ static mx_status_t intel_i915_release(mx_device_t* dev) {
         device->framebuffer_handle = -1;
     }
 
+    free(device);
     return NO_ERROR;
 }
 
@@ -132,7 +131,7 @@ static mx_protocol_device_t intel_i915_device_proto = {
 
 static mx_status_t intel_i915_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     pci_protocol_t* pci;
-    if (device_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
+    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
         return ERR_NOT_SUPPORTED;
 
     mx_status_t status = pci->claim_device(dev);
@@ -171,9 +170,6 @@ static mx_status_t intel_i915_bind(mx_driver_t* drv, mx_device_t* dev, void** co
         goto fail;
     }
 
-    // create and add the display (char) device
-    device_init(&device->device, drv, "intel_i915_disp", &intel_i915_device_proto);
-
     mx_display_info_t* di = &device->info;
     uint32_t format, width, height, stride;
     status = mx_bootloader_fb_get_info(&format, &width, &height, &stride);
@@ -195,28 +191,40 @@ static mx_status_t intel_i915_bind(mx_driver_t* drv, mx_device_t* dev, void** co
     mx_set_framebuffer(get_root_resource(), device->framebuffer, device->framebuffer_size,
                        format, width, height, stride);
 
-    device->device.protocol_id = MX_PROTOCOL_DISPLAY;
-    device->device.protocol_ops = &intel_i915_display_proto;
-    device_add(&device->device, dev);
+    // create and add the display (char) device
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "intel_i915_disp",
+        .ctx = device,
+        .driver = drv,
+        .ops = &intel_i915_device_proto,
+        .proto_id = MX_PROTOCOL_DISPLAY,
+        .proto_ops = &intel_i915_display_proto,
+    };
+
+    status = device_add2(dev, &args, &device->mxdev);
+    if (status != NO_ERROR) {
+        goto fail;
+    }
 
     xprintf("initialized intel i915 display driver, reg=%p regsize=0x%llx fb=%p fbsize=0x%llx\n",
             device->regs, device->regs_size, device->framebuffer, device->framebuffer_size);
 
     return NO_ERROR;
+
 fail:
     free(device);
     return status;
 }
 
-mx_driver_t _driver_intel_i915 = {
-    .ops = {
-        .bind = intel_i915_bind,
-    },
+static mx_driver_ops_t intel_i915_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = intel_i915_bind,
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_intel_i915, "intel-i915-display", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(intel_i915, intel_i915_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_VID, INTEL_I915_VID),
     BI_MATCH_IF(EQ, BIND_PCI_CLASS, 0x3), // Display class
-MAGENTA_DRIVER_END(_driver_intel_i915)
+MAGENTA_DRIVER_END(intel_i915)

@@ -23,6 +23,7 @@
 #include <kernel/vm.h>
 #include <kernel/vm/vm_aspace.h>
 #include <kernel/vm/vm_address_region.h>
+#include <kernel/vm/vm_object_paged.h>
 
 #include <magenta/c_user_thread.h>
 #include <magenta/exception.h>
@@ -419,11 +420,25 @@ void UserThread::Exiting() {
 void UserThread::Suspending() {
     LTRACE_ENTRY_OBJ;
 
-    AutoLock lock(&state_lock_);
+    // Notify debugger if attached.
+    // This is done by first obtaining our own reference to the port so the
+    // test can be done safely.
+    // TODO(dje): Allow debugger to say whether it wants these.
+    // TODO(dje): Is the locking sufficient here?
+    {
+        mxtl::RefPtr<ExceptionPort> debugger_port(process_->debugger_exception_port());
+        if (debugger_port) {
+            debugger_port->OnThreadSuspending(this);
+        }
+    }
 
-    DEBUG_ASSERT(state_ == State::RUNNING || state_ == State::DYING);
-    if (state_ == State::RUNNING) {
-        SetState(State::SUSPENDED);
+    {
+        AutoLock lock(&state_lock_);
+
+        DEBUG_ASSERT(state_ == State::RUNNING || state_ == State::DYING);
+        if (state_ == State::RUNNING) {
+            SetState(State::SUSPENDED);
+        }
     }
 
     LTRACE_EXIT_OBJ;
@@ -432,11 +447,27 @@ void UserThread::Suspending() {
 void UserThread::Resuming() {
     LTRACE_ENTRY_OBJ;
 
-    AutoLock lock(&state_lock_);
+    {
+        AutoLock lock(&state_lock_);
 
-    DEBUG_ASSERT(state_ == State::SUSPENDED || state_ == State::DYING);
-    if (state_ == State::SUSPENDED) {
-        SetState(State::RUNNING);
+        DEBUG_ASSERT(state_ == State::SUSPENDED || state_ == State::DYING);
+        if (state_ == State::SUSPENDED) {
+            SetState(State::RUNNING);
+        }
+    }
+
+    // TODO(dje): Add support for modifying userspace regs from the debugger.
+
+    // Notify debugger if attached.
+    // This is done by first obtaining our own reference to the port so the
+    // test can be done safely.
+    // TODO(dje): Allow debugger to say whether it wants these.
+    // TODO(dje): Is the locking sufficient here?
+    {
+        mxtl::RefPtr<ExceptionPort> debugger_port(process_->debugger_exception_port());
+        if (debugger_port) {
+            debugger_port->OnThreadResuming(this);
+        }
     }
 
     LTRACE_EXIT_OBJ;
@@ -586,7 +617,7 @@ status_t UserThread::ExceptionHandlerExchange(
             return NO_ERROR;
         }
 
-        // So the handler can read/write our general registers.
+        // Mark that we're in an exception.
         thread_.exception_context = arch_context;
 
         // For GetExceptionReport.
@@ -599,7 +630,12 @@ status_t UserThread::ExceptionHandlerExchange(
         exception_status_ = ExceptionStatus::UNPROCESSED;
     }
 
-    auto status = event_wait_deadline(&exception_event_, INFINITE_TIME, true);
+    // Continue to wait for the exception response if we get suspended.
+
+    status_t status;
+    do {
+        status = event_wait_deadline(&exception_event_, INFINITE_TIME, true);
+    } while (status == ERR_INTERRUPTED_RETRY);
 
     AutoLock lock(&exception_wait_lock_);
 
@@ -689,16 +725,82 @@ bool UserThread::InExceptionLocked() {
     return thread_stopped_in_exception(&thread_);
 }
 
-bool UserThread::InException(ExceptionPort::Type* type) {
+void UserThread::GetInfoForUserspace(mx_info_thread_t* info) {
     canary_.Assert();
 
     LTRACE_ENTRY_OBJ;
-    AutoLock lock(&exception_wait_lock_);
-    if (!InExceptionLocked())
-        return false;
-    DEBUG_ASSERT(exception_wait_port_ != nullptr);
-    *type = exception_wait_port_->type();
-    return true;
+    memset(info, 0, sizeof(*info));
+
+    UserThread::State state;
+    enum thread_state lk_state;
+    ExceptionPort::Type excp_port_type;
+    // We need to fetch all these values under lock, but once we have them
+    // we no longer need the lock.
+    {
+        // N.B. Keep the order of obtaining these locks consistent.
+        AutoLock state_lock(&state_lock_);
+        AutoLock lock(&exception_wait_lock_);
+        state = state_;
+        lk_state = thread_.state;
+        if (InExceptionLocked()) {
+            DEBUG_ASSERT(exception_wait_port_ != nullptr);
+            excp_port_type = exception_wait_port_->type();
+        } else {
+            excp_port_type = ExceptionPort::Type::NONE;
+        }
+    }
+
+    switch (state) {
+    case UserThread::State::INITIAL:
+    case UserThread::State::INITIALIZED:
+        info->state = MX_THREAD_STATE_NEW;
+        break;
+    case UserThread::State::RUNNING:
+        // The thread may be "running" but be blocked in a syscall or
+        // exception handler.
+        switch (lk_state) {
+        case THREAD_BLOCKED:
+            info->state = MX_THREAD_STATE_BLOCKED;
+            break;
+        default:
+            info->state = MX_THREAD_STATE_RUNNING;
+            break;
+        }
+        break;
+    case UserThread::State::SUSPENDED:
+        info->state = MX_THREAD_STATE_SUSPENDED;
+        break;
+    case UserThread::State::DYING:
+    case UserThread::State::DEAD:
+        info->state = MX_THREAD_STATE_DEAD;
+        break;
+    default:
+        DEBUG_ASSERT_MSG(false, "unexpected exception port type: %d",
+                         static_cast<int>(excp_port_type));
+        break;
+    }
+
+    switch (excp_port_type) {
+    case ExceptionPort::Type::NONE:
+        info->wait_exception_port_type = MX_EXCEPTION_PORT_TYPE_NONE;
+        break;
+    case ExceptionPort::Type::DEBUGGER:
+        info->wait_exception_port_type = MX_EXCEPTION_PORT_TYPE_DEBUGGER;
+        break;
+    case ExceptionPort::Type::THREAD:
+        info->wait_exception_port_type = MX_EXCEPTION_PORT_TYPE_THREAD;
+        break;
+    case ExceptionPort::Type::PROCESS:
+        info->wait_exception_port_type = MX_EXCEPTION_PORT_TYPE_PROCESS;
+        break;
+    case ExceptionPort::Type::SYSTEM:
+        info->wait_exception_port_type = MX_EXCEPTION_PORT_TYPE_SYSTEM;
+        break;
+    default:
+        DEBUG_ASSERT_MSG(false, "unexpected exception port type: %d",
+                         static_cast<int>(excp_port_type));
+        break;
+    }
 }
 
 status_t UserThread::GetExceptionReport(mx_exception_report_t* report) {

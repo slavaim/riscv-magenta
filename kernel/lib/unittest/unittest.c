@@ -9,15 +9,16 @@
  * Functions for unit tests.  See lib/unittest/include/unittest.h for usage.
  */
 #include <assert.h>
-#include <magenta/compiler.h>
 #include <debug.h>
 #include <err.h>
 #include <inttypes.h>
+#include <magenta/compiler.h>
 #include <platform.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unittest.h>
 
@@ -26,14 +27,13 @@
  *
  * This function will call the out_func callback
  */
-int unittest_printf (const char *format, ...)
-{
+int unittest_printf(const char* format, ...) {
     int ret = 0;
 
     va_list argp;
-    va_start (argp, format);
+    va_start(argp, format);
     ret = vprintf(format, argp);
-    va_end (argp);
+    va_end(argp);
 
     return ret;
 }
@@ -43,11 +43,10 @@ bool unittest_expect_bytes(const uint8_t* expected,
                            const uint8_t* actual,
                            const char* actual_name,
                            size_t len,
-                           const char *msg,
+                           const char* msg,
                            const char* func,
                            int line,
-                           bool expect_eq)
-{
+                           bool expect_eq) {
     if (!memcmp(expected, actual, len) != expect_eq) {
 
         unittest_printf(UNITTEST_TRACEF_FORMAT "%s:\n%s %s %s, but should not!\n",
@@ -84,16 +83,15 @@ static void usage(const char* progname) {
            "  all : run all tests\n"
            "  ?   : list tests\n",
            progname);
-
 }
 
 static void list_cases(void) {
-    char   fmt_string[32];
+    char fmt_string[32];
     size_t count = 0;
     size_t max_namelen = 0;
 
     const unittest_testcase_registration_t* testcase;
-    for (testcase  = __start_unittest_testcases;
+    for (testcase = __start_unittest_testcases;
          testcase != __stop_unittest_testcases;
          ++testcase) {
 
@@ -106,12 +104,12 @@ static void list_cases(void) {
     }
 
     printf("There %s %zu test case%s available...\n",
-            count == 1 ? "is" : "are",
-            count,
-            count == 1 ? "" : "s");
+           count == 1 ? "is" : "are",
+           count,
+           count == 1 ? "" : "s");
     snprintf(fmt_string, sizeof(fmt_string), "  %%-%zus : %%s\n", max_namelen);
 
-    for (testcase  = __start_unittest_testcases;
+    for (testcase = __start_unittest_testcases;
          testcase != __stop_unittest_testcases;
          ++testcase) {
 
@@ -119,12 +117,10 @@ static void list_cases(void) {
             printf(fmt_string, testcase->name,
                    testcase->desc ? testcase->desc : "<no description>");
     }
-
 }
 
-
 static bool run_unittest(const unittest_testcase_registration_t* testcase) {
-    char   fmt_string[32];
+    char fmt_string[32];
     size_t max_namelen = 0;
     size_t passed = 0;
 
@@ -154,16 +150,16 @@ static bool run_unittest(const unittest_testcase_registration_t* testcase) {
         return false;
     }
 
-    lk_bigtime_t testcase_start = current_time_hires();
+    lk_time_t testcase_start = current_time();
 
     for (size_t i = 0; i < testcase->test_cnt; ++i) {
         const unittest_registration_t* test = &testcase->tests[i];
 
         printf(fmt_string, test->name ? test->name : "");
 
-        lk_bigtime_t test_start = current_time_hires();
+        lk_time_t test_start = current_time();
         bool good = test->fn ? test->fn(context) : false;
-        lk_bigtime_t test_runtime = current_time_hires() - test_start;
+        lk_time_t test_runtime = current_time() - test_start;
 
         if (good) {
             passed++;
@@ -174,10 +170,9 @@ static bool run_unittest(const unittest_testcase_registration_t* testcase) {
         unittest_printf("%s (%" PRIu64 " nSec)\n",
                         good ? "PASSED" : "FAILED",
                         test_runtime);
-
     }
 
-    lk_bigtime_t testcase_runtime = current_time_hires() - testcase_start;
+    lk_time_t testcase_runtime = current_time() - testcase_start;
 
     unittest_printf("%s : %sll tests passed (%zu/%zu) in %" PRIu64 " nSec\n",
                     testcase->name,
@@ -188,8 +183,7 @@ static bool run_unittest(const unittest_testcase_registration_t* testcase) {
     return passed == testcase->test_cnt;
 }
 
-static int run_unittests(int argc, const cmd_args* argv, uint32_t flags)
-{
+static int run_unittests(int argc, const cmd_args* argv, uint32_t flags) {
     if (argc != 2) {
         usage(argv[0].str);
         return 0;
@@ -207,14 +201,24 @@ static int run_unittests(int argc, const cmd_args* argv, uint32_t flags)
     size_t chosen = 0;
     size_t passed = 0;
 
-    for (testcase  = __start_unittest_testcases;
+    const size_t num_tests =
+        run_all ? __stop_unittest_testcases - __start_unittest_testcases : 1;
+    // Array of names with a NULL sentinel at the end.
+    const char** failed_names = calloc(num_tests + 1, sizeof(char*));
+    const char** fn = failed_names;
+
+    for (testcase = __start_unittest_testcases;
          testcase != __stop_unittest_testcases;
          ++testcase) {
 
         if (testcase->name) {
             if (run_all || !strcmp(casename, testcase->name)) {
                 chosen++;
-                passed += run_unittest(testcase) ? 1 : 0;
+                if (run_unittest(testcase)) {
+                    passed++;
+                } else {
+                    *fn++ = testcase->name;
+                }
                 printf("\n");
 
                 if (!run_all)
@@ -223,14 +227,25 @@ static int run_unittests(int argc, const cmd_args* argv, uint32_t flags)
         }
     }
 
+    int ret = 0;
     if (!run_all && !chosen) {
+        ret = -1;
         unittest_printf("Test case \"%s\" not found!\n", casename);
         list_cases();
     } else {
-        unittest_printf("Passed %zu/%zu test case%s\n", passed, chosen, chosen == 1 ? "" : "s");
+        unittest_printf("SUMMARY: Ran %d test case%s: %d failed\n",
+                        chosen, chosen == 1 ? "" : "s", chosen - passed);
+        if (passed < chosen) {
+            ret = -1;
+            unittest_printf("\nThe following test cases failed:\n");
+            for (fn = failed_names; *fn != NULL; fn++) {
+                unittest_printf("%s\n", *fn);
+            }
+        }
     }
 
-    return 0;
+    free(failed_names);
+    return ret;
 }
 
 STATIC_COMMAND_START

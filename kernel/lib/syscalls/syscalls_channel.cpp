@@ -94,10 +94,9 @@ void msg_get_handles(ProcessDispatcher* up, MessagePacket* msg,
 }
 
 mx_status_t sys_channel_read(mx_handle_t handle_value, uint32_t options,
-                             user_ptr<void> _bytes,
-                             uint32_t num_bytes, user_ptr<uint32_t> _num_bytes,
-                             user_ptr<mx_handle_t> _handles,
-                             uint32_t num_handles, user_ptr<uint32_t> _num_handles) {
+                             user_ptr<void> _bytes, user_ptr<mx_handle_t> _handles,
+                             uint32_t num_bytes, uint32_t num_handles,
+                             user_ptr<uint32_t> _num_bytes, user_ptr<uint32_t> _num_handles) {
     LTRACEF("handle %d bytes %p num_bytes %p handles %p num_handles %p",
             handle_value, _bytes.get(), _num_bytes.get(), _handles.get(), _num_handles.get());
 
@@ -159,7 +158,7 @@ static mx_status_t msg_put_handles(ProcessDispatcher* up, MessagePacket* msg, mx
         for (size_t ix = 0; ix != num_handles; ++ix) {
             auto handle = up->GetHandleLocked(handles[ix]);
             if (!handle)
-                return up->BadHandle(handles[ix], ERR_BAD_HANDLE);
+                return ERR_BAD_HANDLE;
 
             if (handle->dispatcher().get() == channel) {
                 // You may not write a channel endpoint handle
@@ -168,7 +167,7 @@ static mx_status_t msg_put_handles(ProcessDispatcher* up, MessagePacket* msg, mx
             }
 
             if (!magenta_rights_check(handle, MX_RIGHT_TRANSFER))
-                return up->BadHandle(handles[ix], ERR_ACCESS_DENIED);
+                return ERR_ACCESS_DENIED;
 
             msg->mutable_handles()[ix] = handle;
         }
@@ -245,10 +244,12 @@ mx_status_t sys_channel_write(mx_handle_t handle_value, uint32_t options,
 }
 
 mx_status_t sys_channel_call(mx_handle_t handle_value, uint32_t options,
-                             mx_time_t timeout, user_ptr<const mx_channel_call_args_t> _args,
+                             mx_time_t deadline, user_ptr<const mx_channel_call_args_t> _args,
                              user_ptr<uint32_t> actual_bytes, user_ptr<uint32_t> actual_handles,
                              user_ptr<mx_status_t> read_status) {
     mx_channel_call_args_t args;
+
+    magenta_check_deadline("channel_call", deadline);
 
     if (_args.copy_from_user(&args) != NO_ERROR)
         return ERR_INVALID_ARGS;
@@ -289,10 +290,10 @@ mx_status_t sys_channel_call(mx_handle_t handle_value, uint32_t options,
             return result;
     }
 
-    // Write message and wait for reply, timeout, or cancelation
+    // Write message and wait for reply, deadline, or cancelation
     bool return_handles = false;
     mxtl::unique_ptr<MessagePacket> reply;
-    if ((result = channel->Call(mxtl::move(msg), timeout, &return_handles, &reply)) != NO_ERROR) {
+    if ((result = channel->Call(mxtl::move(msg), deadline, &return_handles, &reply)) != NO_ERROR) {
         if (return_handles) {
             // Write phase failed:
             // 1. Put back the handles into this process.
@@ -312,7 +313,7 @@ mx_status_t sys_channel_call(mx_handle_t handle_value, uint32_t options,
         // VDSO.
         while (result == ERR_INTERRUPTED_RETRY) {
             thread_process_pending_signals();
-            result = channel->ResumeInterruptedCall(timeout, &reply);
+            result = channel->ResumeInterruptedCall(deadline, &reply);
         }
 
         // Timeout is always returned directly.

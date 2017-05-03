@@ -8,12 +8,16 @@
 
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/exception.h>
+#include <magenta/syscalls/object.h>
 #include <magenta/syscalls/port.h>
 
 #include <unittest/unittest.h>
 #include <runtime/thread.h>
 
 static const char kThreadName[] = "test-thread";
+
+static const unsigned kExceptionPortKey = 42u;
 
 __NO_SAFESTACK static void test_sleep_thread_fn(void* arg) {
     // Note: You shouldn't use C standard library functions from this thread.
@@ -83,6 +87,15 @@ static bool start_and_kill_thread(mxr_thread_entry_t entry, void* arg) {
     mx_nanosleep(mx_deadline_after(MX_MSEC(100)));
     ASSERT_EQ(mxr_thread_kill(&thread), NO_ERROR, "");
     ASSERT_EQ(mxr_thread_join(&thread), NO_ERROR, "");
+    return true;
+}
+
+static bool set_debugger_exception_port(mx_handle_t* eport_out) {
+    ASSERT_EQ(mx_port_create(0, eport_out), NO_ERROR, "");
+    mx_handle_t self = mx_process_self();
+    ASSERT_EQ(mx_task_bind_exception_port(self, *eport_out, kExceptionPortKey,
+                                          MX_EXCEPTION_PORT_DEBUGGER),
+              NO_ERROR, "");
     return true;
 }
 
@@ -229,15 +242,38 @@ static bool test_resume_suspended(void) {
     ASSERT_EQ(mx_object_wait_one(thread_h, MX_THREAD_SIGNALED, mx_deadline_after(MX_MSEC(100)),
                                  NULL), ERR_TIMED_OUT, "");
 
+    // Verify thread is blocked
+    mx_info_thread_t info;
+    ASSERT_EQ(mx_object_get_info(thread_h, MX_INFO_THREAD,
+                                 &info, sizeof(info), NULL, NULL),
+              NO_ERROR, "");
+    ASSERT_EQ(info.wait_exception_port_type, MX_EXCEPTION_PORT_TYPE_NONE, "");
+    ASSERT_EQ(info.state, MX_THREAD_STATE_BLOCKED, "");
+
+    // Attach to debugger port so we can see MX_EXCP_THREAD_SUSPENDING
+    mx_handle_t eport;
+    ASSERT_TRUE(set_debugger_exception_port(&eport),"");
+
     // Check that signaling the event while suspended results in the expected
     // behavior
     ASSERT_EQ(mx_task_suspend(thread_h), NO_ERROR, "");
-    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, MX_MSEC(100), NULL), ERR_TIMED_OUT, "");
-    // TODO: Use an exception port to wait for the suspend to take effect
+
+    // Wait for the thread to suspend
+    mx_exception_packet_t packet;
+    ASSERT_EQ(mx_port_wait(eport, mx_deadline_after(MX_SEC(1)), &packet, sizeof(packet)), NO_ERROR, "");
+    ASSERT_EQ(packet.hdr.key, kExceptionPortKey, "");
+    ASSERT_EQ(packet.report.header.type, (uint32_t) MX_EXCP_THREAD_SUSPENDING, "");
+
+    // Verify thread is suspended
+    ASSERT_EQ(mx_object_get_info(thread_h, MX_INFO_THREAD,
+                                 &info, sizeof(info), NULL, NULL),
+              NO_ERROR, "");
+    ASSERT_EQ(info.state, MX_THREAD_STATE_SUSPENDED, "");
+    ASSERT_EQ(info.wait_exception_port_type, MX_EXCEPTION_PORT_TYPE_NONE, "");
 
     // Since the thread is suspended the signaling should not take effect.
     ASSERT_EQ(mx_object_signal(event, 0, MX_USER_SIGNAL_0), NO_ERROR, "");
-    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, MX_MSEC(100), NULL), ERR_TIMED_OUT, "");
+    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, mx_deadline_after(MX_MSEC(100)), NULL), ERR_TIMED_OUT, "");
 
     ASSERT_EQ(mx_task_resume(thread_h, 0), NO_ERROR, "");
 
@@ -245,6 +281,7 @@ static bool test_resume_suspended(void) {
     ASSERT_EQ(mx_object_wait_one(
         thread_h, MX_THREAD_SIGNALED, MX_TIME_INFINITE, NULL), NO_ERROR, "");
 
+    ASSERT_EQ(mx_handle_close(eport), NO_ERROR, "");
     ASSERT_EQ(mx_handle_close(event), NO_ERROR, "");
     ASSERT_EQ(mx_handle_close(thread_h), NO_ERROR, "");
 
@@ -268,7 +305,7 @@ static bool test_kill_suspended(void) {
         thread_h, MX_THREAD_SIGNALED, MX_TIME_INFINITE, NULL), NO_ERROR, "");
 
     // make sure the thread did not execute more user code.
-    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, MX_MSEC(100), NULL), ERR_TIMED_OUT, "");
+    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, mx_deadline_after(MX_MSEC(100)), NULL), ERR_TIMED_OUT, "");
 
     ASSERT_EQ(mx_handle_close(event), NO_ERROR, "");
     ASSERT_EQ(mx_handle_close(thread_h), NO_ERROR, "");
@@ -369,7 +406,7 @@ static bool test_suspend_channel_call(void) {
     // Read the message
     uint8_t buf[9];
     uint32_t actual_bytes;
-    ASSERT_EQ(mx_channel_read(channel, 0, buf, sizeof(buf), &actual_bytes, NULL, 0, NULL),
+    ASSERT_EQ(mx_channel_read(channel, 0, buf, NULL, sizeof(buf), 0, &actual_bytes, NULL),
               NO_ERROR, "");
     ASSERT_EQ(actual_bytes, sizeof(buf), "");
     ASSERT_EQ(memcmp(buf, "abcdefghi", sizeof(buf)), 0, "");
@@ -384,8 +421,8 @@ static bool test_suspend_channel_call(void) {
 
     // Make sure we can't read from the remote channel (the message should have
     // been reserved for the other thread, even though it is suspended).
-    EXPECT_EQ(mx_channel_read(thread_arg.channel, 0, buf, sizeof(buf), &actual_bytes, NULL, 0,
-                              NULL),
+    EXPECT_EQ(mx_channel_read(thread_arg.channel, 0, buf, NULL, sizeof(buf), 0,
+                              &actual_bytes, NULL),
               ERR_SHOULD_WAIT, "");
 
     // Wake the suspended thread
@@ -413,7 +450,7 @@ static bool test_suspend_port_call(void) {
     ASSERT_TRUE(start_thread(test_port_thread_fn, port, &thread), "");
     mx_handle_t thread_h = mxr_thread_get_handle(&thread);
 
-    mx_nanosleep(MX_MSEC(100));
+    mx_nanosleep(mx_deadline_after(MX_MSEC(100)));
     ASSERT_EQ(mx_task_suspend(thread_h), NO_ERROR, "");
 
     mx_port_packet_t packet1 = { 100ull, MX_PKT_TYPE_USER, 0u, {} };
@@ -423,7 +460,7 @@ static bool test_suspend_port_call(void) {
     ASSERT_EQ(mx_port_queue(port[0], &packet2, 0u), NO_ERROR, "");
 
     mx_port_packet_t packet;
-    ASSERT_EQ(mx_port_wait(port[1], MX_MSEC(100), &packet, 0u), ERR_TIMED_OUT, "");
+    ASSERT_EQ(mx_port_wait(port[1], mx_deadline_after(MX_MSEC(100)), &packet, 0u), ERR_TIMED_OUT, "");
 
     ASSERT_EQ(mx_task_resume(thread_h, 0), NO_ERROR, "");
 

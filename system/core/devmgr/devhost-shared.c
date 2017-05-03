@@ -69,7 +69,12 @@ mx_status_t dc_msg_unpack(dc_msg_t* msg, size_t len, const void** data,
     len -= sizeof(dc_msg_t);
     uint8_t* ptr = msg->data;
     if (msg->datalen) {
+        if (msg->datalen > len) {
+            return ERR_BUFFER_TOO_SMALL;
+        }
         *data = ptr;
+        ptr += msg->datalen;
+        len -= msg->datalen;
     } else {
         *data = NULL;
     }
@@ -90,15 +95,46 @@ mx_status_t dc_msg_unpack(dc_msg_t* msg, size_t len, const void** data,
         }
         *args = (char*) ptr;
         ptr[msg->argslen - 1] = 0;
-        ptr += msg->argslen;
-        len -= msg->argslen;
     } else {
         *args = "";
     }
     return NO_ERROR;
 }
 
+mx_status_t dc_msg_rpc(mx_handle_t h, dc_msg_t* msg, size_t msglen,
+                       mx_handle_t* handles, size_t hcount) {
+    dc_status_t rsp;
+    mx_channel_call_args_t args = {
+        .wr_bytes = msg,
+        .wr_handles = handles,
+        .rd_bytes = &rsp,
+        .rd_handles = NULL,
+        .wr_num_bytes = msglen,
+        .wr_num_handles = hcount,
+        .rd_num_bytes = sizeof(rsp),
+        .rd_num_handles = 0,
+    };
 
+    //TODO: incrementing txids
+    msg->txid = 1;
+    mx_status_t r, rdstatus;
+    if ((r = mx_channel_call(h, 0, MX_TIME_INFINITE,
+                             &args, &args.rd_num_bytes, &args.rd_num_handles,
+                             &rdstatus)) < 0) {
+        for (size_t n = 0; n < hcount; n++) {
+            mx_handle_close(handles[n]);
+        }
+        return r;
+    }
+    if (rdstatus < 0) {
+        return rdstatus;
+    }
+    if (args.rd_num_bytes != sizeof(rsp)) {
+        return ERR_INTERNAL;
+    }
+
+    return rsp.status;
+}
 
 mx_status_t port_init(port_t* port) {
     zprintf("port_init(%p)\n", port);
@@ -112,12 +148,14 @@ mx_status_t port_watch(port_t* port, port_handler_t* ph) {
                                 ph->waitfor, MX_WAIT_ASYNC_ONCE);
 }
 
-mx_status_t port_dispatch(port_t* port) {
+mx_status_t port_dispatch(port_t* port, mx_time_t deadline) {
     for (;;) {
         mx_port_packet_t packet;
         mx_status_t r;
-        if ((r = mx_port_wait(port->handle, MX_TIME_INFINITE, &packet, 0)) < 0) {
-            printf("port_dispatch: port wait failed %d\n", r);
+        if ((r = mx_port_wait(port->handle, deadline, &packet, 0)) != NO_ERROR) {
+            if (r != ERR_TIMED_OUT) {
+                printf("port_dispatch: port wait failed %d\n", r);
+            }
             return r;
         }
         port_handler_t* ph = (void*) (uintptr_t) packet.key;
@@ -125,5 +163,6 @@ mx_status_t port_dispatch(port_t* port) {
         if ((r = ph->func(ph, packet.signal.observed)) == NO_ERROR) {
             port_watch(port, ph);
         }
+        return NO_ERROR;
     }
 }

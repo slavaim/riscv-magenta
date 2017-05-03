@@ -23,8 +23,8 @@ mx_status_t mxr_processargs_read(mx_handle_t bootstrap,
 
     uint32_t got_bytes = 0;
     uint32_t got_handles = 0;
-    mx_status_t status = _mx_channel_read(bootstrap, 0, buffer, nbytes, &got_bytes,
-                                          handles, nhandles, &got_handles);
+    mx_status_t status = _mx_channel_read(bootstrap, 0, buffer, handles, nbytes,
+                                          nhandles, &got_bytes, &got_handles);
     if (status != NO_ERROR)
         return status;
     if (got_bytes != nbytes || got_handles != nhandles)
@@ -72,14 +72,18 @@ static mx_status_t unpack_strings(char* buffer, uint32_t bytes, char* result[],
 }
 
 mx_status_t mxr_processargs_strings(void* msg, uint32_t bytes,
-                                    char* argv[], char* envp[]) {
+                                    char* argv[], char* envp[], char* names[]) {
     mx_proc_args_t* const pa = msg;
     mx_status_t status = NO_ERROR;
-    if (argv != NULL)
+    if (argv != NULL) {
         status = unpack_strings(msg, bytes, argv, pa->args_off, pa->args_num);
+    }
     if (envp != NULL && status == NO_ERROR) {
         status = unpack_strings(msg, bytes, envp,
                                 pa->environ_off, pa->environ_num);
+    }
+    if (names != NULL && status == NO_ERROR) {
+        status = unpack_strings(msg, bytes, names, pa->names_off, pa->names_num);
     }
     return status;
 }

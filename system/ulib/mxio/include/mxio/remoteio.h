@@ -83,6 +83,15 @@ typedef mx_status_t (*mxrio_cb_t)(mxrio_msg_t* msg, mx_handle_t rh, void* cookie
 // a mxio_dispatcher_handler suitable for use with a mxio_dispatcher
 mx_status_t mxrio_handler(mx_handle_t h, void* cb, void* cookie);
 
+// the underlying handling for regular rpc or for a synthetic close,
+// called by mxrio_handler.  handle_rpc() processes a single message
+// from the provideded channel, returning a negative error value on
+// error or 1 on clean shutdown (indicating no further callbacks
+// should be made).  handle_close() processes a "synthetic" close
+// event (eg, channel was remotely closed), and neither function
+// should be callaed again after handle_close().
+mx_status_t mxrio_handle_rpc(mx_handle_t h, mxrio_cb_t cb, void* cookie);
+mx_status_t mxrio_handle_close(mxrio_cb_t cb, void* cookie);
 
 // OPEN and CLOSE messages, can be forwarded to another remoteio server,
 // without any need to wait for a reply.  The reply channel from the initial
@@ -135,6 +144,12 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 
 #define READDIR_CMD_NONE  0
 #define READDIR_CMD_RESET 1
+
+// Top 4 bits of open flags are reserved for
+// the protocol, and not accepted by open()
+// in O_* flags
+#define MXRIO_OFLAG_MASK     0xF0000000
+#define MXRIO_OFLAG_PIPELINE 0x10000000
 
 // - msg.datalen is the size of data sent or received and must be <= MXIO_CHUNK_SIZE
 // - msg.arg is the return code on replies

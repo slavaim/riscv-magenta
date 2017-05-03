@@ -11,7 +11,6 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/binding.h>
-#include <ddk/protocol/bcm.h>
 
 #include <magenta/syscalls.h>
 #include <magenta/threads.h>
@@ -19,6 +18,7 @@
 
 #include <bcm/gpio.h>
 #include <bcm/bcm28xx.h>
+#include <bcm/ioctl.h>
 
 #include "i2c.h"
 
@@ -27,15 +27,13 @@
 
 typedef struct {
 
-    mx_device_t         device;
+    mx_device_t*        mxdev;
     mx_device_t*        parent;
     mx_driver_t*        driver;
     bcm_i2c_regs_t*     control_regs;
     uint32_t            dev_id;
 
 } bcm_i2c_t;
-
-#define dev_to_bcm_i2c(dev) containerof(dev, bcm_i2c_t, device)
 
 /* TODO - improve fifo read/write to be interrupt driven and capable of handling
             multiple transactions in a buffer at once.
@@ -110,7 +108,7 @@ static mx_status_t bcm_read_fifo(bcm_i2c_t* ctx, uint8_t* data, uint32_t len){
 
 static ssize_t i2cread(mx_device_t* dev, void* buf, size_t count, mx_off_t off) {
 
-    bcm_i2c_t* ctx = dev_to_bcm_i2c(dev);
+    bcm_i2c_t* ctx = dev->ctx;
     mx_status_t status = bcm_read_fifo(ctx,(uint8_t*)buf,(uint32_t)count);
     if (status == NO_ERROR) {
         return count;
@@ -121,7 +119,7 @@ static ssize_t i2cread(mx_device_t* dev, void* buf, size_t count, mx_off_t off) 
 
 static ssize_t i2cwrite(mx_device_t* dev, const void* buf, size_t count, mx_off_t off){
 
-    bcm_i2c_t* ctx = dev_to_bcm_i2c(dev);
+    bcm_i2c_t* ctx = dev->ctx;
 
     mx_status_t status = bcm_write_fifo(ctx,(uint8_t*)buf,(uint32_t)count);
 
@@ -180,7 +178,7 @@ static ssize_t bcm_i2c_ioctl(
     void* out_buf, size_t out_len) {
 
 
-    bcm_i2c_t* ctx = dev_to_bcm_i2c(dev);
+    bcm_i2c_t* ctx = dev->ctx;
     int ret;
 
     switch (op) {
@@ -247,8 +245,15 @@ static int i2c_bootstrap_thread(void *arg) {
     char id[5];
     snprintf(id,sizeof(id),"i2c%u",i2c_ctx->dev_id);
 
-    device_init(&i2c_ctx->device, i2c_ctx->driver, id, &i2c_device_proto);
-    status = device_add(&i2c_ctx->device, i2c_ctx->parent);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = id,
+        .ctx = i2c_ctx,
+        .driver = i2c_ctx->driver,
+        .ops = &i2c_device_proto,
+    };
+
+    status = device_add2(i2c_ctx->parent, &args, &i2c_ctx->mxdev);
 
     if (status == NO_ERROR) return 0;
 
@@ -320,14 +325,13 @@ static mx_status_t i2c_bind(mx_driver_t* driver, mx_device_t* parent, void** coo
     return ret;
 }
 
-mx_driver_t _driver_bcm_i2c = {
-    .ops = {
-        .bind = i2c_bind,
-    },
+static mx_driver_ops_t bcm_i2c_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = i2c_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_bcm_i2c, "bcm-i2c", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(bcm_i2c, bcm_i2c_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
     BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
     BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_I2C),
-MAGENTA_DRIVER_END(_driver_bcm_i2c)
+MAGENTA_DRIVER_END(bcm_i2c)

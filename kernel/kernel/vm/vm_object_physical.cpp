@@ -4,7 +4,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include "kernel/vm/vm_object.h"
+#include "kernel/vm/vm_object_physical.h"
 
 #include "vm_priv.h"
 
@@ -54,6 +54,7 @@ mxtl::RefPtr<VmObject> VmObjectPhysical::Create(paddr_t base, uint64_t size) {
 void VmObjectPhysical::Dump(uint depth, bool verbose) {
     canary_.Assert();
 
+    AutoLock a(&lock_);
     for (uint i = 0; i < depth; ++i) {
         printf("  ");
     }
@@ -61,7 +62,7 @@ void VmObjectPhysical::Dump(uint depth, bool verbose) {
 }
 
 // get the physical address of a page at offset
-status_t VmObjectPhysical::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t** _page, paddr_t* _pa) TA_REQ(lock_) {
+status_t VmObjectPhysical::GetPageLocked(uint64_t offset, uint pf_flags, vm_page_t** _page, paddr_t* _pa) {
     canary_.Assert();
 
     if (_page)

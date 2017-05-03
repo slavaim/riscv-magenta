@@ -26,23 +26,35 @@ static mx_protocol_device_t null_device_proto = {
     .write = null_write,
 };
 
-// implement driver object:
 
-mx_status_t null_init(mx_driver_t* driver) {
+mx_status_t null_bind(mx_driver_t* drv, mx_device_t* parent, void** cookie) {
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "null",
+        .driver = drv,
+        .ops = &null_device_proto,
+    };
+
     mx_device_t* dev;
-    if (device_create(&dev, driver, "null", &null_device_proto) == NO_ERROR) {
-        if (device_add(dev, driver_get_root_device()) < 0) {
-            free(dev);
-        }
-    }
-    return NO_ERROR;
+    return device_add2(parent, &args, &dev);
 }
 
-mx_driver_t _driver_null = {
-    .ops = {
-        .init = null_init,
-    },
+#if !DEVHOST_V2
+mx_status_t null_init(mx_driver_t* drv) {
+    return null_bind(drv, driver_get_root_device(), NULL);
+}
+#endif
+
+mx_driver_t _driver_null;
+
+static mx_driver_ops_t null_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+#if DEVHOST_V2
+    .bind = null_bind,
+#else
+    .init = null_init,
+#endif
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_null, "null", "magenta", "0.1", 0)
-MAGENTA_DRIVER_END(_driver_null)
+MAGENTA_DRIVER_BEGIN(null, null_driver_ops, "magenta", "0.1", 0)
+MAGENTA_DRIVER_END(null)

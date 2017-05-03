@@ -14,7 +14,6 @@
 #include <ddk/binding.h>
 #include <ddk/common/usb.h>
 #include <ddk/device.h>
-#include <ddk/protocol/bcm.h>
 #include <ddk/protocol/usb-bus.h>
 #include <ddk/protocol/usb-hci.h>
 #include <ddk/protocol/usb.h>
@@ -26,9 +25,8 @@
 
 // BCM28xx Specific Includes
 #include <bcm/bcm28xx.h>
+#include <bcm/ioctl.h>
 #include "bcm28xx/usb_dwc_regs.h"
-
-#define dev_to_usb_dwc(dev) containerof(dev, dwc_usb_t, device)
 
 #define NUM_HOST_CHANNELS 8
 #define PAGE_MASK_4K (0xFFF)
@@ -115,7 +113,7 @@ typedef struct dwc_usb_device {
 } dwc_usb_device_t;
 
 typedef struct dwc_usb {
-    mx_device_t device;
+    mx_device_t* mxdev;
     mx_device_t* bus_device;
     usb_bus_protocol_t* bus_protocol;
     mx_handle_t irq_handle;
@@ -519,7 +517,7 @@ static void dwc_iotxn_queue(mx_device_t* hci_device, iotxn_t* txn) {
     if (txn->length > dwc_get_max_transfer_size(hci_device, data->device_id, data->ep_address)) {
         iotxn_complete(txn, ERR_INVALID_ARGS, 0);
     } else {
-        dwc_usb_t* dwc = dev_to_usb_dwc(hci_device);
+        dwc_usb_t* dwc = hci_device->ctx;
         do_dwc_iotxn_queue(dwc, txn);
     }
 }
@@ -540,10 +538,10 @@ static mx_protocol_device_t dwc_device_proto = {
 };
 
 static void dwc_set_bus_device(mx_device_t* device, mx_device_t* busdev) {
-    dwc_usb_t* dwc = dev_to_usb_dwc(device);
+    dwc_usb_t* dwc = device->ctx;
     dwc->bus_device = busdev;
     if (busdev) {
-        device_get_protocol(busdev, MX_PROTOCOL_USB_BUS,
+        device_op_get_protocol(busdev, MX_PROTOCOL_USB_BUS,
                             (void**)&dwc->bus_protocol);
         dwc->bus_protocol->add_device(dwc->bus_device, ROOT_HUB_DEVICE_ID, 0,
                                       USB_SPEED_HIGH);
@@ -562,7 +560,7 @@ static mx_status_t dwc_enable_ep(mx_device_t* hci_device, uint32_t device_id,
     xprintf("dwc_enable_ep: device_id = %u, ep_addr = %u\n", device_id,
             ep_desc->bEndpointAddress);
 
-    dwc_usb_t* dwc = dev_to_usb_dwc(hci_device);
+    dwc_usb_t* dwc = hci_device->ctx;
 
     if (device_id == ROOT_HUB_DEVICE_ID) {
         // Nothing to be done for root hub.
@@ -620,7 +618,7 @@ mx_status_t dwc_hub_device_added(mx_device_t* hci_device, uint32_t hub_address, 
     printf("dwc usb device added hub_address = %u, port = %d, speed = %d\n",
            hub_address, port, speed);
 
-    dwc_usb_t* dwc = dev_to_usb_dwc(hci_device);
+    dwc_usb_t* dwc = hci_device->ctx;
 
     dwc_usb_device_t* new_device = &dwc->usb_devices[0];
     dwc_usb_endpoint_t* ep0 = NULL;
@@ -669,7 +667,7 @@ mx_status_t dwc_hub_device_added(mx_device_t* hci_device, uint32_t hub_address, 
     pdata->setup.wIndex = 0;
     pdata->setup.wLength = 8;
 
-    do_dwc_iotxn_queue(dwc, get_desc);
+    iotxn_queue(dwc->mxdev, get_desc);
     completion_wait(&completion, MX_TIME_INFINITE);
 
     usb_device_descriptor_t short_descriptor;
@@ -701,7 +699,7 @@ mx_status_t dwc_hub_device_added(mx_device_t* hci_device, uint32_t hub_address, 
     pdata->setup.wIndex = 0;
     pdata->setup.wLength = 0;
 
-    do_dwc_iotxn_queue(dwc, set_addr);
+    iotxn_queue(dwc->mxdev, set_addr);
     completion_wait(&completion, MX_TIME_INFINITE);
 
     mx_nanosleep(mx_deadline_after(MX_MSEC(10)));
@@ -814,11 +812,11 @@ static void dwc_handle_irq(dwc_usb_t* dwc) {
         }
 
         if (hw_status.connected_changed)
-            dwc->root_port_status.wPortChange |= USB_PORT_CONNECTION;
+            dwc->root_port_status.wPortChange |= USB_C_PORT_CONNECTION;
         if (hw_status.enabled_changed)
-            dwc->root_port_status.wPortChange |= USB_PORT_ENABLE;
+            dwc->root_port_status.wPortChange |= USB_C_PORT_ENABLE;
         if (hw_status.overcurrent_changed)
-            dwc->root_port_status.wPortChange |= USB_PORT_OVER_CURRENT;
+            dwc->root_port_status.wPortChange |= USB_C_PORT_OVER_CURRENT;
 
         mtx_unlock(&dwc->rh_status_mtx);
 
@@ -851,9 +849,6 @@ static void dwc_handle_irq(dwc_usb_t* dwc) {
 // Thread to handle interrupts.
 static int dwc_irq_thread(void* arg) {
     dwc_usb_t* dwc = (dwc_usb_t*)arg;
-
-    device_add(&dwc->device, dwc->parent);
-    dwc->parent = NULL;
 
     while (1) {
         mx_status_t wait_res;
@@ -977,19 +972,19 @@ static void dwc_process_root_hub_class_req(dwc_usb_transfer_request_t* req,
         uint16_t* change_bits = &(dwc->root_port_status.wPortChange);
         switch (value) {
         case USB_FEATURE_C_PORT_CONNECTION:
-            *change_bits &= ~USB_PORT_CONNECTION;
+            *change_bits &= ~USB_C_PORT_CONNECTION;
             break;
         case USB_FEATURE_C_PORT_ENABLE:
-            *change_bits &= ~USB_PORT_ENABLE;
+            *change_bits &= ~USB_C_PORT_ENABLE;
             break;
         case USB_FEATURE_C_PORT_SUSPEND:
             *change_bits &= ~USB_PORT_SUSPEND;
             break;
         case USB_FEATURE_C_PORT_OVER_CURRENT:
-            *change_bits &= ~USB_PORT_OVER_CURRENT;
+            *change_bits &= ~USB_C_PORT_OVER_CURRENT;
             break;
         case USB_FEATURE_C_PORT_RESET:
-            *change_bits &= ~USB_PORT_RESET;
+            *change_bits &= ~USB_C_PORT_RESET;
             break;
         }
         mtx_unlock(&dwc->rh_status_mtx);
@@ -1759,11 +1754,6 @@ static mx_status_t usb_dwc_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
         goto error_return;
     }
 
-    device_init(&usb_dwc->device, drv, "bcm-usb-dwc", &dwc_device_proto);
-
-    usb_dwc->device.protocol_id = MX_PROTOCOL_USB_HCI;
-    usb_dwc->device.protocol_ops = &dwc_hci_protocol;
-
     // Initialize all the channel completions.
     for (size_t i = 0; i < NUM_HOST_CHANNELS; i++) {
         usb_dwc->channel_complete[i] = COMPLETION_INIT;
@@ -1779,6 +1769,21 @@ static mx_status_t usb_dwc_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
         goto error_return;
     }
 
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "bcm-usb-dwc",
+        .ctx = usb_dwc,
+        .driver = drv,
+        .ops = &dwc_device_proto,
+        .proto_id = MX_PROTOCOL_USB_HCI,
+        .proto_ops = &dwc_hci_protocol,
+    };
+
+    if ((st = device_add2(dev, &args, &usb_dwc->mxdev)) != NO_ERROR) {
+        free(usb_dwc);
+        return st;
+    }
+
     // Thread that responds to requests for the root hub.
     thrd_t root_hub_txn_worker;
     thrd_create_with_name(&root_hub_txn_worker, dwc_root_hub_txn_worker,
@@ -1792,6 +1797,7 @@ static mx_status_t usb_dwc_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
 
     xprintf("usb_dwc_bind success!\n");
     return NO_ERROR;
+
 error_return:
     if (usb_dwc)
         free(usb_dwc);
@@ -1799,16 +1805,15 @@ error_return:
     return st;
 }
 
-mx_driver_t _driver_usb_dwc = {
-    .ops = {
-        .bind = usb_dwc_bind,
-    },
+static mx_driver_ops_t usb_dwc_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = usb_dwc_bind,
 };
 
 // The formatter does not play nice with these macros.
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_usb_dwc, "bcm-usb-dwc", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(bcm_usb_dwc, usb_dwc_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
     BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_MAILBOX),
-MAGENTA_DRIVER_END(_driver_usb_dwc)
+MAGENTA_DRIVER_END(bcm_usb_dwc)
 // clang-format on

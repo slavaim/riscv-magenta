@@ -152,6 +152,11 @@ static bool read_exception(mx_handle_t eport, mx_exception_packet_t* packet)
 {
     ASSERT_EQ(mx_port_wait(eport, MX_TIME_INFINITE, packet, sizeof(*packet)), NO_ERROR, "mx_port_wait failed");
     ASSERT_EQ(packet->hdr.key, 0u, "bad report key");
+    const mx_exception_report_t* report = &packet->report;
+    unittest_printf("exception received: pid %"
+                    PRIu64 ", tid %" PRIu64 ", type %d\n",
+                    report->context.pid, report->context.tid,
+                    report->header.type);
     return true;
 }
 
@@ -168,11 +173,6 @@ static bool verify_exception(const mx_exception_packet_t* packet,
                              mx_koid_t* tid)
 {
     const mx_exception_report_t* report = &packet->report;
-
-    unittest_printf("%s: exception received: pid %"
-                    PRIu64 ", tid %" PRIu64 ", kind %d\n",
-                    kind, report->context.pid, report->context.tid,
-                    report->header.type);
 
     EXPECT_EQ(report->header.type, expected_type, "unexpected exception type");
 
@@ -367,7 +367,7 @@ static int thread_func(void* arg)
 static void __NO_RETURN test_child(void)
 {
     unittest_printf("Test child starting.\n");
-    mx_handle_t channel = mx_get_startup_handle(MX_HND_TYPE_USER0);
+    mx_handle_t channel = mx_get_startup_handle(PA_USER0);
     if (channel == MX_HANDLE_INVALID)
         tu_fatal("mx_get_startup_handle", ERR_BAD_HANDLE - 1000);
     msg_loop(channel);
@@ -393,7 +393,7 @@ static launchpad_t* setup_test_child(const char* arg, mx_handle_t* out_channel)
     };
     int argc = countof(argv) - (arg == NULL);
     mx_handle_t handles[1] = { their_channel };
-    uint32_t handle_ids[1] = { MX_HND_TYPE_USER0 };
+    uint32_t handle_ids[1] = { PA_USER0 };
     *out_channel = our_channel;
     launchpad_t* lp = tu_launch_mxio_init(test_child_name, argc, argv, NULL, 1, handles, handle_ids);
     unittest_printf("Test child setup.\n");
@@ -425,7 +425,7 @@ static int watchdog_thread_func(void* arg)
         if (atomic_load(&done_tests))
             return 0;
     }
-    unittest_printf("WATCHDOG TIMER FIRED\n");
+    unittest_printf_critical("\n\n*** WATCHDOG TIMER FIRED ***\n");
     // This should *cleanly* kill the entire process, not just this thread.
     exit(5);
 }
@@ -1098,6 +1098,7 @@ static bool unbind_rebind_while_stopped_test(void)
     status = mx_object_get_info(thread, MX_INFO_THREAD, &info, sizeof(info), NULL, NULL);
     if (status < 0)
         tu_fatal("mx_object_get_info(MX_INFO_THREAD)", status);
+    EXPECT_EQ(info.state, MX_THREAD_STATE_BLOCKED, "unexpected thread state");
     EXPECT_EQ(info.wait_exception_port_type, MX_EXCEPTION_PORT_TYPE_DEBUGGER, "wrong exception port type");
 
     // Verify exception report matches current exception.
@@ -1124,6 +1125,7 @@ static bool unbind_rebind_while_stopped_test(void)
     status = mx_object_get_info(thread, MX_INFO_THREAD, &info, sizeof(info), NULL, NULL);
     if (status < 0)
         tu_fatal("mx_object_get_info(MX_INFO_THREAD)", status);
+    EXPECT_EQ(info.state, MX_THREAD_STATE_DEAD, "unexpected thread state");
     EXPECT_EQ(info.wait_exception_port_type, MX_EXCEPTION_PORT_TYPE_NONE, "wrong exception port type at thread exit");
 
     tu_handle_close(thread);

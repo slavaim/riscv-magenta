@@ -28,30 +28,9 @@
 
 #define MXDEBUG 0
 
-mtx_t vfs_lock = MTX_INIT;
-
-mxio_dispatcher_t* vfs_dispatcher;
-
 namespace memfs {
 
 static VnodeMemfs* global_vfs_root;
-
-mx_status_t VnodeDevice::GetHandles(uint32_t flags, mx_handle_t* hnds,
-                                    uint32_t* type, void* extra, uint32_t* esize) {
-    if (IsDevice() && !(flags & O_DIRECTORY)) {
-        *type = 0;
-        hnds[0] = remote_;
-        return 1;
-    } else {
-        return VnodeMemfs::GetHandles(flags, hnds, type, extra, esize);
-    }
-}
-
-mx_status_t VnodeMemfs::GetHandles(uint32_t flags, mx_handle_t* hnds, uint32_t* type, void* extra,
-                                   uint32_t* esize) {
-    // local vnode or device as a directory, we will create the handles
-    return Serve(flags, hnds, type);
-}
 
 VnodeWatcher::VnodeWatcher() : h(MX_HANDLE_INVALID) {}
 
@@ -103,29 +82,24 @@ mx_status_t VnodeDir::IoctlWatchDir(const void* in_buf, size_t in_len, void* out
 // The following functions exist outside the memfs namespace so they
 // can be exposed to C:
 
-static volatile int vfs_txn = -1;
-static int vfs_txn_no = 0;
-
-mx_status_t vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) {
-    vfs_txn_no = (vfs_txn_no + 1) & 0x0FFFFFFF;
-    vfs_txn = vfs_txn_no;
-    mx_status_t r = vfs_handler_generic(msg, rh, cookie);
-    vfs_txn = -1;
-    return r;
-}
-
 // Acquire the root vnode and return a handle to it through the VFS dispatcher
 mx_handle_t vfs_create_root_handle(VnodeMemfs* vn) {
     mx_status_t r;
     if ((r = vn->Open(O_DIRECTORY)) < 0) {
         return r;
     }
-    mx_handle_t h;
-    uint32_t type;
-    if ((r = vn->Serve(0, &h, &type)) < 0) {
+    mx_handle_t h1, h2;
+    if ((r = mx_channel_create(0, &h1, &h2)) < 0) {
+        vn->Close();
         return r;
     }
-    return h;
+
+    if ((r = vn->Serve(h1, 0)) < 0) { // Consumes 'h1'
+        vn->Close();
+        mx_handle_close(h2);
+        return r;
+    }
+    return h2;
 }
 
 // Initialize the global root VFS node and dispatcher

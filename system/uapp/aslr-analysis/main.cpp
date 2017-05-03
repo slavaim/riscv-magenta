@@ -180,7 +180,7 @@ int GatherReports(const char* test_bin, mxtl::Array<ReportInfo>* reports) {
         ReportInfo* report = &(*reports)[run];
 
         uint32_t len = sizeof(*report);
-        status = mx_channel_read(handles[0], 0, report, len, &len, NULL, 0, NULL);
+        status = mx_channel_read(handles[0], 0, report, NULL, len, 0, &len, NULL);
         if (status != 0 || len != sizeof(*report)) {
             printf("Failed to read report: status %d, len %u\n", status, len);
             mx_handle_close(handles[0]);
@@ -194,7 +194,7 @@ int GatherReports(const char* test_bin, mxtl::Array<ReportInfo>* reports) {
 
 int TestRunMain(int argc, char** argv) {
     mx_handle_t report_pipe =
-        mx_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER1, 0));
+        mx_get_startup_handle(PA_HND(PA_USER1, 0));
 
     ReportInfo report;
 
@@ -230,7 +230,7 @@ mx_handle_t LaunchTestRun(const char* bin, mx_handle_t h) {
         return status;
     }
 
-    ids[0] = MX_HND_TYPE_USER1;
+    ids[0] = PA_USER1;
     hnd[0] = h;
     launchpad_create(job, "testrun", &lp);
     launchpad_load_from_file(lp, bin);

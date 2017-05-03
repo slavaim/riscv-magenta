@@ -8,10 +8,11 @@
 
 #include <arch/mmu.h>
 #include <assert.h>
-#include <lib/crypto/prng.h>
 #include <kernel/mutex.h>
 #include <kernel/vm.h>
 #include <kernel/vm/vm_address_region.h>
+#include <lib/crypto/prng.h>
+#include <mxtl/canary.h>
 #include <mxtl/intrusive_double_list.h>
 #include <mxtl/intrusive_wavl_tree.h>
 #include <mxtl/macros.h>
@@ -32,13 +33,13 @@ public:
     void Rename(const char* name);
 
     // flags
-    static const uint32_t TYPE_USER = VMM_ASPACE_TYPE_USER;
-    static const uint32_t TYPE_KERNEL = VMM_ASPACE_TYPE_KERNEL;
+    static const uint32_t TYPE_USER       = (0 << 0);
+    static const uint32_t TYPE_KERNEL     = (1 << 0);
     // You probably do not want to use LOW_KERNEL.  It is primarily
     // used for SMP bootstrap to allow mappings of very low memory using
     // the standard VMM subsystem.
-    static const uint32_t TYPE_LOW_KERNEL = VMM_ASPACE_TYPE_LOW_KERNEL;
-    static const uint32_t TYPE_MASK = VMM_ASPACE_TYPE_MASK;
+    static const uint32_t TYPE_LOW_KERNEL = (2 << 0);
+    static const uint32_t TYPE_MASK       = (3 << 0);
 
     // simple accessors
     vaddr_t base() const { return base_; }
@@ -94,18 +95,21 @@ public:
     // These all assume a flat VMAR structure in which all VMOs are mapped
     // as children of the root.  They will all assert if used on user aspaces
     // TODO(teisenbe): remove uses of these in favor of new VMAR interfaces
-    status_t MapObject(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset, size_t size,
-                       void** ptr, uint8_t align_pow2, size_t min_alloc_gap, uint vmm_flags,
-                       uint arch_mmu_flags);
     status_t ReserveSpace(const char* name, size_t size, vaddr_t vaddr);
     status_t AllocPhysical(const char* name, size_t size, void** ptr, uint8_t align_pow2,
-                           size_t min_alloc_gap, paddr_t paddr, uint vmm_flags,
+                           paddr_t paddr, uint vmm_flags,
                            uint arch_mmu_flags);
     status_t AllocContiguous(const char* name, size_t size, void** ptr, uint8_t align_pow2,
-                             size_t min_alloc_gap, uint vmm_flags, uint arch_mmu_flags);
+                             uint vmm_flags, uint arch_mmu_flags);
     status_t Alloc(const char* name, size_t size, void** ptr, uint8_t align_pow2,
-                   size_t min_alloc_gap, uint vmm_flags, uint arch_mmu_flags);
+                   uint vmm_flags, uint arch_mmu_flags);
     status_t FreeRegion(vaddr_t va);
+
+    // Internal use function for mapping VMOs.  Do not use.  This is exposed in
+    // the public API purely for tests.
+    status_t MapObjectInternal(mxtl::RefPtr<VmObject> vmo, const char* name, uint64_t offset,
+                               size_t size, void** ptr, uint8_t align_pow2, uint vmm_flags,
+                               uint arch_mmu_flags);
 
 protected:
     // Share the aspace lock with VmAddressRegion/VmMapping so they can serialize
@@ -116,7 +120,10 @@ protected:
     mutex_t* lock() { return &lock_; }
 
     // Expose the PRNG for ASLR to VmAddressRegion
-    crypto::PRNG& AslrPrng() { DEBUG_ASSERT(aslr_enabled_); return aslr_prng_; }
+    crypto::PRNG& AslrPrng() {
+        DEBUG_ASSERT(aslr_enabled_);
+        return aslr_prng_;
+    }
 
 private:
     // can only be constructed via factory
@@ -124,10 +131,9 @@ private:
 
     DISALLOW_COPY_ASSIGN_AND_MOVE(VmAspace);
 
-    // private destructor that can only be used from the ref ptr or vmm_free_aspace
+    // private destructor that can only be used from the ref ptr
     ~VmAspace();
     friend mxtl::RefPtr<VmAspace>;
-    friend status_t vmm_free_aspace(vmm_aspace_t* _aspace);
 
     // internal page fault routine, friended to be only called by vmm_page_fault_handler
     status_t PageFault(vaddr_t va, uint flags);
@@ -136,8 +142,7 @@ private:
     void InitializeAslr();
 
     // magic
-    static const uint32_t MAGIC = 0x564d4153; // VMAS
-    uint32_t magic_ = MAGIC;
+    mxtl::Canary<mxtl::magic("VMAS")> canary_;
 
     // members
     vaddr_t base_;

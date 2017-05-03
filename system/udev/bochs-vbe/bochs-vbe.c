@@ -31,7 +31,7 @@
 #endif
 
 typedef struct bochs_vbe_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
 
     void* regs;
     uint64_t regs_size;
@@ -43,8 +43,6 @@ typedef struct bochs_vbe_device {
 
     mx_display_info_t info;
 } bochs_vbe_device_t;
-
-#define get_bochs_vbe_device(dev) containerof(dev, bochs_vbe_device_t, device)
 
 #define bochs_vbe_dispi_read(base, reg) pcie_read16(base + (0x500 + (reg << 1)))
 #define bochs_vbe_dispi_write(base, reg, val) pcie_write16(base + (0x500 + (reg << 1)), val)
@@ -134,7 +132,7 @@ static void set_hw_mode(bochs_vbe_device_t* dev) {
 
 static mx_status_t bochs_vbe_set_mode(mx_device_t* dev, mx_display_info_t* info) {
     assert(info);
-    bochs_vbe_device_t* vdev = get_bochs_vbe_device(dev);
+    bochs_vbe_device_t* vdev = dev->ctx;
     memcpy(&vdev->info, info, sizeof(mx_display_info_t));
     set_hw_mode(vdev);
     return NO_ERROR;
@@ -142,14 +140,14 @@ static mx_status_t bochs_vbe_set_mode(mx_device_t* dev, mx_display_info_t* info)
 
 static mx_status_t bochs_vbe_get_mode(mx_device_t* dev, mx_display_info_t* info) {
     assert(info);
-    bochs_vbe_device_t* vdev = get_bochs_vbe_device(dev);
+    bochs_vbe_device_t* vdev = dev->ctx;
     memcpy(info, &vdev->info, sizeof(mx_display_info_t));
     return NO_ERROR;
 }
 
 static mx_status_t bochs_vbe_get_framebuffer(mx_device_t* dev, void** framebuffer) {
     assert(framebuffer);
-    bochs_vbe_device_t* vdev = get_bochs_vbe_device(dev);
+    bochs_vbe_device_t* vdev = dev->ctx;
     (*framebuffer) = vdev->framebuffer;
     return NO_ERROR;
 }
@@ -163,7 +161,7 @@ static mx_display_protocol_t bochs_vbe_display_proto = {
 // implement device protocol
 
 static mx_status_t bochs_vbe_release(mx_device_t* dev) {
-    bochs_vbe_device_t* vdev = get_bochs_vbe_device(dev);
+    bochs_vbe_device_t* vdev = dev->ctx;
 
     if (vdev->regs) {
         mx_handle_close(vdev->regs_handle);
@@ -174,6 +172,8 @@ static mx_status_t bochs_vbe_release(mx_device_t* dev) {
         mx_handle_close(vdev->framebuffer_handle);
         vdev->framebuffer_handle = -1;
     }
+
+    free(vdev);
 
     return NO_ERROR;
 }
@@ -188,7 +188,7 @@ static mx_status_t bochs_vbe_bind(mx_driver_t* drv, mx_device_t* dev, void** coo
     pci_protocol_t* pci;
     mx_status_t status;
 
-    if (device_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
+    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
         return ERR_NOT_SUPPORTED;
 
     status = pci->claim_device(dev);
@@ -217,38 +217,46 @@ static mx_status_t bochs_vbe_bind(mx_driver_t* drv, mx_device_t* dev, void** coo
         goto fail;
     }
 
-    // create and add the display (char) device
-    device_init(&device->device, drv, "bochs_vbe", &bochs_vbe_device_proto);
-
-    device->device.protocol_id = MX_PROTOCOL_DISPLAY;
-    device->device.protocol_ops = &bochs_vbe_display_proto;
-
     device->info.format = MX_PIXEL_FORMAT_RGB_565;
     device->info.width = 1024;
     device->info.height = 768;
     device->info.stride = 1024;
     set_hw_mode(device);
 
-    device_add(&device->device, dev);
+    // create and add the display (char) device
+   device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "bochs_vbe",
+        .ctx = device,
+        .driver = drv,
+        .ops = &bochs_vbe_device_proto,
+        .proto_id = MX_PROTOCOL_DISPLAY,
+        .proto_ops = &bochs_vbe_display_proto,
+    };
+
+    status = device_add2(dev, &args, &device->mxdev);
+    if (status != NO_ERROR) {
+        goto fail;
+    }
 
     xprintf("initialized bochs_vbe display driver, reg=0x%x regsize=0x%x fb=0x%x fbsize=0x%x\n",
             device->regs, device->regs_size, device->framebuffer, device->framebuffer_size);
 
     return NO_ERROR;
+
 fail:
     free(device);
     return status;
 }
 
-mx_driver_t _driver_bochs_vbe = {
-    .ops = {
-        .bind = bochs_vbe_bind,
-    },
+static mx_driver_ops_t bochs_vbe_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = bochs_vbe_bind,
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_bochs_vbe, "bochs-vbe", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(bochs_vbe, bochs_vbe_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_VID, QEMU_VGA_VID),
     BI_MATCH_IF(EQ, BIND_PCI_DID, QEMU_VGA_DID),
-MAGENTA_DRIVER_END(_driver_bochs_vbe)
+MAGENTA_DRIVER_END(bochs_vbe)

@@ -25,9 +25,6 @@
 #define CTRL_S CTRL_('S')
 #define CTRL_Z CTRL_('Z')
 
-#define ps_from_dev(d) containerof(d, pty_server_t, dev)
-#define pc_from_dev(d) containerof(d, pty_client_t, dev)
-
 #define PTY_CLI_RAW_MODE    (0x00000001u)
 
 #define PTY_CLI_CONTROL     (0x00010000u)
@@ -35,7 +32,7 @@
 #define PTY_CLI_PEER_CLOSED (0x00040000u)
 
 struct pty_client {
-    mx_device_t dev;
+    mx_device_t* mxdev;
     pty_server_t* srv;
     uint32_t id;
     uint32_t flags;
@@ -50,17 +47,17 @@ static mx_status_t pty_openat(pty_server_t* ps, mx_device_t** out, uint32_t id, 
 // pty client device operations
 
 static ssize_t pty_client_read(mx_device_t* dev, void* buf, size_t count, mx_off_t off) {
-    pty_client_t* pc = pc_from_dev(dev);
+    pty_client_t* pc = dev->ctx;
     pty_server_t* ps = pc->srv;
 
     mtx_lock(&ps->lock);
     bool was_full = pty_fifo_is_full(&pc->fifo);
     size_t actual = pty_fifo_read(&pc->fifo, buf, count);
     if (pty_fifo_is_empty(&pc->fifo)) {
-        device_state_clr(&pc->dev, DEV_STATE_READABLE);
+        device_state_clr(pc->mxdev, DEV_STATE_READABLE);
     }
     if (was_full && actual) {
-        device_state_set(&ps->dev, DEV_STATE_WRITABLE);
+        device_state_set(ps->mxdev, DEV_STATE_WRITABLE);
     }
     mtx_unlock(&ps->lock);
 
@@ -72,7 +69,7 @@ static ssize_t pty_client_read(mx_device_t* dev, void* buf, size_t count, mx_off
 }
 
 static ssize_t pty_client_write(mx_device_t* dev, const void* buf, size_t count, mx_off_t off) {
-    pty_client_t* pc = pc_from_dev(dev);
+    pty_client_t* pc = dev->ctx;
     pty_server_t* ps = pc->srv;
 
     ssize_t r;
@@ -84,7 +81,7 @@ static ssize_t pty_client_write(mx_device_t* dev, const void* buf, size_t count,
         if (r == NO_ERROR) {
             r = actual;
         } else if (r == ERR_SHOULD_WAIT) {
-            device_state_clr(&pc->dev, DEV_STATE_WRITABLE);
+            device_state_clr(pc->mxdev, DEV_STATE_WRITABLE);
         }
     } else {
         r = (pc->flags & PTY_CLI_PEER_CLOSED) ? ERR_PEER_CLOSED : ERR_SHOULD_WAIT;
@@ -102,15 +99,15 @@ static void pty_make_active_locked(pty_server_t* ps, pty_client_t* pc) {
     if (ps->active != pc) {
         if (ps->active) {
             ps->active->flags &= (~PTY_CLI_ACTIVE);
-            device_state_clr(&ps->active->dev, DEV_STATE_WRITABLE);
+            device_state_clr(ps->active->mxdev, DEV_STATE_WRITABLE);
         }
         ps->active = pc;
         pc->flags |= PTY_CLI_ACTIVE;
-        device_state_set(&pc->dev, DEV_STATE_WRITABLE);
+        device_state_set(pc->mxdev, DEV_STATE_WRITABLE);
         if (pty_fifo_is_full(&pc->fifo)) {
-            device_state_set_clr(&ps->dev, 0, DEV_STATE_WRITABLE | DEV_STATE_HANGUP);
+            device_state_set_clr(ps->mxdev, 0, DEV_STATE_WRITABLE | DEV_STATE_HANGUP);
         } else {
-            device_state_set_clr(&ps->dev, DEV_STATE_WRITABLE, DEV_STATE_HANGUP);
+            device_state_set_clr(ps->mxdev, DEV_STATE_WRITABLE, DEV_STATE_HANGUP);
         }
     }
 }
@@ -128,14 +125,14 @@ static void pty_adjust_signals_locked(pty_client_t* pc) {
     } else {
         set = DEV_STATE_READABLE;
     }
-    device_state_set_clr(&pc->dev, set, clr);
+    device_state_set_clr(pc->mxdev, set, clr);
 }
 
 
 static ssize_t pty_client_ioctl(mx_device_t* dev, uint32_t op,
                                 const void* in_buf, size_t in_len,
                                 void* out_buf, size_t out_len) {
-    pty_client_t* pc = pc_from_dev(dev);
+    pty_client_t* pc = dev->ctx;
     pty_server_t* ps = pc->srv;
 
     switch (op) {
@@ -196,7 +193,7 @@ static ssize_t pty_client_ioctl(mx_device_t* dev, uint32_t op,
             events |= PTY_EVENT_HANGUP;
         }
         *((uint32_t*) out_buf) = events;
-        device_state_clr(&pc->dev, PTY_SIGNAL_EVENT);
+        device_state_clr(pc->mxdev, PTY_SIGNAL_EVENT);
         mtx_unlock(&ps->lock);
         return sizeof(uint32_t);
     }
@@ -210,7 +207,7 @@ static ssize_t pty_client_ioctl(mx_device_t* dev, uint32_t op,
 }
 
 static mx_status_t pty_client_release(mx_device_t* dev) {
-    pty_client_t* pc = pc_from_dev(dev);
+    pty_client_t* pc = dev->ctx;
     pty_server_t* ps = pc->srv;
 
     mtx_lock(&ps->lock);
@@ -226,13 +223,13 @@ static mx_status_t pty_client_release(mx_device_t* dev) {
     if (ps->active == pc) {
         // signal controlling client as well, if there is one
         if (ps->control) {
-            device_state_set(&ps->control->dev, PTY_SIGNAL_EVENT | DEV_STATE_HANGUP);
+            device_state_set(ps->control->mxdev, PTY_SIGNAL_EVENT | DEV_STATE_HANGUP);
         }
         ps->active = NULL;
     }
     // signal server, if the last client has gone away
     if (list_is_empty(&ps->clients)) {
-        device_state_set_clr(&ps->dev, DEV_STATE_HANGUP, DEV_STATE_WRITABLE);
+        device_state_set_clr(ps->mxdev, DEV_STATE_HANGUP, DEV_STATE_WRITABLE);
     }
     mtx_unlock(&ps->lock);
 
@@ -252,7 +249,7 @@ static mx_status_t pty_client_release(mx_device_t* dev) {
 }
 
 mx_status_t pty_client_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
-    pty_client_t* pc = pc_from_dev(dev);
+    pty_client_t* pc = dev->ctx;
     pty_server_t* ps = pc->srv;
     uint32_t id = strtoul(path, NULL, 0);
     // only controlling clients may create additional clients
@@ -287,7 +284,7 @@ static mx_status_t pty_openat(pty_server_t* ps, mx_device_t** out, uint32_t id, 
     pc->flags = 0;
     pc->fifo.head = 0;
     pc->fifo.tail = 0;
-    device_init(&pc->dev, NULL, "pty", &pc_ops);
+    mx_status_t status;
 
     mtx_lock(&ps->lock);
     // require that client ID is unique
@@ -299,11 +296,26 @@ static mx_status_t pty_openat(pty_server_t* ps, mx_device_t** out, uint32_t id, 
             return ERR_INVALID_ARGS;
         }
     }
-
-    // success: add new client to clients list, etc
     list_add_tail(&ps->clients, &pc->node);
+    mtx_unlock(&ps->lock);
+
     pc->srv = ps;
     ps->refcount++;
+
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "pty",
+        .ctx = pc,
+        .ops = &pc_ops,
+        .flags = DEVICE_ADD_INSTANCE,
+    };
+
+    status = device_add2(ps->mxdev, &args, &pc->mxdev);
+    if (status < 0) {
+        pty_client_release(pc->mxdev);
+        return status;
+    }
+
     if (ps->active == NULL) {
         pty_make_active_locked(ps, pc);
     }
@@ -311,21 +323,14 @@ static mx_status_t pty_openat(pty_server_t* ps, mx_device_t** out, uint32_t id, 
         ps->control = pc;
         pc->flags |= PTY_CLI_CONTROL;
     }
-    mtx_unlock(&ps->lock);
-
+ 
     xprintf("pty cli %p (id=%u) created (srv %p)\n", pc, pc->id, ps);
-
-    mx_status_t status = device_add_instance(&pc->dev, &ps->dev);
-    if (status < 0) {
-        pty_client_release(&pc->dev);
-        return status;
-    }
 
     mtx_lock(&ps->lock);
     pty_adjust_signals_locked(pc);
     mtx_unlock(&ps->lock);
 
-    *out = &pc->dev;
+    *out = pc->mxdev;
     return NO_ERROR;
 }
 
@@ -334,7 +339,7 @@ static mx_status_t pty_openat(pty_server_t* ps, mx_device_t** out, uint32_t id, 
 
 void pty_server_resume_locked(pty_server_t* ps) {
     if (ps->active) {
-        device_state_set(&ps->active->dev, DEV_STATE_WRITABLE);
+        device_state_set(ps->active->mxdev, DEV_STATE_WRITABLE);
     }
 }
 
@@ -368,16 +373,16 @@ mx_status_t pty_server_send(pty_server_t* ps, const void* data, size_t len, bool
                 ps->events |= evt;
                 xprintf("pty cli %p evt %x\n", pc, evt);
                 if (ps->control) {
-                    device_state_set(&ps->control->dev, PTY_SIGNAL_EVENT);
+                    device_state_set(ps->control->mxdev, PTY_SIGNAL_EVENT);
                 }
             }
             *actual = r;
         }
         if (was_empty && *actual) {
-            device_state_set(&pc->dev, DEV_STATE_READABLE);
+            device_state_set(pc->mxdev, DEV_STATE_READABLE);
         }
         if (pty_fifo_is_full(&pc->fifo)) {
-            device_state_clr(&ps->dev, DEV_STATE_WRITABLE);
+            device_state_clr(ps->mxdev, DEV_STATE_WRITABLE);
         }
         status = NO_ERROR;
     } else {
@@ -397,20 +402,20 @@ void pty_server_set_window_size(pty_server_t* ps, uint32_t w, uint32_t h) {
 }
 
 mx_status_t pty_server_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
-    pty_server_t* ps = ps_from_dev(dev);
+    pty_server_t* ps = dev->ctx;
     uint32_t id = strtoul(path, NULL, 0);
     return pty_openat(ps, out, id, flags);
 }
 
 mx_status_t pty_server_release(mx_device_t* dev) {
-    pty_server_t* ps = ps_from_dev(dev);
+    pty_server_t* ps = dev->ctx;
 
     mtx_lock(&ps->lock);
     // inform clients that server is gone
     pty_client_t* pc;
     list_for_every_entry(&ps->clients, pc, pty_client_t, node) {
         pc->flags = (pc->flags & (~PTY_CLI_ACTIVE)) | PTY_CLI_PEER_CLOSED;
-        device_state_set(&pc->dev, DEV_STATE_HANGUP);
+        device_state_set(pc->mxdev, DEV_STATE_HANGUP);
     }
     int32_t refcount = --ps->refcount;
     mtx_unlock(&ps->lock);

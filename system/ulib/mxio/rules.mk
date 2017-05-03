@@ -14,15 +14,19 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/dispatcher.c \
     $(LOCAL_DIR)/epoll.c \
     $(LOCAL_DIR)/logger.c \
+    $(LOCAL_DIR)/namespace.c \
     $(LOCAL_DIR)/null.c \
     $(LOCAL_DIR)/pipe.c \
     $(LOCAL_DIR)/vmofile.c \
     $(LOCAL_DIR)/remoteio.c \
+    $(LOCAL_DIR)/remotesocket.c \
     $(LOCAL_DIR)/unistd.c \
+    $(LOCAL_DIR)/service.c \
     $(LOCAL_DIR)/stubs.c \
     $(LOCAL_DIR)/loader-service.c \
     $(LOCAL_DIR)/waitable.c \
     $(LOCAL_DIR)/watcher.c \
+    $(LOCAL_DIR)/get-vmo.c \
 
 MODULE_EXPORT := so
 

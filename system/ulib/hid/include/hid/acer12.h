@@ -5,11 +5,12 @@
 #pragma once
 
 #include <magenta/compiler.h>
+#include <magenta/types.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 __BEGIN_CDECLS
 
-#define ACER12_RPT_DESC_LEN 660
 #define ACER12_RPT_ID_TOUCH 1
 #define ACER12_RPT_ID_STYLUS 7
 
@@ -59,8 +60,7 @@ typedef struct acer12_stylus {
     uint16_t pressure;
 } __attribute__((packed)) acer12_stylus_t;
 
-// Use this report descriptor to test whether an input device is an
-// Acer12 touchscreen.
-extern const uint8_t acer12_touch_report_desc[];
+extern bool is_acer12_touch_report_desc(const uint8_t* data, size_t len);
+extern mx_status_t setup_acer12_touch(int fd);
 
 __END_CDECLS

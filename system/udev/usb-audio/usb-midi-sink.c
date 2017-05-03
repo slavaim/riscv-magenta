@@ -16,8 +16,8 @@
 #define WRITE_REQ_COUNT 20
 
 typedef struct {
-    mx_device_t device;
-    mx_device_t* usb_device;
+    mx_device_t* mxdev;
+    mx_device_t* usb_mxdev;
 
     // pool of free USB requests
     list_node_t free_write_reqs;
@@ -32,7 +32,6 @@ typedef struct {
     // the last signals we reported
     mx_signals_t signals;
 } usb_midi_sink_t;
-#define get_usb_midi_sink(dev) containerof(dev, usb_midi_sink_t, device)
 
 static void update_signals(usb_midi_sink_t* sink) {
     mx_signals_t new_signals = 0;
@@ -42,7 +41,8 @@ static void update_signals(usb_midi_sink_t* sink) {
         new_signals |= DEV_STATE_WRITABLE;
     }
     if (new_signals != sink->signals) {
-        device_state_set_clr(&sink->device, new_signals & ~sink->signals, sink->signals & ~new_signals);
+        device_state_set_clr(sink->mxdev, new_signals & ~sink->signals,
+                             sink->signals & ~new_signals);
         sink->signals = new_signals;
     }
 }
@@ -62,27 +62,30 @@ static void usb_midi_sink_write_complete(iotxn_t* txn, void* cookie) {
     mtx_unlock(&sink->mutex);
 }
 
-static void usb_midi_sink_unbind(mx_device_t* device) {
-    usb_midi_sink_t* sink = get_usb_midi_sink(device);
+static void usb_midi_sink_unbind(mx_device_t* dev) {
+    usb_midi_sink_t* sink = dev->ctx;
     sink->dead = true;
     update_signals(sink);
     completion_signal(&sink->free_write_completion);
-    device_remove(&sink->device);
+    device_remove(sink->mxdev);
 }
 
-static mx_status_t usb_midi_sink_release(mx_device_t* device) {
-    usb_midi_sink_t* sink = get_usb_midi_sink(device);
-
+static void usb_midi_sink_free(usb_midi_sink_t* sink) {
     iotxn_t* txn;
     while ((txn = list_remove_head_type(&sink->free_write_reqs, iotxn_t, node)) != NULL) {
         iotxn_release(txn);
     }
     free(sink);
+}
+
+static mx_status_t usb_midi_sink_release(mx_device_t* dev) {
+    usb_midi_sink_t* sink = dev->ctx;
+    usb_midi_sink_free(sink);
     return NO_ERROR;
 }
 
 static mx_status_t usb_midi_sink_open(mx_device_t* dev, mx_device_t** dev_out, uint32_t flags) {
-    usb_midi_sink_t* sink = get_usb_midi_sink(dev);
+    usb_midi_sink_t* sink = dev->ctx;
     mx_status_t result;
 
     mtx_lock(&sink->mutex);
@@ -98,7 +101,7 @@ static mx_status_t usb_midi_sink_open(mx_device_t* dev, mx_device_t** dev_out, u
 }
 
 static mx_status_t usb_midi_sink_close(mx_device_t* dev, uint32_t flags) {
-    usb_midi_sink_t* sink = get_usb_midi_sink(dev);
+    usb_midi_sink_t* sink = dev->ctx;
 
     mtx_lock(&sink->mutex);
     sink->open = false;
@@ -107,8 +110,9 @@ static mx_status_t usb_midi_sink_close(mx_device_t* dev, uint32_t flags) {
     return NO_ERROR;
 }
 
-static ssize_t usb_midi_sink_write(mx_device_t* dev, const void* data, size_t length, mx_off_t offset) {
-    usb_midi_sink_t* sink = get_usb_midi_sink(dev);
+static ssize_t usb_midi_sink_write(mx_device_t* dev, const void* data, size_t length,
+                                   mx_off_t offset) {
+    usb_midi_sink_t* sink = dev->ctx;
 
     if (sink->dead) {
         return ERR_PEER_CLOSED;
@@ -147,7 +151,7 @@ static ssize_t usb_midi_sink_write(mx_device_t* dev, const void* data, size_t le
 
         iotxn_copyto(txn, buffer, 4, 0);
         txn->length = 4;
-        iotxn_queue(sink->usb_device, txn);
+        iotxn_queue(sink->usb_mxdev, txn);
 
         src += message_length;
         length -= message_length;
@@ -190,8 +194,7 @@ mx_status_t usb_midi_sink_create(mx_driver_t* driver, mx_device_t* device, int i
     }
 
     list_initialize(&sink->free_write_reqs);
-
-    sink->usb_device = device;
+    sink->usb_mxdev = device;
 
     int packet_size = usb_ep_max_packet(ep);
     if (intf->bAlternateSetting != 0) {
@@ -199,8 +202,10 @@ mx_status_t usb_midi_sink_create(mx_driver_t* driver, mx_device_t* device, int i
     }
     for (int i = 0; i < WRITE_REQ_COUNT; i++) {
         iotxn_t* txn = usb_alloc_iotxn(ep->bEndpointAddress, usb_ep_max_packet(ep));
-        if (!txn)
+        if (!txn) {
+            usb_midi_sink_free(sink);
             return ERR_NO_MEMORY;
+        }
         txn->length = packet_size;
         txn->complete_cb = usb_midi_sink_write_complete;
         txn->cookie = sink;
@@ -210,14 +215,20 @@ mx_status_t usb_midi_sink_create(mx_driver_t* driver, mx_device_t* device, int i
 
     char name[MX_DEVICE_NAME_MAX];
     snprintf(name, sizeof(name), "usb-midi-sink-%d\n", index);
-    device_init(&sink->device, driver, name, &usb_midi_sink_device_proto);
 
-    sink->device.protocol_id = MX_PROTOCOL_MIDI;
-    sink->device.protocol_ops = NULL;
-    mx_status_t status = device_add(&sink->device, sink->usb_device);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = name,
+        .ctx = sink,
+        .driver = driver,
+        .ops = &usb_midi_sink_device_proto,
+        .proto_id = MX_PROTOCOL_MIDI,
+    };
+
+    mx_status_t status = device_add2(device, &args, &sink->mxdev);
     if (status != NO_ERROR) {
         printf("device_add failed in usb_midi_sink_create\n");
-        usb_midi_sink_release(&sink->device);
+        usb_midi_sink_free(sink);
     }
 
     return status;

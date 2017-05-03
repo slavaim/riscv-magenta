@@ -23,7 +23,7 @@ typedef mx_status_t status_t;
 typedef struct ethernet_device {
     ethdev_t eth;
     mtx_t lock;
-    mx_device_t dev;
+    mx_device_t* mxdev;
     pci_protocol_t* pci;
     mx_device_t* pcidev;
     mx_handle_t ioh;
@@ -36,8 +36,6 @@ typedef struct ethernet_device {
     ethmac_ifc_t* ifc;
     void* cookie;
 } ethernet_device_t;
-
-#define get_eth_device(d) containerof(d, ethernet_device_t, dev)
 
 static int irq_thread(void* arg) {
     ethernet_device_t* edev = arg;
@@ -73,7 +71,7 @@ static int irq_thread(void* arg) {
 }
 
 static mx_status_t eth_query(mx_device_t* dev, uint32_t options, ethmac_info_t* info) {
-    ethernet_device_t* edev = get_eth_device(dev);
+    ethernet_device_t* edev = dev->ctx;
 
     if (options) {
         return ERR_INVALID_ARGS;
@@ -87,14 +85,14 @@ static mx_status_t eth_query(mx_device_t* dev, uint32_t options, ethmac_info_t* 
 }
 
 static void eth_stop(mx_device_t* dev) {
-    ethernet_device_t* edev = get_eth_device(dev);
+    ethernet_device_t* edev = dev->ctx;
     mtx_lock(&edev->lock);
     edev->ifc = NULL;
     mtx_unlock(&edev->lock);
 }
 
 static mx_status_t eth_start(mx_device_t* dev, ethmac_ifc_t* ifc, void* cookie) {
-    ethernet_device_t* edev = get_eth_device(dev);
+    ethernet_device_t* edev = dev->ctx;
     mx_status_t status = NO_ERROR;
 
     mtx_lock(&edev->lock);
@@ -110,7 +108,7 @@ static mx_status_t eth_start(mx_device_t* dev, ethmac_ifc_t* ifc, void* cookie) 
 }
 
 static void eth_send(mx_device_t* dev, uint32_t options, void* data, size_t length) {
-    ethernet_device_t* edev = get_eth_device(dev);
+    ethernet_device_t* edev = dev->ctx;
     eth_tx(&edev->eth, data, length);
 }
 
@@ -122,13 +120,13 @@ static ethmac_protocol_t ethmac_ops = {
 };
 
 static mx_status_t eth_release(mx_device_t* dev) {
-    ethernet_device_t* edev = get_eth_device(dev);
+    ethernet_device_t* edev = dev->ctx;
     eth_reset_hw(&edev->eth);
     edev->pci->enable_bus_master(edev->pcidev, true);
     mx_handle_close(edev->irqh);
     mx_handle_close(edev->ioh);
-    free(dev);
-    return ERR_NOT_SUPPORTED;
+    free(edev);
+    return NO_ERROR;
 }
 
 static mx_protocol_device_t device_ops = {
@@ -144,7 +142,7 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     mtx_init(&edev->eth.send_lock, mtx_plain);
 
     pci_protocol_t* pci;
-    if (device_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci)) {
+    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci)) {
         printf("no pci protocol\n");
         goto fail;
     }
@@ -207,10 +205,17 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     eth_setup_buffers(&edev->eth, io_buffer_virt(&edev->buffer), io_buffer_phys(&edev->buffer));
     eth_init_hw(&edev->eth);
 
-    device_init(&edev->dev, drv, "intel-ethernet", &device_ops);
-    edev->dev.protocol_id = MX_PROTOCOL_ETHERMAC;
-    edev->dev.protocol_ops = &ethmac_ops;
-    if (device_add(&edev->dev, dev)) {
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "intel-ethernet",
+        .ctx = edev,
+        .driver = drv,
+        .ops = &device_ops,
+        .proto_id = MX_PROTOCOL_ETHERMAC,
+        .proto_ops = &ethmac_ops,
+    };
+
+    if (device_add2(dev, &args, &edev->mxdev)) {
         goto fail;
     }
 
@@ -232,14 +237,13 @@ fail:
     return ERR_NOT_SUPPORTED;
 }
 
-mx_driver_t _driver_intel_ethernet = {
-    .ops = {
-        .bind = eth_bind,
-    },
+static mx_driver_ops_t intel_ethernet_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = eth_bind,
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(_driver_intel_ethernet, "intel-ethernet", "magenta", "0.1", 9)
+MAGENTA_DRIVER_BEGIN(intel_ethernet, intel_ethernet_driver_ops, "magenta", "0.1", 9)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_VID, 0x8086),
     BI_MATCH_IF(EQ, BIND_PCI_DID, 0x100E), // Qemu
@@ -249,4 +253,4 @@ MAGENTA_DRIVER_BEGIN(_driver_intel_ethernet, "intel-ethernet", "magenta", "0.1",
     BI_MATCH_IF(EQ, BIND_PCI_DID, 0x15b7), // Skull Canyon NUC
     BI_MATCH_IF(EQ, BIND_PCI_DID, 0x15b8), // I219
     BI_MATCH_IF(EQ, BIND_PCI_DID, 0x15d8), // Kaby Lake NUC
-MAGENTA_DRIVER_END(_driver_intel_ethernet)
+MAGENTA_DRIVER_END(intel_ethernet)

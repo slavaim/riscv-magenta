@@ -44,15 +44,15 @@ constexpr size_t kMaxCPRNGSeed = MX_CPRNG_ADD_ENTROPY_MAX_LEN;
 
 constexpr uint32_t kMaxWaitSetWaitResults = 1024u;
 
-mx_status_t sys_nanosleep(mx_time_t nanoseconds) {
-    LTRACEF("nseconds %" PRIu64 "\n", nanoseconds);
+mx_status_t sys_nanosleep(mx_time_t deadline) {
+    LTRACEF("nseconds %" PRIu64 "\n", deadline);
 
-    if (nanoseconds == 0ull) {
+    if (deadline == 0ull) {
         thread_yield();
         return NO_ERROR;
     }
 
-    return magenta_sleep(nanoseconds);
+    return magenta_sleep(deadline);
 }
 
 // This must be accessed atomically from any given thread.
@@ -61,9 +61,9 @@ static mxtl::atomic<int64_t> utc_offset;
 uint64_t sys_time_get(uint32_t clock_id) {
     switch (clock_id) {
     case MX_CLOCK_MONOTONIC:
-        return current_time_hires();
+        return current_time();
     case MX_CLOCK_UTC:
-        return current_time_hires() + utc_offset.load();
+        return current_time() + utc_offset.load();
     case MX_CLOCK_THREAD:
         return UserThread::GetCurrent()->runtime_ns();
     default:
@@ -309,19 +309,19 @@ mx_status_t sys_waitset_add(mx_handle_t ws_handle_value,
 
     Handle* ws_handle = up->GetHandleLocked(ws_handle_value);
     if (!ws_handle)
-        return up->BadHandle(ws_handle_value, ERR_BAD_HANDLE);
+        return ERR_BAD_HANDLE;
     if (ws_handle->dispatcher()->get_type() != DispatchTag<WaitSetDispatcher>::ID)
-        return up->BadHandle(ws_handle_value, ERR_WRONG_TYPE);
+        return ERR_WRONG_TYPE;
     // No need to take a ref to the dispatcher, since we're under the handle table lock. :-/
     auto ws_dispatcher = static_cast<WaitSetDispatcher*>(ws_handle->dispatcher().get());
     if (!magenta_rights_check(ws_handle, MX_RIGHT_WRITE))
-        return up->BadHandle(ws_handle_value, ERR_ACCESS_DENIED);
+        return ERR_ACCESS_DENIED;
 
     Handle* handle = up->GetHandleLocked(handle_value);
     if (!handle)
-        return up->BadHandle(handle_value, ERR_BAD_HANDLE);
+        return ERR_BAD_HANDLE;
     if (!magenta_rights_check(handle, MX_RIGHT_READ))
-        return up->BadHandle(handle_value, ERR_ACCESS_DENIED);
+        return ERR_ACCESS_DENIED;
 
     return ws_dispatcher->AddEntry(mxtl::move(entry), handle);
 }
@@ -341,7 +341,7 @@ mx_status_t sys_waitset_remove(mx_handle_t ws_handle, uint64_t cookie) {
 }
 
 mx_status_t sys_waitset_wait(mx_handle_t ws_handle,
-                             mx_time_t timeout,
+                             mx_time_t deadline,
                              user_ptr<mx_waitset_result_t> _results,
                              user_ptr<uint32_t> _count) {
     LTRACEF("wait set handle %d\n", ws_handle);
@@ -373,7 +373,7 @@ mx_status_t sys_waitset_wait(mx_handle_t ws_handle,
         return status;
 
     uint32_t max_results = 0u;
-    mx_status_t result = ws_dispatcher->Wait(timeout, &count, results.get(), &max_results);
+    mx_status_t result = ws_dispatcher->Wait(deadline, &count, results.get(), &max_results);
     if (result == NO_ERROR) {
         if (_count.copy_to_user(count) != NO_ERROR)
             return ERR_INVALID_ARGS;

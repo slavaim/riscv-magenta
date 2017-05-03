@@ -21,12 +21,14 @@
 #include <threads.h>
 #include <unistd.h>
 
+#include <magenta/compiler.h>
 #include <magenta/device/devmgr.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 
 #include <mxio/debug.h>
 #include <mxio/io.h>
+#include <mxio/namespace.h>
 #include <mxio/private.h>
 #include <mxio/remoteio.h>
 #include <mxio/util.h>
@@ -196,6 +198,103 @@ static mxio_t* mxio_iodir(const char** path, int dirfd) {
     return iodir;
 }
 
+#define IS_SEPARATOR(c) ((c) == '/' || (c) == 0)
+
+// Checks that if we increment this index forward, we'll
+// still have enough space for a null terminator within
+// PATH_MAX bytes.
+#define CHECK_CAN_INCREMENT(i)               \
+    if (unlikely((i) + 1 >= PATH_MAX - 1)) { \
+        return ERR_BAD_PATH;                 \
+    }
+
+// Cleans an input path, transforming it to out, according to the
+// rules defined by "Lexical File Names in Plan 9 or Getting Dot-Dot Right",
+// accessible at: https://9p.io/sys/doc/lexnames.html
+//
+// Code heavily inspired by Go's filepath.Clean function, from:
+// https://golang.org/src/path/filepath/path.go
+//
+// out is expected to be PATH_MAX bytes long.
+// Sets is_dir to 'true' if the path is a directory, and 'false' otherwise.
+mx_status_t __mxio_cleanpath(const char* in, char* out, size_t* outlen, bool* is_dir) {
+    if (in[0] == 0) {
+        strcpy(out, ".");
+        *outlen = 1;
+        *is_dir = true;
+        return NO_ERROR;
+    }
+
+    bool rooted = (in[0] == '/');
+    size_t in_index = 0; // Index of the next byte to read
+    size_t out_index = 0; // Index of the next byte to write
+
+    if (rooted) {
+        out[out_index++] = '/';
+        in_index++;
+        *is_dir = true;
+    }
+    size_t dotdot = out_index; // The output index at which '..' cannot be cleaned further.
+
+    while (in[in_index] != 0) {
+        *is_dir = true;
+        if (in[in_index] == '/') {
+            // 1. Reduce multiple slashes to a single slash
+            CHECK_CAN_INCREMENT(in_index);
+            in_index++;
+        } else if (in[in_index] == '.' && IS_SEPARATOR(in[in_index + 1])) {
+            // 2. Eliminate . path name elements (the current directory)
+            CHECK_CAN_INCREMENT(in_index);
+            in_index++;
+        } else if (in[in_index] == '.' && in[in_index + 1] == '.' &&
+                   IS_SEPARATOR(in[in_index + 2])) {
+            CHECK_CAN_INCREMENT(in_index + 1);
+            in_index += 2;
+            if (out_index > dotdot) {
+                // 3. Eliminate .. path elements (the parent directory) and the element that
+                // precedes them.
+                out_index--;
+                while (out_index > dotdot && out[out_index] != '/') { out_index--; }
+            } else if (rooted) {
+                // 4. Eliminate .. elements that begin a rooted path, that is, replace /.. by / at
+                // the beginning of a path.
+                continue;
+            } else if (!rooted) {
+                if (out_index > 0) {
+                    out[out_index++] = '/';
+                }
+                // 5. Leave intact .. elements that begin a non-rooted path.
+                out[out_index++] = '.';
+                out[out_index++] = '.';
+                dotdot = out_index;
+            }
+        } else {
+            *is_dir = false;
+            if ((rooted && out_index != 1) || (!rooted && out_index != 0)) {
+                // Add '/' before normal path component, for non-root components.
+                out[out_index++] = '/';
+            }
+
+            while (!IS_SEPARATOR(in[in_index])) {
+                CHECK_CAN_INCREMENT(in_index);
+                out[out_index++] = in[in_index++];
+            }
+        }
+    }
+
+    if (out_index == 0) {
+        strcpy(out, ".");
+        *outlen = 1;
+        *is_dir = true;
+        return NO_ERROR;
+    }
+
+    // Append null character
+    *outlen = out_index;
+    out[out_index++] = 0;
+    return NO_ERROR;
+}
+
 static mx_status_t __mxio_open_at(mxio_t** io, int dirfd, const char* path, int flags, uint32_t mode) {
     if (path == NULL) {
         return ERR_INVALID_ARGS;
@@ -203,15 +302,23 @@ static mx_status_t __mxio_open_at(mxio_t** io, int dirfd, const char* path, int 
     if (path[0] == 0) {
         return ERR_INVALID_ARGS;
     }
-
     mxio_t* iodir = mxio_iodir(&path, dirfd);
     if (iodir == NULL) {
         return ERR_BAD_HANDLE;
     }
 
-    mx_status_t r = iodir->ops->open(iodir, path, flags, mode, io);
+    char clean[PATH_MAX];
+    size_t outlen;
+    bool is_dir;
+    mx_status_t status = __mxio_cleanpath(path, clean, &outlen, &is_dir);
+    if (status != NO_ERROR) {
+        return status;
+    }
+    flags |= (is_dir ? O_DIRECTORY : 0);
+
+    status = iodir->ops->open(iodir, clean, flags, mode, io);
     mxio_release(iodir);
-    return r;
+    return status;
 }
 
 mx_status_t __mxio_open(mxio_t** io, const char* path, int flags, uint32_t mode) {
@@ -282,9 +389,12 @@ wat:
     return;
 }
 
-// opens the directory containing path
-// returns the non-directory portion of the path as name on success
-static mx_status_t __mxio_opendir_containing_at(mxio_t** io, int dirfd, const char* path, const char** _name) {
+// Opens the directory containing path
+//
+// Returns the non-directory portion of the path in 'out', which
+// must be a buffer that can fit [NAME_MAX + 1] characters.
+static mx_status_t __mxio_opendir_containing_at(mxio_t** io, int dirfd, const char* path,
+                                                char* out) {
     if (path == NULL) {
         return ERR_INVALID_ARGS;
     }
@@ -294,62 +404,71 @@ static mx_status_t __mxio_opendir_containing_at(mxio_t** io, int dirfd, const ch
         return ERR_BAD_HANDLE;
     }
 
-    char dirpath[PATH_MAX];
-
-    // Make 'path_end' the final index of the string without trailing '/' characters.
-    size_t path_end = strnlen(path, PATH_MAX - 1) - 1;
-    while ((path_end > 0) && (path[path_end] == '/')) {
-        path_end--;
-    }
-
-    // Find the last non-trailing '/'
-    const char* name = path + path_end;
-    while ((name > path) && (*name != '/')) {
-        name--;
-    }
-
-    if ((name == path) && (*name != '/')) {
-        // No '/' characters found
-        name = path;
-        dirpath[0] = '.';
-        dirpath[1] = 0;
-    } else {
-        // At least one '/' found
-        if ((name - path) > (ptrdiff_t)(sizeof(dirpath) - 1)) {
-            mxio_release(iodir);
-            return ERR_INVALID_ARGS;
-        }
-        memcpy(dirpath, path, name - path);
-        dirpath[name - path] = 0;
-        name++;
-    }
-    if (name[0] == 0) {
+    char clean[PATH_MAX];
+    size_t pathlen;
+    bool is_dir;
+    mx_status_t status = __mxio_cleanpath(path, clean, &pathlen, &is_dir);
+    if (status != NO_ERROR) {
         mxio_release(iodir);
-        return ERR_INVALID_ARGS;
+        return status;
     }
 
-    *_name = name;
-    mx_status_t r = iodir->ops->open(iodir, dirpath, O_DIRECTORY, 0, io);
+    // Find the last '/'; copy everything after it.
+    size_t i = 0;
+    for (i = pathlen - 1; i > 0; i--) {
+        if (clean[i] == '/') {
+            clean[i] = 0;
+            i++;
+            break;
+        }
+    }
 
+    // clean[i] is now the start of the name
+    size_t namelen = pathlen - i;
+    if (namelen + (is_dir ? 1 : 0) > NAME_MAX) {
+        mxio_release(iodir);
+        return ERR_BAD_PATH;
+    }
+
+    // Copy the trailing 'name' to out.
+    memcpy(out, clean + i, namelen);
+    if (is_dir) {
+        // TODO(smklein): Propagate this information without using
+        // the output name; it'll simplify server-side path parsing
+        // if all trailing slashes are replaced with "O_DIRECTORY".
+        out[namelen++] = '/';
+    }
+    out[namelen] = 0;
+
+    if (i == 0 && clean[i] != '/') {
+        clean[0] = '.';
+        clean[1] = 0;
+    }
+
+    mx_status_t r = iodir->ops->open(iodir, clean, O_DIRECTORY, 0, io);
     mxio_release(iodir);
     return r;
 }
 
-static mx_status_t __mxio_opendir_containing(mxio_t** io, const char* path, const char** _name) {
-    return __mxio_opendir_containing_at(io, AT_FDCWD, path, _name);
+// 'name' must be a user-provided buffer, at least NAME_MAX + 1 bytes long.
+static mx_status_t __mxio_opendir_containing(mxio_t** io, const char* path, char* name) {
+    return __mxio_opendir_containing_at(io, AT_FDCWD, path, name);
 }
+
 
 // hook into libc process startup
 // this is called prior to main to set up the mxio world
 // and thus does not use the mxio_lock
 void __libc_extensions_init(uint32_t handle_count,
                             mx_handle_t handle[],
-                            uint32_t handle_info[]) {
+                            uint32_t handle_info[],
+                            uint32_t name_count,
+                            char** names) {
     int stdio_fd = -1;
 
     // extract handles we care about
     for (uint32_t n = 0; n < handle_count; n++) {
-        unsigned arg = MX_HND_INFO_ARG(handle_info[n]);
+        unsigned arg = PA_HND_ARG(handle_info[n]);
         mx_handle_t h = handle[n];
 
         // MXIO uses this bit as a flag to say
@@ -362,14 +481,14 @@ void __libc_extensions_init(uint32_t handle_count,
             }
         }
 
-        switch (MX_HND_INFO_TYPE(handle_info[n])) {
-        case MX_HND_TYPE_MXIO_ROOT:
+        switch (PA_HND_TYPE(handle_info[n])) {
+        case PA_MXIO_ROOT:
             mxio_root_handle = mxio_remote_create(h, 0);
             break;
-        case MX_HND_TYPE_MXIO_CWD:
+        case PA_MXIO_CWD:
             mxio_cwd_handle = mxio_remote_create(h, 0);
             break;
-        case MX_HND_TYPE_MXIO_REMOTE:
+        case PA_MXIO_REMOTE:
             // remote objects may have a second handle
             // which is for signaling events
             if (((n + 1) < handle_count) &&
@@ -381,14 +500,44 @@ void __libc_extensions_init(uint32_t handle_count,
             }
             mxio_fdtab[arg]->dupcount++;
             break;
-        case MX_HND_TYPE_MXIO_PIPE:
+        case PA_MXIO_PIPE:
             mxio_fdtab[arg] = mxio_pipe_create(h);
             mxio_fdtab[arg]->dupcount++;
             break;
-        case MX_HND_TYPE_MXIO_LOGGER:
+        case PA_MXIO_LOGGER:
             mxio_fdtab[arg] = mxio_logger_create(h);
             mxio_fdtab[arg]->dupcount++;
             break;
+        case PA_MXIO_SOCKET:
+            // socket objects have a second handle
+            if (((n + 1) < handle_count) &&
+                (handle_info[n] == handle_info[n + 1])) {
+                mxio_fdtab[arg] = mxio_socket_create(h, handle[n + 1], MXIO_FLAG_SOCKET_CONNECTED);
+                handle_info[n + 1] = 0;
+                mxio_fdtab[arg]->dupcount++;
+            } else {
+                mx_handle_close(h);
+            }
+            break;
+        case PA_SERVICE_ROOT:
+            mxio_svc_root = h;
+            // do not remove handle, so it is available
+            // to higher level service connection code
+            continue;
+        case PA_NS_DIR:
+            // we always contine here to not steal the
+            // handles from higher level code that may
+            // also need access to the namespace
+            if (arg >= name_count) {
+                continue;
+            }
+            if (mxio_root_ns == NULL) {
+                if (mxio_ns_create(&mxio_root_ns) < 0) {
+                    continue;
+                }
+            }
+            mxio_ns_bind(mxio_root_ns, names[arg], h);
+            continue;
         default:
             // unknown handle, leave it alone
             continue;
@@ -421,6 +570,17 @@ void __libc_extensions_init(uint32_t handle_count,
         }
     }
 
+    if (mxio_root_ns) {
+        mxio_t* io = mxio_ns_open_root(mxio_root_ns);
+        if (io != NULL) {
+            // If we have a root from the legacy PA_MXIO_ROOT,
+            // a specified root namespace overrides it
+            if (mxio_root_handle) {
+                mxio_close(mxio_root_handle);
+            }
+            mxio_root_handle = io;
+        }
+    }
     if (mxio_root_handle) {
         mxio_root_init = true;
         if(!mxio_cwd_handle) {
@@ -444,7 +604,7 @@ mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types) {
     // in normal operation
     mx_status_t r = mxio_root_handle->ops->clone(mxio_root_handle, handles, types);
     if (r > 0) {
-        *types = MX_HND_TYPE_MXIO_ROOT;
+        *types = PA_MXIO_ROOT;
     }
     return r;
 }
@@ -452,7 +612,7 @@ mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types) {
 mx_status_t mxio_clone_cwd(mx_handle_t* handles, uint32_t* types) {
     mx_status_t r = mxio_cwd_handle->ops->clone(mxio_cwd_handle, handles, types);
     if (r > 0) {
-        *types = MX_HND_TYPE_MXIO_CWD;
+        *types = PA_MXIO_CWD;
     }
     return r;
 }
@@ -498,49 +658,35 @@ ssize_t mxio_ioctl(int fd, int op, const void* in_buf, size_t in_len, void* out_
     return r;
 }
 
-mx_status_t mxio_get_vmo(int fd, mx_handle_t* vmo, size_t* off, size_t* len) {
-    mxio_t* io;
-    if ((io = fd_to_io(fd)) == NULL) {
-        return ERR_BAD_HANDLE;
-    }
-    mx_status_t r = io->ops->get_vmo(io, vmo, off, len);
-    mxio_release(io);
-    return r;
-}
-
-// TODO(teisenbe): Move this interface to deadlines
-mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* _pending, mx_time_t timeout) {
-    const mx_time_t deadline = (timeout == MX_TIME_INFINITE) ? MX_TIME_INFINITE :
-            mx_deadline_after(timeout);
-
-    mx_status_t r = NO_ERROR;
-    mxio_t* io;
-    if ((io = fd_to_io(fd)) == NULL) {
-        return ERR_BAD_HANDLE;
-    }
-
+mx_status_t mxio_wait(mxio_t* io, uint32_t events, mx_time_t deadline,
+                      uint32_t* out_pending) {
     mx_handle_t h = MX_HANDLE_INVALID;
     mx_signals_t signals = 0;
     io->ops->wait_begin(io, events, &h, &signals);
-    if (h == MX_HANDLE_INVALID) {
-        // wait operation is not applicable to the handle
-        r = ERR_INVALID_ARGS;
-        goto end;
-    }
-    mx_signals_t pending;
-    if ((r = mx_object_wait_one(h, signals, deadline, &pending)) < 0) {
-        if (r != ERR_TIMED_OUT) {
-            goto end;
-        }
-    }
-    io->ops->wait_end(io, pending, &events);
+    if (h == MX_HANDLE_INVALID)
+        // Wait operation is not applicable to the handle.
+        return ERR_INVALID_ARGS;
 
-    if (_pending) {
-        *_pending = events;
+    mx_signals_t pending;
+    mx_status_t status = mx_object_wait_one(h, signals, deadline, &pending);
+    if (status == NO_ERROR || status == ERR_TIMED_OUT) {
+        io->ops->wait_end(io, pending, &events);
+        if (out_pending != NULL)
+            *out_pending = events;
     }
- end:
+
+    return status;
+}
+
+mx_status_t mxio_wait_fd(int fd, uint32_t events, uint32_t* _pending, mx_time_t deadline) {
+    mxio_t* io = fd_to_io(fd);
+    if (io == NULL)
+        return ERR_BAD_HANDLE;
+
+    mx_status_t status = mxio_wait(io, events, deadline, _pending);
+
     mxio_release(io);
-    return r;
+    return status;
 }
 
 int mxio_stat(mxio_t* io, struct stat* s) {
@@ -646,10 +792,10 @@ ssize_t writev(int fd, const struct iovec* iov, int num) {
 }
 
 int unlinkat(int dirfd, const char* path, int flags) {
-    const char* name;
+    char name[NAME_MAX + 1];
     mxio_t* io;
     mx_status_t r;
-    if ((r = __mxio_opendir_containing_at(&io, dirfd, path, &name)) < 0) {
+    if ((r = __mxio_opendir_containing_at(&io, dirfd, path, name)) < 0) {
         return ERROR(r);
     }
     r = io->ops->misc(io, MXRIO_UNLINK, 0, 0, (void*)name, strlen(name));
@@ -992,18 +1138,19 @@ int ftruncate(int fd, off_t len) {
 // Using magenta kernel primitives (cookies) to authenticate the vnode token, this
 // allows these multi-path operations to mix absolute / relative paths and cross
 // mount points with ease.
-static int two_path_op(uint32_t op, const char* oldpath, const char* newpath) {
-    const char* oldname;
+static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
+                          int newdirfd, const char* newpath) {
+    char oldname[NAME_MAX + 1];
     mxio_t* io_oldparent;
     mx_status_t status;
-    if ((status = __mxio_opendir_containing(&io_oldparent, oldpath, &oldname)) < 0) {
+    if ((status = __mxio_opendir_containing_at(&io_oldparent, olddirfd, oldpath, oldname)) < 0) {
         return ERROR(status);
     }
 
     int r;
-    const char* newname;
+    char newname[NAME_MAX + 1];
     mxio_t* io_newparent;
-    if ((status = __mxio_opendir_containing(&io_newparent, newpath, &newname)) < 0) {
+    if ((status = __mxio_opendir_containing_at(&io_newparent, newdirfd, newpath, newname)) < 0) {
         r = ERROR(status);
         goto oldparent_open;
     }
@@ -1019,11 +1166,8 @@ static int two_path_op(uint32_t op, const char* oldpath, const char* newpath) {
     char name[MXIO_CHUNK_SIZE];
     size_t oldlen = strlen(oldname);
     size_t newlen = strlen(newname);
-    if (oldlen + newlen + 2 > sizeof(name)) {
-        r = ERRNO(EINVAL);
-        goto token_open;
-    }
-
+    static_assert(sizeof(oldname) + sizeof(newname) + 2 < sizeof(name),
+                  "Dual-path operation names should fit in MXIO name buffer");
     memcpy(name, oldname, oldlen);
     name[oldlen] = '\0';
     memcpy(name + oldlen + 1, newname, newlen);
@@ -1031,10 +1175,7 @@ static int two_path_op(uint32_t op, const char* oldpath, const char* newpath) {
     status = io_oldparent->ops->misc(io_oldparent, op, token, 0,
                                      (void*)name, oldlen + newlen + 2);
     r = STATUS(status);
-    // Token transferred through misc; no longer needs to be closed.
     goto newparent_open;
-token_open:
-    mx_handle_close(token);
 newparent_open:
     io_newparent->ops->close(io_newparent);
     mxio_release(io_newparent);
@@ -1044,12 +1185,16 @@ oldparent_open:
     return r;
 }
 
+int renameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath) {
+    return two_path_op_at(MXRIO_RENAME, olddirfd, oldpath, newdirfd, newpath);
+}
+
 int rename(const char* oldpath, const char* newpath) {
-    return two_path_op(MXRIO_RENAME, oldpath, newpath);
+    return two_path_op_at(MXRIO_RENAME, AT_FDCWD, oldpath, AT_FDCWD, newpath);
 }
 
 int link(const char* oldpath, const char* newpath) {
-    return two_path_op(MXRIO_LINK, oldpath, newpath);
+    return two_path_op_at(MXRIO_LINK, AT_FDCWD, oldpath, AT_FDCWD, newpath);
 }
 
 int unlink(const char* path) {
@@ -1302,12 +1447,7 @@ char* getcwd(char* buf, size_t size) {
     return out;
 }
 
-int chdir(const char* path) {
-    mxio_t* io;
-    mx_status_t r;
-    if ((r = __mxio_open(&io, path, O_DIRECTORY, 0)) < 0) {
-        return STATUS(r);
-    }
+void mxio_chdir(mxio_t* io, const char* path) {
     mtx_lock(&mxio_cwd_lock);
     update_cwd_path(path);
     mtx_lock(&mxio_lock);
@@ -1317,6 +1457,15 @@ int chdir(const char* path) {
     mxio_release(old);
     mtx_unlock(&mxio_lock);
     mtx_unlock(&mxio_cwd_lock);
+}
+
+int chdir(const char* path) {
+    mxio_t* io;
+    mx_status_t r;
+    if ((r = __mxio_open(&io, path, O_DIRECTORY, 0)) < 0) {
+        return STATUS(r);
+    }
+    mxio_chdir(io, path);
     return 0;
 }
 
@@ -1384,14 +1533,20 @@ struct dirent* readdir(DIR* dir) {
         if (dir->size >= sizeof(vdirent_t)) {
             vdirent_t* vde = (void*)dir->ptr;
             if (dir->size >= vde->size) {
-                de->d_ino = 0;
-                de->d_off = 0;
-                de->d_reclen = 0;
-                de->d_type = vde->type;
-                strcpy(de->d_name, vde->name);
                 dir->ptr += vde->size;
                 dir->size -= vde->size;
-                break;
+                if (vde->name[0]) {
+                    de->d_ino = 0;
+                    de->d_off = 0;
+                    de->d_reclen = 0;
+                    de->d_type = vde->type;
+                    strcpy(de->d_name, vde->name);
+                    break;
+                } else {
+                    // skip nameless entries.
+                    // (they may be generated by filtering filesystems)
+                    continue;
+                }
             }
             dir->size = 0;
         }

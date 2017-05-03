@@ -56,6 +56,14 @@ static const char* guid_to_type(char* guid) {
         return "efi system";
     } else if (!strcmp("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7", guid)) {
         return "data";
+    } else if (!strcmp("21686148-6449-6E6F-744E-656564454649", guid)) {
+        return "bios";
+    } else if (!strcmp(GUID_SYSTEM_STRING, guid)) {
+        return "fuchsia-system";
+    } else if (!strcmp(GUID_DATA_STRING, guid)) {
+        return "fuchsia-data";
+    } else if (!strcmp(GUID_BLOBFS_STRING, guid)) {
+        return "fuchsia-blobfs";
     } else {
         return "unknown";
     }
@@ -79,10 +87,13 @@ static int cmd_list_blk(void) {
     }
     blkinfo_t info;
     const char* type;
-    uint64_t size;
     int fd;
-    printf("%-3s %-8s %-8s %-4s %-14s %s\n", "ID", "DEV", "DRV", "SIZE", "TYPE", "LABEL");
+    printf("%-3s %-8s %-8s %-4s %-14s %-20s %s\n", "ID", "DEV", "DRV", "SIZE", "TYPE", "LABEL",
+           "FLAGS");
     while ((de = readdir(dir)) != NULL) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) {
+            continue;
+        }
         memset(&info, 0, sizeof(blkinfo_t));
         type = NULL;
         snprintf(info.path, sizeof(info.path), "%s/%s", DEV_BLOCK, de->d_name);
@@ -93,8 +104,11 @@ static int cmd_list_blk(void) {
         }
         ioctl_device_get_device_name(fd, info.devname, sizeof(info.devname));
         ioctl_device_get_driver_name(fd, info.drvname, sizeof(info.drvname));
-        if (ioctl_block_get_size(fd, &size) > 0) {
-            size_to_cstring(info.sizestr, sizeof(info.sizestr), size);
+
+        block_info_t block_info;
+        if (ioctl_block_get_info(fd, &block_info) > 0) {
+            size_to_cstring(info.sizestr, sizeof(info.sizestr),
+                            block_info.block_size * block_info.block_count);
         }
         uint8_t guid[GPT_GUID_LEN];
         if (ioctl_block_get_type_guid(fd, guid, sizeof(guid)) >= 0) {
@@ -102,9 +116,19 @@ static int cmd_list_blk(void) {
             type = guid_to_type(info.guid);
         }
         ioctl_block_get_name(fd, info.label, sizeof(info.label));
+
+        char flags[20] = {0};
+
+        if (block_info.flags & BLOCK_FLAG_READONLY) {
+            strlcat(flags, "RO ", sizeof(flags));
+        }
+        if (block_info.flags & BLOCK_FLAG_REMOVABLE) {
+            strlcat(flags, "REMOVABLE ", sizeof(flags));
+        }
 devdone:
         close(fd);
-        printf("%-3s %-8s %-8s %4s %-14s %s\n", de->d_name, info.devname, info.drvname, info.sizestr, type ? type : "", info.label);
+        printf("%-3s %-8s %-8s %4s %-14s %-20s %s\n", de->d_name, info.devname, info.drvname,
+               info.sizestr, type ? type : "", info.label, flags);
     }
 out:
     closedir(dir);
@@ -120,12 +144,14 @@ static int cmd_read_blk(const char* dev, off_t offset, size_t count) {
 
     // check that count and offset are aligned to block size
     uint64_t blksize;
-    ssize_t rc = ioctl_block_get_blocksize(fd, &blksize);
+    block_info_t info;
+    ssize_t rc = ioctl_block_get_info(fd, &info);
     if (rc < 0) {
         printf("Error getting block size for %s\n", dev);
         close(fd);
         goto out;
     }
+    blksize = info.block_size;
     if (count % blksize) {
         printf("Bytes read must be a multiple of blksize=%" PRIu64 "\n", blksize);
         rc = -1;

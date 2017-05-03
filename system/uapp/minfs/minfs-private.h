@@ -8,11 +8,13 @@
 #include <mxtl/intrusive_hash_table.h>
 #include <mxtl/intrusive_single_list.h>
 #include <mxtl/macros.h>
-#include <mxtl/ref_counted.h>
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
 #include <fs/mapped-vmo.h>
+#ifdef __Fuchsia__
+#include <fs/vfs-dispatcher.h>
+#endif
 #include <fs/vfs.h>
 
 #include "minfs.h"
@@ -80,6 +82,9 @@ public:
     Bcache* bc_;
     RawBitmap block_map_;
     minfs_info_t info_;
+#ifdef __Fuchsia__
+    mxtl::unique_ptr<fs::VfsDispatcher> dispatcher_;
+#endif
 
 private:
     // Fsck can introspect Minfs
@@ -145,6 +150,8 @@ public:
     ssize_t Ioctl(uint32_t op, const void* in_buf, size_t in_len, void* out_buf,
                   size_t out_len) final;
     mx_status_t Lookup(fs::Vnode** out, const char* name, size_t len) final;
+    // Lookup which can traverse '..'
+    mx_status_t LookupInternal(fs::Vnode** out, const char* name, size_t len);
 
     Minfs* fs_;
     uint32_t ino_;
@@ -198,17 +205,25 @@ private:
                                                   DirectoryOffset*));
 
 #ifdef __Fuchsia__
+    mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) final;
+
     // The following functionality interacts with handles directly, and are not applicable outside
     // Fuchsia (since there is no "handle-equivalent" in host-side tools).
-    mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
-                           uint32_t* type, void* extra, uint32_t* esize) final;
 
     // TODO(smklein): When we have can register MinFS as a pager service, and
     // it can properly handle pages faults on a vnode's contents, then we can
     // avoid reading the entire file up-front. Until then, read the contents of
     // a VMO into memory when it is read/written.
     mx_handle_t vmo_;
+
 #endif
+    // The vnode is acting as a mount point for a remote filesystem or device.
+    virtual bool IsRemote() const final;
+    virtual mx_handle_t DetachRemote() final;
+    virtual mx_handle_t WaitForRemote() final;
+    virtual mx_handle_t GetRemote() const final;
+    virtual void SetRemote(mx_handle_t remote) final;
+    fs::RemoteContainer remoter_;
 };
 
 // write the inode data of this vnode to disk (default does not update time values)
@@ -225,8 +240,5 @@ mx_status_t minfs_check(Bcache* bc);
 mx_status_t minfs_mount(VnodeMinfs** root_out, Bcache* bc);
 
 void minfs_dir_init(void* bdata, uint32_t ino_self, uint32_t ino_parent);
-
-// vfs dispatch
-mx_handle_t vfs_rpc_server(VnodeMinfs* vn);
 
 } // namespace minfs

@@ -198,6 +198,8 @@ typedef uint32_t mx_rights_t;
 #define MX_RIGHT_SET_PROPERTY     ((mx_rights_t)1u << 7)
 #define MX_RIGHT_ENUMERATE        ((mx_rights_t)1u << 8)
 #define MX_RIGHT_DESTROY          ((mx_rights_t)1u << 9)
+#define MX_RIGHT_SET_POLICY       ((mx_rights_t)1u << 10)
+#define MX_RIGHT_GET_POLICY       ((mx_rights_t)1u << 11)
 
 #define MX_RIGHT_SAME_RIGHTS      ((mx_rights_t)1u << 31)
 
@@ -226,6 +228,7 @@ typedef uint32_t mx_rights_t;
 #define MX_VM_FLAG_CAN_MAP_READ       (1u << 7)
 #define MX_VM_FLAG_CAN_MAP_WRITE      (1u << 8)
 #define MX_VM_FLAG_CAN_MAP_EXECUTE    (1u << 9)
+#define MX_VM_FLAG_MAP_RANGE          (1u << 10)
 
 // clock ids
 #define MX_CLOCK_MONOTONIC        (0u)

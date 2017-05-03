@@ -5,7 +5,8 @@
 #include <ddk/binding.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/common/hid.h>
+#include <ddk/protocol/hidbus.h>
+#include <ddk/protocol/input.h>
 #include <hw/inout.h>
 
 #include <magenta/syscalls.h>
@@ -24,7 +25,11 @@
 mx_driver_t _driver_i8042;
 
 typedef struct i8042_device {
-    mx_hid_device_t hiddev;
+    mx_device_t* mxdev;
+
+    mtx_t lock;
+    hidbus_ifc_t* ifc;
+    void* cookie;
 
     mx_handle_t irq;
     thrd_t irq_thread;
@@ -91,8 +96,6 @@ static int i8042_rm_key(i8042_device_t* dev, uint8_t usage) {
     dev->report.kbd.usage[5] = 0;
     return KEY_REMOVED;
 }
-
-#define get_i8042_device(dev) containerof(dev, i8042_device_t, hiddev)
 
 #define I8042_COMMAND_REG 0x64
 #define I8042_STATUS_REG 0x64
@@ -447,7 +450,11 @@ static void i8042_process_scode(i8042_device_t* dev, uint8_t scode, unsigned int
     //cprintf("i8042: scancode=0x%x, keyup=%u, multi=%u: usage=0x%x\n", scode, !!key_up, multi, usage);
 
     const boot_kbd_report_t* report = rollover ? &report_err_rollover : &dev->report.kbd;
-    hid_io_queue(&dev->hiddev, (const uint8_t*)report, sizeof(*report));
+    mtx_lock(&dev->lock);
+    if (dev->ifc) {
+        dev->ifc->io_queue(dev->cookie, (const uint8_t*)report, sizeof(*report));
+    }
+    mtx_unlock(&dev->lock);
 }
 
 static void i8042_process_mouse(i8042_device_t* dev, uint8_t data, unsigned int flags) {
@@ -472,7 +479,12 @@ static void i8042_process_mouse(i8042_device_t* dev, uint8_t data, unsigned int 
         dev->report.mouse.rel_y = ((state << 3) & 0x100) - d;
         dev->report.mouse.buttons &= 0x7;
 
-        hid_io_queue(&dev->hiddev, (const uint8_t*)&dev->report.mouse, sizeof(dev->report.mouse));
+        mtx_lock(&dev->lock);
+        if (dev->ifc) {
+            dev->ifc->io_queue(dev->cookie, (const uint8_t*)&dev->report.mouse,
+                               sizeof(dev->report.mouse));
+        }
+        mtx_unlock(&dev->lock);
         memset(&dev->report.mouse, 0, sizeof(dev->report.mouse));
         break;
         }
@@ -601,13 +613,42 @@ static void i8042_identify(int (*cmd)(uint8_t* param, int command)) {
     cmd(resp, I8042_CMD_SCAN_EN);
 }
 
-static mx_status_t i8042_get_descriptor(mx_hid_device_t* dev, uint8_t desc_type,
+static mx_status_t i8042_query(mx_device_t* dev, uint32_t options, hid_info_t* info) {
+    i8042_device_t* i8042 = dev->ctx;
+    info->dev_num = i8042->type;  // use the type for the device number for now
+    info->dev_class = i8042->type;
+    info->boot_device = true;
+    return NO_ERROR;
+}
+
+static mx_status_t i8042_start(mx_device_t* dev, hidbus_ifc_t* ifc, void* cookie) {
+    i8042_device_t* i8042 = dev->ctx;
+    mtx_lock(&i8042->lock);
+    if (i8042->ifc != NULL) {
+        mtx_unlock(&i8042->lock);
+        return ERR_ALREADY_BOUND;
+    }
+    i8042->ifc = ifc;
+    i8042->cookie = cookie;
+    mtx_unlock(&i8042->lock);
+    return NO_ERROR;
+}
+
+static void i8042_stop(mx_device_t* dev) {
+    i8042_device_t* i8042 = dev->ctx;
+    mtx_lock(&i8042->lock);
+    i8042->ifc = NULL;
+    i8042->cookie = NULL;
+    mtx_unlock(&i8042->lock);
+}
+
+static mx_status_t i8042_get_descriptor(mx_device_t* dev, uint8_t desc_type,
         void** data, size_t* len) {
     if (desc_type != HID_DESC_TYPE_REPORT) {
         return ERR_NOT_FOUND;
     }
 
-    i8042_device_t* device = get_i8042_device(dev);
+    i8042_device_t* device = dev->ctx;
     const uint8_t* buf = NULL;
     size_t buflen = 0;
     if (device->type == INPUT_PROTO_KBD) {
@@ -626,33 +667,36 @@ static mx_status_t i8042_get_descriptor(mx_hid_device_t* dev, uint8_t desc_type,
     return NO_ERROR;
 }
 
-static mx_status_t i8042_get_report(mx_hid_device_t* dev, uint8_t rpt_type, uint8_t rpt_id,
+static mx_status_t i8042_get_report(mx_device_t* dev, uint8_t rpt_type, uint8_t rpt_id,
         void* data, size_t len) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_set_report(mx_hid_device_t* dev, uint8_t rpt_type, uint8_t rpt_id,
+static mx_status_t i8042_set_report(mx_device_t* dev, uint8_t rpt_type, uint8_t rpt_id,
         void* data, size_t len) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_get_idle(mx_hid_device_t* dev, uint8_t rpt_type, uint8_t* duration) {
+static mx_status_t i8042_get_idle(mx_device_t* dev, uint8_t rpt_type, uint8_t* duration) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_set_idle(mx_hid_device_t* dev, uint8_t rpt_type, uint8_t duration) {
+static mx_status_t i8042_set_idle(mx_device_t* dev, uint8_t rpt_type, uint8_t duration) {
     return NO_ERROR;
 }
 
-static mx_status_t i8042_get_protocol(mx_hid_device_t* dev, uint8_t* protocol) {
+static mx_status_t i8042_get_protocol(mx_device_t* dev, uint8_t* protocol) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_set_protocol(mx_hid_device_t* dev, uint8_t protocol) {
+static mx_status_t i8042_set_protocol(mx_device_t* dev, uint8_t protocol) {
     return NO_ERROR;
 }
 
-static hid_bus_ops_t hid_bus_ops = {
+static hidbus_protocol_t hidbus_ops = {
+    .query = i8042_query,
+    .start = i8042_start,
+    .stop = i8042_stop,
     .get_descriptor = i8042_get_descriptor,
     .get_report = i8042_get_report,
     .set_report = i8042_set_report,
@@ -662,14 +706,17 @@ static hid_bus_ops_t hid_bus_ops = {
     .set_protocol = i8042_set_protocol,
 };
 
-static mx_status_t i8042_dev_init(i8042_device_t* dev, const char* name, mx_device_t* parent) {
-    hid_init_device(&dev->hiddev, &hid_bus_ops, dev->type, true, dev->type);
-    mx_status_t status = hid_add_device_etc(&_driver_i8042, &dev->hiddev, parent, name);
-    if (status != NO_ERROR) {
-        hid_release_device(&dev->hiddev);
-        return status;
-    }
+static mx_status_t i8042_release(mx_device_t* dev) {
+    i8042_device_t* i8042 = dev->ctx;
+    free(i8042);
+    return NO_ERROR;
+}
 
+static mx_protocol_device_t i8042_dev_proto = {
+    .release = i8042_release,
+};
+
+static mx_status_t i8042_dev_init(i8042_device_t* dev, const char* name, mx_device_t* parent) {
     // enable device port
     int cmd = dev->type == INPUT_PROTO_KBD ?
         I8042_CMD_CTL_KBD_DIS : I8042_CMD_CTL_MOUSE_DIS;
@@ -688,7 +735,6 @@ static mx_status_t i8042_dev_init(i8042_device_t* dev, const char* name, mx_devi
         ISA_IRQ_KEYBOARD : ISA_IRQ_MOUSE;
     dev->irq = mx_interrupt_create(get_root_resource(), interrupt, MX_FLAG_REMAP_IRQ);
     if (dev->irq < 0) {
-        hid_release_device(&dev->hiddev);
         return dev->irq;
     }
 
@@ -697,11 +743,20 @@ static mx_status_t i8042_dev_init(i8042_device_t* dev, const char* name, mx_devi
         "i8042-kbd-irq" : "i8042-mouse-irq";
     int ret = thrd_create_with_name(&dev->irq_thread, i8042_irq_thread, dev, name);
     if (ret != thrd_success) {
-        hid_release_device(&dev->hiddev);
         return ERR_BAD_STATE;
     }
 
-    return NO_ERROR;
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = name,
+        .ctx = dev,
+        .driver = &_driver_i8042,
+        .ops = &i8042_dev_proto,
+        .proto_id = MX_PROTOCOL_HIDBUS,
+        .proto_ops = &hidbus_ops,
+    };
+
+    return device_add2(parent, &args, &dev->mxdev);
 }
 
 static int i8042_init_thread(void* arg) {
@@ -733,6 +788,7 @@ static int i8042_init_thread(void* arg) {
     if (!kbd_device)
         return ERR_NO_MEMORY;
 
+    mtx_init(&kbd_device->lock, mtx_plain);
     kbd_device->type = INPUT_PROTO_KBD;
     status = i8042_dev_init(kbd_device, "i8042-keyboard", parent);
     if (status != NO_ERROR) {
@@ -744,6 +800,7 @@ static int i8042_init_thread(void* arg) {
         i8042_device_t* mouse_device = NULL;
         mouse_device = calloc(1, sizeof(i8042_device_t));
         if (mouse_device) {
+            mtx_init(&mouse_device->lock, mtx_plain);
             mouse_device->type = INPUT_PROTO_MOUSE;
             status = i8042_dev_init(mouse_device, "i8042-mouse", parent);
             if (status != NO_ERROR) {
@@ -763,13 +820,12 @@ static mx_status_t i8042_bind(mx_driver_t* driver, mx_device_t* parent, void** c
     return rc;
 }
 
-mx_driver_t _driver_i8042 = {
-    .ops = {
-        .bind = i8042_bind,
-    },
+static mx_driver_ops_t i8042_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = i8042_bind,
 };
 
 //TODO: should bind against PC/ACPI instead of misc
-MAGENTA_DRIVER_BEGIN(_driver_i8042, "i8042", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(i8042, i8042_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
-MAGENTA_DRIVER_END(_driver_i8042)
+MAGENTA_DRIVER_END(i8042)

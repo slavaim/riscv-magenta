@@ -255,10 +255,13 @@ status_t ProcessDispatcher::AddThread(UserThread* t, bool initial_thread) {
 void ProcessDispatcher::RemoveThread(UserThread* t) {
     LTRACE_ENTRY_OBJ;
 
+    // OnThreadExitForDebugger will block in ExceptionHandlerExchange, so don't
+    // hold |exception_lock_| across the call.
     {
-        AutoLock lock(&exception_lock_);
-        if (debugger_exception_port_)
-            debugger_exception_port_->OnThreadExitForDebugger(t);
+        mxtl::RefPtr<ExceptionPort> eport(debugger_exception_port());
+        if (eport) {
+            eport->OnThreadExitForDebugger(t);
+        }
     }
 
     // we're going to check for state and possibly transition below
@@ -344,21 +347,31 @@ void ProcessDispatcher::SetStateLocked(State s) {
         // Send out exception reports before signalling MX_TASK_TERMINATED,
         // the theory being that marking the process as terminated is the
         // last thing that is done.
+        //
         // Note: If we need OnProcessExit for the debugger to do an exchange
         // with the debugger then this should preceed aspace destruction.
         // For now it is left here, following aspace destruction.
+        //
+        // Note: If an eport is bound, it will have a reference to the
+        // ProcessDispatcher and thus keep the object around until someone
+        // unbinds the port or closes all handles to its underling
+        // PortDispatcher.
+        //
+        // There's no need to hold |exception_lock_| across OnProcessExit
+        // here so don't. We don't assume anything about what OnProcessExit
+        // does. If it blocks the exception port could get removed out from
+        // underneath us, so make a copy.
         {
-            AutoLock lock(&exception_lock_);
-            if (exception_port_) {
-                exception_port_->OnProcessExit(this);
+            mxtl::RefPtr<ExceptionPort> eport(exception_port());
+            if (eport) {
+                eport->OnProcessExit(this);
             }
-            if (debugger_exception_port_) {
-                debugger_exception_port_->OnProcessExit(this);
+        }
+        {
+            mxtl::RefPtr<ExceptionPort> debugger_eport(debugger_exception_port());
+            if (debugger_eport) {
+                debugger_eport->OnProcessExit(this);
             }
-            // Note: If an eport is bound, it will have a reference to the
-            // ProcessDispatcher and thus keep the object around until someone
-            // unbinds the port or closes all handles to its underling
-            // PortDispatcher.
         }
 
         // signal waiter
@@ -566,6 +579,7 @@ status_t ProcessDispatcher::GetThreads(mxtl::Array<mx_koid_t>* out_threads) {
 }
 
 status_t ProcessDispatcher::SetExceptionPort(mxtl::RefPtr<ExceptionPort> eport) {
+    LTRACE_ENTRY_OBJ;
     bool debugger = false;
     switch (eport->type()) {
     case ExceptionPort::Type::DEBUGGER:
@@ -599,6 +613,7 @@ status_t ProcessDispatcher::SetExceptionPort(mxtl::RefPtr<ExceptionPort> eport) 
 }
 
 bool ProcessDispatcher::ResetExceptionPort(bool debugger, bool quietly) {
+    LTRACE_ENTRY_OBJ;
     mxtl::RefPtr<ExceptionPort> eport;
 
     // Remove the exception handler first. As we resume threads we don't
@@ -664,30 +679,24 @@ public:
     mxtl::RefPtr<ProcessDispatcher> get_pd() { return pd_; }
 
 private:
-    bool Size(uint32_t proc_count, uint32_t job_count) final {
-        return true;
-    }
-
-    bool OnJob(JobDispatcher* job, uint32_t index) final {
-        // Stop if we have already found it.
-        return pd_ == nullptr;
-    }
-
-    bool OnProcess(ProcessDispatcher* process, uint32_t index) final {
-        if (process->get_koid() == koid_)
+    bool OnProcess(ProcessDispatcher* process) final {
+        if (process->get_koid() == koid_) {
             pd_ = mxtl::WrapRefPtr(process);
-
+            // Stop the enumeration.
+            return false;
+        }
+        // Keep looking.
         return true;
     }
 
-    mx_koid_t koid_;
+    const mx_koid_t koid_;
     mxtl::RefPtr<ProcessDispatcher> pd_ = nullptr;
 };
 
 // static
 mxtl::RefPtr<ProcessDispatcher> ProcessDispatcher::LookupProcessById(mx_koid_t koid) {
     FindProcessByKoid finder(koid);
-    GetRootJobDispatcher()->EnumerateChildren(&finder);
+    GetRootJobDispatcher()->EnumerateChildren(&finder, /* recurse */ true);
     return finder.get_pd();
 }
 
@@ -697,13 +706,6 @@ mxtl::RefPtr<UserThread> ProcessDispatcher::LookupThreadById(mx_koid_t koid) {
 
     auto iter = thread_list_.find_if([koid](const UserThread& t) { return t.get_koid() == koid; });
     return mxtl::WrapRefPtr(iter.CopyPointer());
-}
-
-mx_status_t ProcessDispatcher::set_bad_handle_policy(uint32_t new_policy) {
-    if (new_policy > MX_POLICY_BAD_HANDLE_EXIT)
-        return ERR_NOT_SUPPORTED;
-    bad_handle_policy_ = new_policy;
-    return NO_ERROR;
 }
 
 uintptr_t ProcessDispatcher::get_debug_addr() const {
@@ -739,21 +741,4 @@ const char* StateToString(ProcessDispatcher::State state) {
 bool ProcessDispatcher::IsHandleValid(mx_handle_t handle_value) {
     AutoLock lock(&handle_table_lock_);
     return (GetHandleLocked(handle_value) != nullptr);
-}
-
-mx_status_t ProcessDispatcher::BadHandle(mx_handle_t handle_value,
-                                         mx_status_t error) {
-    // TODO(mcgrathr): Maybe treat other errors the same?
-    // This also gets ERR_WRONG_TYPE and ERR_ACCESS_DENIED (for rights checks).
-    if (error != ERR_BAD_HANDLE)
-        return error;
-
-    // TODO(cpu): Generate an exception when exception handling lands.
-    if (get_bad_handle_policy() == MX_POLICY_BAD_HANDLE_EXIT) {
-        char name[MX_MAX_NAME_LEN];
-        get_name(name);
-        printf("\n[fatal: %s used a bad handle]\n", name);
-        Exit(error);
-    }
-    return error;
 }

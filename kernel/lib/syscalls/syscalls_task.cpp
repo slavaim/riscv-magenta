@@ -24,6 +24,7 @@
 #include <magenta/magenta.h>
 #include <magenta/process_dispatcher.h>
 #include <magenta/syscalls/debug.h>
+#include <magenta/syscalls/policy.h>
 #include <magenta/thread_dispatcher.h>
 #include <magenta/user_copy.h>
 #include <magenta/user_thread.h>
@@ -50,6 +51,9 @@ constexpr uint32_t kMaxThreadStateSize = MX_MAX_THREAD_STATE_SIZE;
 
 constexpr size_t kMaxDebugReadBlock = 64 * 1024u * 1024u;
 constexpr size_t kMaxDebugWriteBlock = 64 * 1024u * 1024u;
+
+// Assume the typical set-policy call has 8 items or less.
+constexpr size_t kPolicyBasicInlineCount = 8;
 
 
 mx_status_t sys_thread_create(mx_handle_t process_handle,
@@ -345,6 +349,8 @@ void sys_process_exit(int retcode) {
 mx_status_t sys_process_read_memory(mx_handle_t proc, uintptr_t vaddr,
                                     user_ptr<void> _buffer,
                                     size_t len, user_ptr<size_t> _actual) {
+    LTRACEF("vaddr 0x%" PRIxPTR ", size %zu\n", vaddr, len);
+
     if (!_buffer)
         return ERR_INVALID_ARGS;
     if (len == 0 || len > kMaxDebugReadBlock)
@@ -389,6 +395,8 @@ mx_status_t sys_process_read_memory(mx_handle_t proc, uintptr_t vaddr,
 mx_status_t sys_process_write_memory(mx_handle_t proc, uintptr_t vaddr,
                                      user_ptr<const void> _buffer,
                                      size_t len, user_ptr<size_t> _actual) {
+    LTRACEF("vaddr 0x%" PRIxPTR ", size %zu\n", vaddr, len);
+
     if (!_buffer)
         return ERR_INVALID_ARGS;
     if (len == 0 || len > kMaxDebugWriteBlock)
@@ -488,4 +496,35 @@ mx_status_t sys_job_create(mx_handle_t parent_job, uint32_t options, user_ptr<mx
 
     up->AddHandle(mxtl::move(job_handle));
     return NO_ERROR;
+}
+
+mx_status_t sys_job_set_policy(mx_handle_t job_handle, uint32_t options,
+    uint32_t topic, user_ptr<const void> _policy, uint32_t count) {
+
+    if ((options != MX_JOB_POL_RELATIVE) && (options != MX_JOB_POL_ABSOLUTE))
+        return ERR_INVALID_ARGS;
+    if (!_policy || (count == 0u))
+        return ERR_INVALID_ARGS;
+
+    if (topic != MX_JOB_POL_BASIC)
+        return ERR_INVALID_ARGS;
+
+    AllocChecker ac;
+    mxtl::InlineArray<
+        mx_policy_basic, kPolicyBasicInlineCount> policy(&ac, count);
+    if (!ac.check())
+        return ERR_NO_MEMORY;
+
+    auto status = _policy.copy_array_from_user(policy.get(), sizeof(mx_policy_basic) * count);
+    if (status != NO_ERROR)
+        return ERR_INVALID_ARGS;
+
+    auto up = ProcessDispatcher::GetCurrent();
+
+    mxtl::RefPtr<JobDispatcher> job;
+    status = up->GetDispatcherWithRights(job_handle, MX_RIGHT_SET_POLICY, &job);
+    if (status != NO_ERROR)
+        return status;
+
+    return job->SetPolicy(options, policy.get(), policy.size());
 }

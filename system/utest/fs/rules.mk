@@ -8,6 +8,8 @@ MODULE := $(LOCAL_DIR)
 
 MODULE_TYPE := usertest
 
+MODULE_USERTEST_GROUP := fs
+
 MODULE_NAME := fs-test
 
 MODULE_SRCS := \
@@ -19,6 +21,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/test-append.c \
     $(LOCAL_DIR)/test-basic.c \
     $(LOCAL_DIR)/test-directory.c \
+    $(LOCAL_DIR)/test-dot-dot.c \
     $(LOCAL_DIR)/test-link.c \
     $(LOCAL_DIR)/test-maxfile.c \
     $(LOCAL_DIR)/test-overflow.c \
@@ -33,7 +36,7 @@ MODULE_SRCS := \
 MODULE_LDFLAGS := --wrap open --wrap unlink --wrap stat --wrap mkdir
 MODULE_LDFLAGS += --wrap rename --wrap truncate --wrap opendir
 MODULE_LDFLAGS += --wrap utimes --wrap link --wrap symlink --wrap rmdir
-MODULE_LDFLAGS += --wrap chdir
+MODULE_LDFLAGS += --wrap chdir --wrap renameat
 
 MODULE_LIBS := \
     system/ulib/mxio \

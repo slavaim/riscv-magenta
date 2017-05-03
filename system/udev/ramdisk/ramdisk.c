@@ -26,7 +26,7 @@ mx_driver_t _driver_ramdisk;
 static mx_device_t* ramdisk_ctl_dev;
 
 typedef struct ramdisk_device {
-    mx_device_t device;
+    mx_device_t* mxdev;
     uint64_t blk_size;
     uint64_t blk_count;
     mx_handle_t vmo;
@@ -34,13 +34,6 @@ typedef struct ramdisk_device {
     block_callbacks_t* cb;
     char name[NAME_MAX];
 } ramdisk_device_t;
-
-typedef struct ramctl_instance {
-    mx_device_t device;
-} ramctl_instance_t;
-
-#define get_ramdisk(dev) containerof(dev, ramdisk_device_t, device)
-#define get_ramctl_instance(dev) containerof(dev, ramctl_instance_t, device)
 
 static uint64_t sizebytes(ramdisk_device_t* rdev) {
     return rdev->blk_size * rdev->blk_count;
@@ -64,14 +57,21 @@ static mx_status_t constrain_args(ramdisk_device_t* ramdev,
     return NO_ERROR;
 }
 
+static void ramdisk_get_info(mx_device_t* dev, block_info_t* info) {
+    ramdisk_device_t* ramdev = dev->ctx;
+    memset(info, 0, sizeof(*info));
+    info->block_size = ramdev->blk_size;
+    info->block_count = sizebytes(ramdev) / ramdev->blk_size;
+}
+
 static void ramdisk_fifo_set_callbacks(mx_device_t* dev, block_callbacks_t* cb) {
-    ramdisk_device_t* rdev = get_ramdisk(dev);
+    ramdisk_device_t* rdev = dev->ctx;
     rdev->cb = cb;
 }
 
 static void ramdisk_fifo_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length,
                               uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    ramdisk_device_t* rdev = get_ramdisk(dev);
+    ramdisk_device_t* rdev = dev->ctx;
     mx_off_t len = length;
     mx_status_t status = constrain_args(rdev, &dev_offset, &len);
     if (status != NO_ERROR) {
@@ -87,7 +87,7 @@ static void ramdisk_fifo_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length
 
 static void ramdisk_fifo_write(mx_device_t* dev, mx_handle_t vmo, uint64_t length,
                                uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    ramdisk_device_t* rdev = get_ramdisk(dev);
+    ramdisk_device_t* rdev = dev->ctx;
     mx_off_t len = length;
     mx_status_t status = constrain_args(rdev, &dev_offset, &len);
     if (status != NO_ERROR) {
@@ -103,6 +103,7 @@ static void ramdisk_fifo_write(mx_device_t* dev, mx_handle_t vmo, uint64_t lengt
 
 static block_ops_t ramdisk_block_ops = {
     .set_callbacks = ramdisk_fifo_set_callbacks,
+    .get_info = ramdisk_get_info,
     .read = ramdisk_fifo_read,
     .write = ramdisk_fifo_write,
 };
@@ -111,7 +112,7 @@ static block_ops_t ramdisk_block_ops = {
 
 static ssize_t ramdisk_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
                              size_t cmdlen, void* reply, size_t max) {
-    ramdisk_device_t* ramdev = get_ramdisk(dev);
+    ramdisk_device_t* ramdev = dev->ctx;
 
     switch (op) {
     case IOCTL_RAMDISK_UNLINK: {
@@ -125,17 +126,12 @@ static ssize_t ramdisk_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
         strncpy(name, ramdev->name, max);
         return strnlen(name, max);
     }
-    case IOCTL_BLOCK_GET_SIZE: {
-        uint64_t* size = reply;
-        if (max < sizeof(*size)) return ERR_BUFFER_TOO_SMALL;
-        *size = sizebytes(ramdev);
-        return sizeof(*size);
-    }
-    case IOCTL_BLOCK_GET_BLOCKSIZE: {
-        uint64_t* blksize = reply;
-        if (max < sizeof(*blksize)) return ERR_BUFFER_TOO_SMALL;
-        *blksize = ramdev->blk_size;
-        return sizeof(*blksize);
+    case IOCTL_BLOCK_GET_INFO: {
+        block_info_t* info = reply;
+        if (max < sizeof(*info))
+            return ERR_BUFFER_TOO_SMALL;
+        ramdisk_get_info(dev, info);
+        return sizeof(*info);
     }
     case IOCTL_BLOCK_RR_PART: {
         return device_rebind(dev);
@@ -150,7 +146,7 @@ static ssize_t ramdisk_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
 }
 
 static void ramdisk_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
-    ramdisk_device_t* ramdev = get_ramdisk(dev);
+    ramdisk_device_t* ramdev = dev->ctx;
 
     mx_status_t status = constrain_args(ramdev, &txn->offset, &txn->length);
     if (status != NO_ERROR) {
@@ -177,7 +173,7 @@ static void ramdisk_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
 }
 
 static mx_off_t ramdisk_getsize(mx_device_t* dev) {
-    return sizebytes(get_ramdisk(dev));
+    return sizebytes(dev->ctx);
 }
 
 static void ramdisk_unbind(mx_device_t* dev) {
@@ -185,7 +181,7 @@ static void ramdisk_unbind(mx_device_t* dev) {
 }
 
 static mx_status_t ramdisk_release(mx_device_t* dev) {
-    ramdisk_device_t* ramdev = get_ramdisk(dev);
+    ramdisk_device_t* ramdev = dev->ctx;
     if (ramdev->vmo != MX_HANDLE_INVALID) {
         mx_vmar_unmap(mx_vmar_root_self(), ramdev->mapped_addr, sizebytes(ramdev));
         mx_handle_close(ramdev->vmo);
@@ -237,10 +233,17 @@ static ssize_t ramctl_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
             return status;
         }
 
-        device_init(&ramdev->device, &_driver_ramdisk, config->name, &ramdisk_instance_proto);
-        ramdev->device.protocol_id = MX_PROTOCOL_BLOCK_CORE;
-        ramdev->device.protocol_ops = &ramdisk_block_ops;
-        if ((status = device_add(&ramdev->device, ramdisk_ctl_dev)) != NO_ERROR) {
+        device_add_args_t args = {
+            .version = DEVICE_ADD_ARGS_VERSION,
+            .name = config->name,
+            .ctx = ramdev,
+            .driver = &_driver_ramdisk,
+            .ops = &ramdisk_instance_proto,
+            .proto_id = MX_PROTOCOL_BLOCK_CORE,
+            .proto_ops = &ramdisk_block_ops,
+        };
+
+        if ((status = device_add2(ramdisk_ctl_dev, &args, &ramdev->mxdev)) != NO_ERROR) {
             mx_vmar_unmap(mx_vmar_root_self(), ramdev->mapped_addr, sizebytes(ramdev));
             mx_handle_close(ramdev->vmo);
             free(ramdev);
@@ -257,30 +260,28 @@ static void ramctl_unbind(mx_device_t* dev) {
     device_remove(dev);
 }
 
-static mx_status_t ramctl_release(mx_device_t* dev) {
-    ramctl_instance_t* device = get_ramctl_instance(dev);
-    free(device);
-    return NO_ERROR;
-}
-
 static mx_protocol_device_t ramctl_instance_proto = {
     .ioctl = ramctl_ioctl,
     .unbind = ramctl_unbind,
-    .release = ramctl_release,
 };
 
 static mx_status_t ramctl_open(mx_device_t* dev, mx_device_t** dev_out, uint32_t flags) {
-    ramctl_instance_t* device = calloc(1, sizeof(ramctl_instance_t));
-    if (!device) {
-        return ERR_NO_MEMORY;
-    }
-    device_init(&device->device, &_driver_ramdisk, "ramctl-instance", &ramctl_instance_proto);
+    mx_device_t* instance_dev;
+
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ramctl-instance",
+        .driver = &_driver_ramdisk,
+        .ops = &ramctl_instance_proto,
+        .flags = DEVICE_ADD_INSTANCE,
+    };
+
     mx_status_t status;
-    if ((status = device_add_instance(&device->device, dev)) != NO_ERROR) {
-        free(device);
+    if ((status = device_add2(dev, &args, &instance_dev)) < 0) {
         return status;
     }
-    *dev_out = &device->device;
+
+    *dev_out = instance_dev;
     return NO_ERROR;
 }
 
@@ -289,22 +290,21 @@ static mx_protocol_device_t ramdisk_ctl_proto = {
 };
 
 static mx_status_t ramdisk_driver_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
-    if (device_create(&ramdisk_ctl_dev, driver, "ramctl", &ramdisk_ctl_proto) == NO_ERROR) {
-        mx_status_t status;
-        if ((status = device_add(ramdisk_ctl_dev, parent)) < 0) {
-            free(ramdisk_ctl_dev);
-            return status;
-        }
-    }
-    return NO_ERROR;
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ramctl",
+        .driver = driver,
+        .ops = &ramdisk_ctl_proto,
+    };
+
+    return device_add2(parent, &args, &ramdisk_ctl_dev);
 }
 
-mx_driver_t _driver_ramdisk = {
-    .ops = {
-        .bind = ramdisk_driver_bind,
-    },
+static mx_driver_ops_t ramdisk_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = ramdisk_driver_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_ramdisk, "ramdisk", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(ramdisk, ramdisk_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
-MAGENTA_DRIVER_END(_driver_ramdisk)
+MAGENTA_DRIVER_END(ramdisk)

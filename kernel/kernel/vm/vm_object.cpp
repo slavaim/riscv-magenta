@@ -26,7 +26,7 @@
 
 VmObject::VmObject(mxtl::RefPtr<VmObject> parent)
     : lock_(parent ? parent->lock_ref() : local_lock_),
-    parent_(mxtl::move(parent)) {
+      parent_(mxtl::move(parent)) {
     LTRACEF("%p\n", this);
 }
 
@@ -53,25 +53,25 @@ VmObject::~VmObject() {
     DEBUG_ASSERT(children_list_.is_empty());
 }
 
-void VmObject::AddMappingLocked(VmMapping* r) TA_REQ(lock_) {
+void VmObject::AddMappingLocked(VmMapping* r) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     mapping_list_.push_front(r);
 }
 
-void VmObject::RemoveMappingLocked(VmMapping* r) TA_REQ(lock_) {
+void VmObject::RemoveMappingLocked(VmMapping* r) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     mapping_list_.erase(*r);
 }
 
-void VmObject::AddChildLocked(VmObject* o) TA_REQ(lock_) {
+void VmObject::AddChildLocked(VmObject* o) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     children_list_.push_front(o);
 }
 
-void VmObject::RemoveChildLocked(VmObject* o) TA_REQ(lock_) {
+void VmObject::RemoveChildLocked(VmObject* o) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
     children_list_.erase(*o);
@@ -81,9 +81,13 @@ void VmObject::RangeChangeUpdateLocked(uint64_t offset, uint64_t len) {
     canary_.Assert();
     DEBUG_ASSERT(lock_.IsHeld());
 
+    // offsets for vmos needn't be aligned, but vmars use aligned offsets
+    const uint64_t aligned_offset = ROUNDDOWN(offset, PAGE_SIZE);
+    const uint64_t aligned_len = ROUNDUP(offset + len, PAGE_SIZE) - aligned_offset;
+
     // other mappings may have covered this offset into the vmo, so unmap those ranges
     for (auto& m : mapping_list_) {
-        m.UnmapVmoRangeLocked(offset, len);
+        m.UnmapVmoRangeLocked(aligned_offset, aligned_len);
     }
 
     // inform all our children this as well, so they can inform their mappings

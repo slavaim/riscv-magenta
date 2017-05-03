@@ -23,7 +23,7 @@
 #define FLAG_BG_THREAD_JOINABLE       0x0001
 
 typedef struct blkdev {
-    mx_device_t device;
+    mx_device_t* mxdev;
     block_ops_t* blockops;
 
     mtx_t lock;
@@ -32,12 +32,10 @@ typedef struct blkdev {
     thrd_t bs_thread;
 } blkdev_t;
 
-#define get_blkdev(dev) containerof(dev, blkdev_t, device)
-
 static int blockserver_thread(void* arg) {
     blkdev_t* bdev = (blkdev_t*)arg;
     BlockServer* bs = bdev->bs;
-    blockserver_serve(bs, bdev->device.parent, bdev->blockops);
+    blockserver_serve(bs, bdev->mxdev->parent, bdev->blockops);
 
     mtx_lock(&bdev->lock);
     bdev->bs = NULL;
@@ -174,7 +172,7 @@ static ssize_t blkdev_fifo_close(blkdev_t* bdev) {
 
 static ssize_t blkdev_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
                             size_t cmdlen, void* reply, size_t max) {
-    blkdev_t* blkdev = get_blkdev(dev);
+    blkdev_t* blkdev = dev->ctx;
     switch (op) {
     case IOCTL_BLOCK_GET_FIFOS:
         return blkdev_get_fifos(blkdev, reply, max);
@@ -188,19 +186,18 @@ static ssize_t blkdev_ioctl(mx_device_t* dev, uint32_t op, const void* cmd,
         return blkdev_fifo_close(blkdev);
     default: {
         mx_device_t* parent = dev->parent;
-        return parent->ops->ioctl(parent, op, cmd, cmdlen, reply, max);
+        return device_op_ioctl(parent, op, cmd, cmdlen, reply, max);
     }
     }
 }
 
 static void blkdev_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
-    mx_device_t* parent = dev->parent;
-    parent->ops->iotxn_queue(parent, txn);
+    iotxn_queue(dev->parent, txn);
 }
 
 static mx_off_t blkdev_get_size(mx_device_t* dev) {
     mx_device_t* parent = dev->parent;
-    return parent->ops->get_size(parent);
+    return device_op_get_size(parent);
 }
 
 static void blkdev_unbind(mx_device_t* dev) {
@@ -208,7 +205,7 @@ static void blkdev_unbind(mx_device_t* dev) {
 }
 
 static mx_status_t blkdev_release(mx_device_t* dev) {
-    blkdev_t* blkdev = get_blkdev(dev);
+    blkdev_t* blkdev = dev->ctx;
     blkdev_fifo_close(blkdev);
     free(blkdev);
     return NO_ERROR;
@@ -227,33 +224,40 @@ static mx_status_t block_driver_bind(mx_driver_t* drv, mx_device_t* dev, void** 
     if ((bdev = calloc(1, sizeof(blkdev_t))) == NULL) {
         return ERR_NO_MEMORY;
     }
+    mtx_init(&bdev->lock, mtx_plain);
 
     mx_status_t status;
-    if (device_get_protocol(dev, MX_PROTOCOL_BLOCK_CORE, (void**)&bdev->blockops)) {
+    if (device_op_get_protocol(dev, MX_PROTOCOL_BLOCK_CORE, (void**)&bdev->blockops)) {
         status = ERR_INTERNAL;
         goto fail;
     }
 
-    device_init(&bdev->device, drv, "block", &blkdev_ops);
-    mtx_init(&bdev->lock, mtx_plain);
+   device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "block",
+        .ctx = bdev,
+        .driver = drv,
+        .ops = &blkdev_ops,
+        .proto_id = MX_PROTOCOL_BLOCK,
+    };
 
-    bdev->device.protocol_id = MX_PROTOCOL_BLOCK;
-    if ((status = device_add(&bdev->device, dev)) != NO_ERROR) {
+    status = device_add2(dev, &args, &bdev->mxdev);
+    if (status != NO_ERROR) {
         goto fail;
     }
 
     return NO_ERROR;
+
 fail:
     free(bdev);
     return status;
 }
 
-mx_driver_t _driver_block = {
-    .ops = {
-        .bind = block_driver_bind,
-    },
+static mx_driver_ops_t block_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = block_driver_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_block, "block", "magenta", "0.1", 1)
+MAGENTA_DRIVER_BEGIN(block, block_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_BLOCK_CORE),
-MAGENTA_DRIVER_END(_driver_block)
+MAGENTA_DRIVER_END(block)

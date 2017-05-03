@@ -45,7 +45,6 @@ typedef struct {
     uint8_t mac_addr[6];
     uint8_t status[INTR_REQ_SIZE];
     bool online;
-    bool dead;
 
     // interrupt in request
     iotxn_t* interrupt_req;
@@ -59,6 +58,7 @@ typedef struct {
     ethmac_ifc_t* ifc;
     void* cookie;
 
+    thrd_t thread;
     mtx_t mutex;
 } ax88179_t;
 #define get_ax88179(dev) ((ax88179_t*)dev->ctx)
@@ -300,11 +300,6 @@ static void ax88179_write_complete(iotxn_t* request, void* cookie) {
 }
 
 static void ax88179_interrupt_complete(iotxn_t* request, void* cookie) {
-    if (request->status == ERR_PEER_CLOSED) {
-        // request will be released in ax88179_release()
-        return;
-    }
-
     ax88179_t* eth = (ax88179_t*)cookie;
     completion_signal(&eth->completion);
 }
@@ -376,10 +371,6 @@ static void ax88179_send(mx_device_t* dev, uint32_t options, void* data, size_t 
 static void ax88179_unbind(mx_device_t* device) {
     ax88179_t* eth = get_ax88179(device);
 
-    mtx_lock(&eth->mutex);
-    eth->dead = true;
-    mtx_unlock(&eth->mutex);
-
     // this must be last since this can trigger releasing the device
     device_remove(eth->device);
 }
@@ -394,12 +385,15 @@ static void ax88179_free(ax88179_t* eth) {
     }
     iotxn_release(eth->interrupt_req);
 
-    free(eth->device);
     free(eth);
 }
 
 static mx_status_t ax88179_release(mx_device_t* device) {
     ax88179_t* eth = get_ax88179(device);
+
+    // wait for thread to finish before cleaning up
+    thrd_join(eth->thread, NULL);
+
     ax88179_free(eth);
     return NO_ERROR;
 }
@@ -587,7 +581,7 @@ static int ax88179_thread(void* arg) {
     }
 
     // Enable MAC RX
-    data = 0x0398;
+    data = 0x039a;
     status = ax88179_write_mac(eth, AX88179_MAC_RCR, 2, &data);
     if (status < 0) {
         printf("ax88179_write_mac to %#x failed: %d\n", AX88179_MAC_RCR, status);
@@ -595,17 +589,19 @@ static int ax88179_thread(void* arg) {
     }
 
     // Create the device
-    status = device_create(&eth->device, eth->driver, "ax88179", &ax88179_device_proto);
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "ax88179",
+        .ctx = eth,
+        .driver = eth->driver,
+        .ops = &ax88179_device_proto,
+        .proto_id = MX_PROTOCOL_ETHERMAC,
+        .proto_ops = &ethmac_ops,
+    };
+
+    status = device_add2(eth->usb_device, &args, &eth->device);
     if (status < 0) {
         printf("ax88179: failed to create device: %d\n", status);
-        goto fail;
-    }
-
-    eth->device->ctx = eth;
-    eth->device->protocol_id = MX_PROTOCOL_ETHERMAC;
-    eth->device->protocol_ops = &ethmac_ops;
-    status = device_add(eth->device, eth->usb_device);
-    if (status != NO_ERROR) {
         goto fail;
     }
 
@@ -724,12 +720,10 @@ static mx_status_t ax88179_bind(mx_driver_t* driver, mx_device_t* device, void**
     }
     */
 
-    thrd_t thread;
-    int ret = thrd_create_with_name(&thread, ax88179_thread, eth, "ax88179_thread");
+    int ret = thrd_create_with_name(&eth->thread, ax88179_thread, eth, "ax88179_thread");
     if (ret != thrd_success) {
         goto fail;
     }
-    thrd_detach(thread);
     return NO_ERROR;
 
 fail:
@@ -738,14 +732,13 @@ fail:
     return status;
 }
 
-mx_driver_t _driver_ax88179 = {
-    .ops = {
-        .bind = ax88179_bind,
-    },
+static mx_driver_ops_t ax88179_driver_ops = {
+    .version = DRIVER_OPS_VERSION,
+    .bind = ax88179_bind,
 };
 
-MAGENTA_DRIVER_BEGIN(_driver_ax88179, "usb-ethernet-ax88179", "magenta", "0.1", 3)
+MAGENTA_DRIVER_BEGIN(ethernet_ax88179, ax88179_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_USB),
     BI_ABORT_IF(NE, BIND_USB_VID, ASIX_VID),
     BI_MATCH_IF(EQ, BIND_USB_PID, AX88179_PID),
-MAGENTA_DRIVER_END(_driver_ax88179)
+MAGENTA_DRIVER_END(ethernet_ax88179)
