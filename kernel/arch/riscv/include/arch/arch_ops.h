@@ -34,8 +34,9 @@ static inline bool arch_ints_disabled(void)
 
 static inline bool arch_in_int_handler(void)
 {
-    PANIC_UNIMPLEMENTED;
-    return false;
+    extern bool riscv_in_int_handler[SMP_MAX_CPUS];
+
+    return riscv_in_int_handler[arch_curr_cpu_num()];
 }
 
 static inline uint64_t arch_cycle_count(void)

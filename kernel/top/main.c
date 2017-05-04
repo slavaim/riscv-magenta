@@ -42,12 +42,12 @@ static void call_constructors(void)
         (*a)();
 }
 
-static volatile int gWaitForDebugger = 1;
+static volatile int wfd = 1; // wfd stands for Wait For Debugger
 
 /* called from arch code */
 void lk_main(void)
 {
-    while (gWaitForDebugger) {
+    while (wfd) {
     }
     
     // get us into some sort of thread context

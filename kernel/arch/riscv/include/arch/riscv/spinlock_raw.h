@@ -28,8 +28,8 @@ __BEGIN_CDECLS
 static inline void arch_spin_unlock_raw(arch_spinlock_t *lock)
 {
 	__asm__ __volatile__ (
-		"amoswap.w.rl x0, x0, 0(%0)"
-		: "=&r" (lock)
+		"amoswap.w.rl x0, x0, %0"
+		: "+A" (*lock)
 		:: "memory");
 }
 
@@ -38,8 +38,8 @@ static inline int arch_spin_trylock_raw(arch_spinlock_t *lock)
 	int tmp = 1, busy;
 
 	__asm__ __volatile__ (
-		"amoswap.w.aq %0, %2, 0(%1)"
-		: "=&r" (busy), "+&r" (lock)
+		"amoswap.w.aq %0, %2, %1"
+		: "=&r" (busy), "+A" (*lock)
 		: "r" (tmp)
 		: "memory");
 
