@@ -74,12 +74,12 @@ static inline void arch_read_lock(arch_rwlock_t *lock)
 	int tmp;
 
 	__asm__ __volatile__(
-		"1:	lr.w	%1, 0(%0)\n"
+		"1:	lr.w	%1, %0\n"
 		"	bltz	%1, 1b\n"
 		"	addi	%1, %1, 1\n"
-		"	sc.w.aq	%1, %1, 0(%0)\n"
+		"	sc.w.aq	%1, %1, %0\n"
 		"	bnez	%1, 1b\n"
-		: "+&r" (lock), "=&r" (tmp)
+		: "+A" (*lock), "=&r" (tmp)
 		:: "memory");
 }
 
@@ -88,12 +88,12 @@ static inline void arch_write_lock(arch_rwlock_t *lock)
 	int tmp;
 
 	__asm__ __volatile__(
-		"1:	lr.w	%1, 0(%0)\n"
+		"1:	lr.w	%1, %0\n"
 		"	bnez	%1, 1b\n"
 		"	li	%1, -1\n"
-		"	sc.w.aq	%1, %1, 0(%0)\n"
+		"	sc.w.aq	%1, %1, %0\n"
 		"	bnez	%1, 1b\n"
-		: "+&r" (lock), "=&r" (tmp)
+		: "+A" (*lock), "=&r" (tmp)
 		:: "memory");
 }
 
@@ -102,13 +102,13 @@ static inline int arch_read_trylock(arch_rwlock_t * lock)
 	int busy;
 
 	__asm__ __volatile__(
-		"1:	lr.w	%1, 0(%0)\n"
+		"1:	lr.w	%1, %0\n"
 		"	bltz	%1, 1f\n"
 		"	addi	%1, %1, 1\n"
-		"	sc.w.aq	%1, %1, 0(%0)\n"
+		"	sc.w.aq	%1, %1, %0\n"
 		"	bnez	%1, 1b\n"
 		"1:\n"
-		: "+&r" (lock), "=&r" (busy)
+		: "+A" (*lock), "=&r" (busy)
 		:: "memory");
 	
 	return !busy;
@@ -119,13 +119,13 @@ static inline int arch_write_trylock(arch_rwlock_t * lock)
 	int busy;
 
 	__asm__ __volatile__(
-		"1:	lr.w	%1, 0(%0)\n"
+		"1:	lr.w	%1, %0\n"
 		"	bnez	%1, 1f\n"
 		"	li	%1, -1\n"
-		"	sc.w.aq	%1, %1, 0(%0)\n"
+		"	sc.w.aq	%1, %1, %0\n"
 		"	bnez	%1, 1b\n"
 		"1:\n"
-		: "+&r" (lock), "=&r" (busy)
+		: "+A" (*lock), "=&r" (busy)
 		:: "memory");
 	
 	return !busy;
@@ -134,8 +134,8 @@ static inline int arch_write_trylock(arch_rwlock_t * lock)
 static inline void arch_read_unlock(arch_rwlock_t * lock)
 {
 	__asm__ __volatile__(
-		"amoadd.w.rl x0, %1, 0(%0)"
-		: "+&r" (lock)
+		"amoadd.w.rl x0, %1, %0"
+		: "+A" (*lock)
 		: "r" (-1)
 		: "memory");
 }
@@ -143,8 +143,8 @@ static inline void arch_read_unlock(arch_rwlock_t * lock)
 static inline void arch_write_unlock(arch_rwlock_t * lock)
 {
 	__asm__ __volatile__ (
-		"amoswap.w.rl x0, x0, 0(%0)"
-		: "=&r" (lock)
+		"amoswap.w.rl x0, x0, %0"
+		: "=A" (*lock)
 		:: "memory");
 }
 
