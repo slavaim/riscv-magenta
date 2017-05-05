@@ -11,6 +11,7 @@
 #include <debug.h>
 #include <assert.h>
 #include <arch/riscv/pgtable.h>
+#include <arch/riscv/pgtable-walk.h>
 #include <arch/ops.h>
 
 /* initialize per address space */
@@ -81,10 +82,98 @@ status_t arch_mmu_protect(arch_aspace_t* aspace, vaddr_t vaddr, size_t count, ui
     return ERR_NOT_SUPPORTED;
 }
 
-status_t arch_mmu_query(arch_aspace_t* aspace, vaddr_t vaddr, paddr_t* paddr, uint* mmu_flags)
+/* test the vaddr against the address space's range */
+static bool is_valid_vaddr(arch_aspace_t* aspace, vaddr_t vaddr) {
+    return (vaddr >= aspace->base && vaddr <= aspace->base + aspace->size - 1);
+}
+
+static inline uint pte_mmu_flags(pte_t pte)
 {
-    PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    uint mmu_flags = 0;
+
+    if (pte_write(pte))
+        mmu_flags |= ARCH_MMU_FLAG_PERM_WRITE;
+    
+    if (pte_read(pte))
+        mmu_flags |= ARCH_MMU_FLAG_PERM_READ;
+
+    if (pte_exec(pte))
+        mmu_flags |= ARCH_MMU_FLAG_PERM_EXECUTE;
+
+    if (pte_user(pte))
+        mmu_flags |= ARCH_MMU_FLAG_PERM_USER;
+
+    return mmu_flags;
+}
+
+static inline uint pdu_mmu_flags(pud_t pdu)
+{
+    pte_t pte = {.pte = pud_val(pdu) };
+
+    return pte_mmu_flags(pte);
+}
+
+static inline uint pmd_mmu_flags(pmd_t pmd)
+{
+    pte_t pte = {.pte = pmd_val(pmd) };
+
+    return pte_mmu_flags(pte);
+}
+
+status_t arch_mmu_query(arch_aspace_t* aspace, vaddr_t vaddr, paddr_t* p_paddr, uint* p_mmu_flags)
+{
+    if (!is_valid_vaddr(aspace, vaddr))
+        return ERR_INVALID_ARGS;
+
+    pgd_t* pgd = pgd_offset(aspace->pt_virt, vaddr);
+	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+		return ERR_NOT_FOUND;
+
+    //
+    // no pud in the current release so pud == pgd ,
+    // nevertehless the pud code is present
+    //
+	pud_t* pud = pud_offset(pgd, vaddr);
+	if (pud_none(*pud) || unlikely(pud_bad(*pud)))
+		return ERR_NOT_FOUND;
+
+	if (pud_huge(*pud)) {
+        assert( !"we should not be here as PUD is not used" );
+		paddr_t paddr = follow_huge_pud_to_phys(*pud, vaddr);
+		if (paddr) {
+            if (p_paddr) *p_paddr = paddr;
+            if (p_mmu_flags) *p_mmu_flags = pdu_mmu_flags(*pud);
+			return NO_ERROR;
+        }
+		return ERR_NOT_FOUND;
+	}
+
+    pmd_t* pmd = pmd_offset(pud, vaddr);
+	if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd)))
+		return ERR_NOT_FOUND;
+
+	if (pmd_huge(*pmd)) {
+		paddr_t paddr = follow_huge_pmd_to_phys(*pmd, vaddr);
+		if (paddr) {
+            if (p_paddr) *p_paddr = paddr;
+            if (p_mmu_flags) *p_mmu_flags = pmd_mmu_flags(*pmd);
+			return NO_ERROR;
+        }
+		return ERR_NOT_FOUND;
+	}
+
+    pte_t* pte = pte_offset(pmd, vaddr);
+	if (pte_none(*pte) || !pte_present(*pte))
+		return ERR_NOT_FOUND;
+
+	paddr_t paddr = follow_pte_to_phys(*pte, vaddr);
+	if (paddr) {
+        if (p_paddr) *p_paddr = paddr;
+        if (p_mmu_flags) *p_mmu_flags = pte_mmu_flags(*pte);
+		return NO_ERROR;
+    }
+
+    return ERR_NOT_FOUND;
 }
 
 /*

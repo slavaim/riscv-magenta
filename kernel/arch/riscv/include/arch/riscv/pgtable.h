@@ -79,17 +79,72 @@ __BEGIN_CDECLS
 extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
 #define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
 
-static inline int pmd_present(pmd_t pmd)
+//
+// general page table routines
+//
+
+/* Yields the page frame number (PFN) of a page table entry
+   This is applied to any level page table - pgd, pud, pmd, pte.
+   The name is a misnomer as pte is usually used for the leaf
+   page table entry but the RISC-V documentation refers any 
+   level page table entry as pte.
+*/
+static inline unsigned long pte_pfn(pte_t pte)
 {
-	return (pmd_val(pmd) & _PAGE_PRESENT);
+	return (pte_val(pte) >> _PAGE_PFN_SHIFT);
 }
 
-static inline int pmd_none(pmd_t pmd)
+#define pte_to_phys(x)     pfn_to_phys(pte_pfn(x))
+
+//
+// type casting to calm the compiler
+//
+static inline paddr_t pgd_to_phys(pgd_t x)
+{
+	pte_t  pte = {.pte = pgd_val(x)}; 
+  	return pte_to_phys(pte);
+}
+
+static inline paddr_t pud_to_phys(pud_t x)
+{
+	//
+	// there is no pud table, pud is mapped to pgd
+	//
+	pte_t  pte = {.pte = pud_val(x) }; 
+  	return pte_to_phys(pte);
+}
+
+static inline paddr_t pmd_to_phys(pmd_t x)
+{
+	pte_t  pte = {.pte = pmd_val(x)}; 
+  	return pte_to_phys(pte);
+}
+
+#define pgd_all_flags(pgd, flags) (flags == (pgd_val(pgd) & flags))
+#define pud_all_flags(pud, flags) (flags == (pud_val(pud) & flags))
+#define pmd_all_flags(pmd, flags) (flags == (pmd_val(pmd) & flags))
+#define pte_all_flags(pte, flags) (flags == (pte_val(pte) & flags))
+
+#define pgd_any_flags(pgd, flags) (0x0 != (pgd_val(pgd) & flags))
+#define pud_any_flags(pud, flags) (0x0 != (pud_val(pud) & flags))
+#define pmd_any_flags(pmd, flags) (0x0 != (pmd_val(pmd) & flags))
+#define pte_any_flags(pte, flags) (0x0 != (pte_val(pte) & flags))
+
+//
+// specific page table level routines
+//
+
+static inline bool pmd_present(pmd_t pmd)
+{
+	return pmd_all_flags(pmd, _PAGE_PRESENT);
+}
+
+static inline bool pmd_none(pmd_t pmd)
 {
 	return (pmd_val(pmd) == 0);
 }
 
-static inline int pmd_bad(pmd_t pmd)
+static inline bool pmd_bad(pmd_t pmd)
 {
 	return !pmd_present(pmd);
 }
@@ -104,6 +159,11 @@ static inline void pmd_clear(pmd_t *pmdp)
 	set_pmd(pmdp, __pmd(0));
 }
 
+static inline bool pmd_huge(pmd_t pmd)
+{
+	return pmd_present(pmd)
+		&& pmd_any_flags(pmd, (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
+}
 
 #define pgd_index(addr) (((addr) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
 
@@ -120,14 +180,6 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 	return (unsigned long)pfn_to_virt(pmd_val(pmd) >> _PAGE_PFN_SHIFT);
 }
 
-/* Yields the page frame number (PFN) of a page table entry */
-static inline unsigned long pte_pfn(pte_t pte)
-{
-	return (pte_val(pte) >> _PAGE_PFN_SHIFT);
-}
-
-#define pte_page(x)     pfn_to_page(pte_pfn(x))
-
 /* Constructs a page table entry */
 static inline pte_t pfn_pte(unsigned long pfn, pgprot_t prot)
 {
@@ -142,6 +194,7 @@ static inline pte_t *pte_offset_kernel(pmd_t *pmd, unsigned long addr)
 }
 
 #define pte_offset_map(dir, addr)	pte_offset_kernel((dir), (addr))
+#define pte_offset(dir, addr) pte_offset_map(dir, addr)
 #define pte_unmap(pte)			((void)(pte))
 
 /*
@@ -154,52 +207,67 @@ static inline void set_pte(pte_t *ptep, pte_t pteval)
 	*ptep = pteval;
 }
 
-static inline int pte_present(pte_t pte)
+static inline bool pte_present(pte_t pte)
 {
-	return 0x0 != (pte_val(pte) & _PAGE_PRESENT);
+	return pte_all_flags(pte, _PAGE_PRESENT);
 }
 
-static inline int pte_none(pte_t pte)
+static inline bool pte_none(pte_t pte)
 {
 	return (pte_val(pte) == 0);
 }
 
 /* static inline int pte_read(pte_t pte) */
 
-static inline int pte_write(pte_t pte)
+static inline bool pte_read(pte_t pte)
 {
-	return 0x0 != (pte_val(pte) & _PAGE_WRITE);
+	return pte_all_flags(pte, _PAGE_READ);
+}
+
+static inline bool pte_write(pte_t pte)
+{
+	return pte_all_flags(pte, _PAGE_WRITE);
+}
+
+static inline bool pte_exec(pte_t pte)
+{
+	return pte_all_flags(pte, _PAGE_EXEC);
+}
+
+static inline bool pte_user(pte_t pte)
+{
+	return pte_all_flags(pte, _PAGE_USER);
 }
 
 static inline int pte_huge(pte_t pte)
 {
 	return pte_present(pte)
-		&& 0x0 != (pte_val(pte) & (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
+		&& pte_any_flags(pte, (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
 }
 
-/*a leaf pte points to a page with data or to nothing,
+/*a leaf pte points to a page with data or to nothing(i.e. no mappng),
   non-leaf pte points to next level page table*/
-static inline int pte_leaf(pte_t pte)
+static inline bool pte_leaf(pte_t pte)
 {
 	return !pte_present(pte) ||
-		   0x0 != (pte_val(pte) & (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
+		   pte_any_flags(pte, (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
 }
 
 /* static inline int pte_exec(pte_t pte) */
 
-static inline int pte_dirty(pte_t pte)
+static inline bool pte_dirty(pte_t pte)
 {
-	return 0x0 != (pte_val(pte) & _PAGE_DIRTY);
+	return pte_all_flags(pte, _PAGE_DIRTY);
 }
 
-static inline int pte_young(pte_t pte)
+static inline bool pte_young(pte_t pte)
 {
-	return 0x0 != (pte_val(pte) & _PAGE_ACCESSED);
+	return pte_all_flags(pte, _PAGE_ACCESSED);
 }
 
-static inline int pte_special(pte_t pte)
+static inline bool pte_special(pte_t pte)
 {
-	return 0x0 != (pte_val(pte) & _PAGE_SPECIAL);
+	return pte_all_flags(pte, _PAGE_SPECIAL);
 }
 
 /* static inline pte_t pte_rdprotect(pte_t pte) */

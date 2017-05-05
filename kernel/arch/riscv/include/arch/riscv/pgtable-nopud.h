@@ -52,6 +52,9 @@ static inline pud_t * pud_offset(pgd_t * pgd, unsigned long address)
 #define pgd_page(pgd)				(pud_page((pud_t){ pgd }))
 #define pgd_page_vaddr(pgd)			(pud_page_vaddr((pud_t){ pgd }))
 
+#define pud_huge(x)	0
+#define follow_huge_pud_to_phys(pud, vaddr) ((paddr_t)0x0)
+
 /*
  * allocating and freeing a pud is trivial: the 1-entry pud is
  * inside the pgd, so has no extra memory associated with it.

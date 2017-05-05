@@ -19,6 +19,11 @@ __BEGIN_CDECLS
 #define PMD_SIZE        (_AC(1,UL) << PMD_SHIFT)
 #define PMD_MASK        (~(PMD_SIZE - 1))
 
+#define PTE_SHIFT       12
+/* Size of region mapped by a page table directory */
+#define PTE_SIZE        (_AC(1,UL) << PTE_SHIFT)
+#define PTE_MASK        (~(PTE_SIZE - 1))
+
 /* Page Middle Directory entry */
 typedef struct {
 	unsigned long pmd;
