@@ -37,6 +37,10 @@ __BEGIN_CDECLS
 					  _PAGE_WRITE | _PAGE_EXEC |	\
 					  _PAGE_USER | _PAGE_GLOBAL))
 
+/* Set of bits to preserve across page access modification */
+#define _PAGE_CHG_ACCESS_MASK  (~(unsigned long)(_PAGE_READ |	\
+					  _PAGE_WRITE | _PAGE_EXEC | _PAGE_USER ))
+
 /* Advertise support for _PAGE_SPECIAL */
 #define __HAVE_ARCH_PTE_SPECIAL
 

@@ -30,6 +30,9 @@ __BEGIN_CDECLS
 #define USER_PTRS_PER_PGD   (TASK_SIZE / PGDIR_SIZE)
 #define FIRST_USER_ADDRESS  0
 
+/*number of kernel space entries in pgd*/
+#define KERNEL_PTRS_PER_PGD   (PTRS_PER_PGD - USER_PTRS_PER_PGD)
+
 /* Page protection bits */
 #define _PAGE_BASE	(_PAGE_PRESENT | _PAGE_ACCESSED | _PAGE_USER)
 
@@ -317,6 +320,12 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 	return __pte((pte_val(pte) & _PAGE_CHG_MASK) | pgprot_val(newprot));
 }
 
+static inline pte_t pte_modify_access(pte_t pte, pgprot_t newprot)
+{
+	assert( 0x0 == (_PAGE_CHG_ACCESS_MASK & pgprot_val(newprot)) );
+	return __pte((pte_val(pte) & _PAGE_CHG_ACCESS_MASK) | pgprot_val(newprot));
+}
+
 #define pgd_ERROR(e) \
 	panic("%s:%d: bad pgd " PTE_FMT ".\n", __FILE__, __LINE__, pgd_val(e))
 
@@ -345,7 +354,7 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val })
 
-/* Task size is 0x40000000000 for RV64 or 0xb800000 for RV32.
+/* Task size is 0x40000000000(256GB) for RV64 or 0xb800000 for RV32.
    Note that PGDIR_SIZE must evenly divide TASK_SIZE. */
 #ifdef CONFIG_64BIT
 	#define TASK_SIZE (PGDIR_SIZE * PTRS_PER_PGD / 2)
@@ -353,6 +362,11 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 	#error "32 bit CPU not supported in the current release"
 	#define TASK_SIZE 0xb800000
 #endif
+
+//
+// a theoretical maximum user space address
+//
+#define HIGHEST_UA (-1UL >> 1)
 
 //
 // returns current CPU sptbr register value translated to virtual address
