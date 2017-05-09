@@ -3,6 +3,7 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 2017 Modified for Magenta by Slava Imameev.
 */
 
+#include <magenta/compiler.h>
 #include <arch/riscv/asm/csr.h>
 
 #pragma once

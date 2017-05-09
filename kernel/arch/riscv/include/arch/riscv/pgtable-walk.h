@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <magenta/compiler.h>
 #include <arch/riscv/pgtable.h>
 
 __BEGIN_CDECLS

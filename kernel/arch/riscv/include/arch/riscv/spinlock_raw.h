@@ -5,6 +5,7 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #pragma once
 
+#include <magenta/compiler.h>
 #include <arch/riscv/spinlock_types.h>
 #include <arch/riscv/processor.h>
 

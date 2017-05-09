@@ -5,6 +5,7 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT
 
+
 LOCAL_DIR := $(GET_LOCAL_DIR)
 
 ifeq ($(SUBARCH),riscv-rv64)
@@ -119,6 +120,45 @@ $(info TOOLCHAIN_PREFIX = $(TOOLCHAIN_PREFIX))
 
 MODULE := $(LOCAL_DIR)
 
+
+#####
+# Generate asm-offsets.h
+#
+
+DIR_INCLUDE_GENERATED = include
+asm-offsets-s := $(DIR_INCLUDE_GENERATED)/generated/asm-offsets.S
+asm-offsets-h := $(DIR_INCLUDE_GENERATED)/generated/asm-offsets.h
+
+# LOCAL_DIR is changed by make so the last one will be used for
+# bash scripts, we need a local copy
+DIR_ASM_OFFSET := $(LOCAL_DIR)
+
+# generate the assembler file
+$(SUBARCH_BUILDDIR)/$(asm-offsets-s): FORCE
+	@echo generating $@ from $(DIR_ASM_OFFSET)/asm-offsets.c
+	@mkdir -p $(dir $@)
+	@pwd
+	@$(CC) -S $(KERNEL_COMPILEFLAGS) $(GLOBAL_CFLAGS) \
+	       -I$(DIR_ASM_OFFSET)/include \
+		   $(DIR_ASM_OFFSET)/asm-offsets.c -o $@
+
+# parse the assembler file to extract the offsets
+$(SUBARCH_BUILDDIR)/$(asm-offsets-h): $(SUBARCH_BUILDDIR)/$(asm-offsets-s) FORCE
+	@echo generating $@
+	@$(MKDIR)
+	@pwd
+	$(call filechk,offsets,__ASM_OFFSETS_H__)
+
+GENERATED += $(SUBARCH_BUILDDIR)/$(asm-offsets-h) $(SUBARCH_BUILDDIR)/$(asm-offsets-s)
+EXTRA_BUILDDEPS += $(SUBARCH_BUILDDIR)/$(asm-offsets-h)
+
+# add the include directory in the search path
+KERNEL_COMPILEFLAGS += -I$(SUBARCH_BUILDDIR)/$(DIR_INCLUDE_GENERATED)
+
+#
+# end of asm-offsets.h generation
+#####
+
 MODULE_SRCS += \
 	$(SUBARCH_DIR)/start.S \
 	$(SUBARCH_DIR)/sbi.S \
@@ -136,8 +176,12 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/page.c \
 	$(LOCAL_DIR)/pgtable.c \
 	$(LOCAL_DIR)/exceptions.c \
+	$(LOCAL_DIR)/trap.c \
 	$(LOCAL_DIR)/lib/memset.S \
 	#$(LOCAL_DIR)/lib/clz_ctz.c \
+	#$(SUBARCH_DIR)/exception.S \
+
+$(info MODULE_SRCS = $(MODULE_SRCS))
 
 LINKER_SCRIPT += $(SUBARCH_BUILDDIR)/kernel.ld
 
@@ -157,5 +201,5 @@ $(SUBARCH_BUILDDIR)/kernel.ld: $(SUBARCH_DIR)/kernel.ld $(wildcard arch/*.ld)
 $(SUBARCH_BUILDDIR)/kernel.ld: FORCE
 
 include $(LOCAL_DIR)/toolchain.mk
-
 include make/module.mk
+

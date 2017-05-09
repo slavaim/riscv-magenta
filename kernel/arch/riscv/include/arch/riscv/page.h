@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <magenta/compiler.h>
 #include <arch/riscv/asm/constant.h>
 #include <arch/riscv/pfn.h>
 

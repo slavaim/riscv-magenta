@@ -13,6 +13,7 @@
 #include <trace.h>
 #include <kernel/thread.h>
 #include <platform.h>
+#include <arch/riscv/asm/asm-offsets.h>
 
 #if WITH_LIB_MAGENTA
 #include <lib/user_copy.h>

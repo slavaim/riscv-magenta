@@ -5,6 +5,8 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #pragma once
 
+#include <magenta/compiler.h>
+
 __BEGIN_CDECLS
 
 #ifndef __ASSEMBLY__

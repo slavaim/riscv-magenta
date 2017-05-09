@@ -27,8 +27,10 @@ FUNCTION(_riscv_start)
 	call sbi_hart_id
 	bnez a0, .Lsecondary_start
 
+	/* we are in the main core/hart */
+
 	/* Initialize the stack pointer,
-	   a stack is required for memset call */
+	   a stack is required for function calls */
 	la sp, (_kstack + 4096)
 
 	/* Clear the .bss segment */
@@ -37,6 +39,9 @@ FUNCTION(_riscv_start)
 	la a2, __bss_end
 	sub a2, a2, a0
 	call memset
+
+	/* Setup supervisor trap vector */
+	call trap_init
 
 	/* Initialize current task_struct pointer */
 	/*la tp, init_task*/
