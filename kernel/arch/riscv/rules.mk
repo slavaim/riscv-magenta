@@ -149,8 +149,11 @@ $(SUBARCH_BUILDDIR)/$(asm-offsets-h): $(SUBARCH_BUILDDIR)/$(asm-offsets-s) FORCE
 	@pwd
 	$(call filechk,offsets,__ASM_OFFSETS_H__)
 
+# add generated files in the list of files to remove on cleanup
 GENERATED += $(SUBARCH_BUILDDIR)/$(asm-offsets-h) $(SUBARCH_BUILDDIR)/$(asm-offsets-s)
-EXTRA_BUILDDEPS += $(SUBARCH_BUILDDIR)/$(asm-offsets-h)
+
+# make the module dependent on the header file generation
+MODULE_SRCDEPS += $(SUBARCH_BUILDDIR)/$(asm-offsets-h)
 
 # add the include directory in the search path
 KERNEL_COMPILEFLAGS += -I$(SUBARCH_BUILDDIR)/$(DIR_INCLUDE_GENERATED)
