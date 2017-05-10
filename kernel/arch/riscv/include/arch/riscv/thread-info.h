@@ -16,11 +16,11 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
  * - if the members of this struct changes, the assembly constants
  *   in asm-offsets.c must be updated accordingly
  */
-struct thread_info {
-    struct thread_t* 	thread;		/* main task structure */
+typedef struct thread_info {
+    thread_t* 	        thread;		/* main task structure */
     unsigned long		flags;		/* low level flags */
-    uint32_t            cpu;		/* current CPU */
-};
+    uint                cpu;		/* current CPU */
+} thread_info_t;
 
 /*
  * macros/functions for gaining access to the thread information structure
@@ -35,7 +35,7 @@ struct thread_info {
 }
 
 union thread_union {
-	struct thread_info thread_info;
+	thread_info_t thread_info;
 	unsigned long stack[THREAD_STACK_SIZE/sizeof(long)];
 };
 
@@ -46,14 +46,14 @@ union thread_union {
  * Pointer to the thread_info struct of the current process
  * Assumes that the kernel mode stack (thread_union) is THREAD_SIZE-aligned
  */
-static inline struct thread_info *current_thread_info(void)
+static inline thread_info_t *current_thread_info(void)
 {
     register unsigned long sp;
      __asm__ __volatile__ (
          "move %0, sp"
          :"=r"(sp)
          ::);
-    return (struct thread_info *)(sp & ~(THREAD_STACK_SIZE - 1));
+    return (thread_info_t *)(sp & ~(THREAD_STACK_SIZE - 1));
 }
 
 

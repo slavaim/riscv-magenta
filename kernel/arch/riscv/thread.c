@@ -8,6 +8,7 @@
 #include <arch/thread.h>
 #include <kernel/thread.h>
 #include <arch/riscv/current.h>
+#include <arch/riscv/thread-info.h>
 #include <debug.h>
 
 void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
@@ -22,5 +23,17 @@ void arch_context_switch(struct thread *oldthread, struct thread *newthread)
 
 void arch_thread_construct_first(thread_t *t)
 {
+    //
+    // initialize the boot thread's thread_info structure
+    //
+    thread_info_t* ti = current_thread_info();
+
+    ti->thread = t;
+    ti->cpu = arch_curr_cpu_num();
+
+    //
+    // the boot hart must have ID equal to 0
+    //
+    assert( 0 == ti->cpu );
 }
 

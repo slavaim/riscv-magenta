@@ -13,6 +13,7 @@
 #include <debug.h>
 #include <arch/riscv/mp.h>
 #include <arch/riscv/irqflags.h>
+#include <arch/riscv/sbi.h>
 
 __BEGIN_CDECLS
 
@@ -36,6 +37,7 @@ static inline bool arch_in_int_handler(void)
 {
     extern bool riscv_in_int_handler[SMP_MAX_CPUS];
 
+    // TO_DO_RISCV set/clear in the interrupt handler
     return riscv_in_int_handler[arch_curr_cpu_num()];
 }
 
@@ -47,15 +49,17 @@ static inline uint64_t arch_cycle_count(void)
 
 static inline uint arch_curr_cpu_num(void)
 {
-    //PANIC_UNIMPLEMENTED;
-    //TO_DO_RISCV return the actual index for SMP
-    return 0;
+    //
+    // TO_DO_RISCV return the actual index for SMP
+    // instead of a hart ID which might not be consecuitive
+    //
+    return (uint)sbi_hart_id();
 }
 
 static inline uint arch_max_num_cpus(void)
 {
-    PANIC_UNIMPLEMENTED;
-    return 0;
+    // TO_DO_RISCV , return the actual number when mp is implemented
+    return 1;
 }
 
 static inline void arch_spinloop_pause(void)

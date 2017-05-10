@@ -179,7 +179,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/exceptions.c \
 	$(LOCAL_DIR)/trap.c \
 	$(LOCAL_DIR)/lib/memset.S \
-	#$(SUBARCH_DIR)/exception.S \
+	$(SUBARCH_DIR)/exception.S \
 	#$(LOCAL_DIR)/lib/clz_ctz.c \
 	#$(SUBARCH_DIR)/exception.S \
 

@@ -41,9 +41,6 @@ FUNCTION(_riscv_start)
 	sub a2, a2, a0
 	call memset
 
-	/* Initialize current task_struct pointer */
-	/*la tp, init_task*/
-
 	/* Setup supervisor trap vector */
 	call trap_init
 
