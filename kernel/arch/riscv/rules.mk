@@ -137,7 +137,6 @@ DIR_ASM_OFFSET := $(LOCAL_DIR)
 $(SUBARCH_BUILDDIR)/$(asm-offsets-s): FORCE
 	@echo generating $@ from $(DIR_ASM_OFFSET)/asm-offsets.c
 	@mkdir -p $(dir $@)
-	@pwd
 	@$(CC) -S $(KERNEL_COMPILEFLAGS) $(GLOBAL_CFLAGS) \
 	       -I$(DIR_ASM_OFFSET)/include \
 		   $(DIR_ASM_OFFSET)/asm-offsets.c -o $@
@@ -146,7 +145,6 @@ $(SUBARCH_BUILDDIR)/$(asm-offsets-s): FORCE
 $(SUBARCH_BUILDDIR)/$(asm-offsets-h): $(SUBARCH_BUILDDIR)/$(asm-offsets-s) FORCE
 	@echo generating $@
 	@$(MKDIR)
-	@pwd
 	$(call filechk,offsets,__ASM_OFFSETS_H__)
 
 # add generated files in the list of files to remove on cleanup
@@ -181,6 +179,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/exceptions.c \
 	$(LOCAL_DIR)/trap.c \
 	$(LOCAL_DIR)/lib/memset.S \
+	#$(SUBARCH_DIR)/exception.S \
 	#$(LOCAL_DIR)/lib/clz_ctz.c \
 	#$(SUBARCH_DIR)/exception.S \
 

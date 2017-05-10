@@ -8,6 +8,7 @@
 
 #include <asm.h>
 #include <arch/riscv/asm/csr.h>
+#include <arch/riscv/asm/thread-info.h>
 
 .section .text.boot
 FUNCTION(_riscv_start)
@@ -31,7 +32,7 @@ FUNCTION(_riscv_start)
 
 	/* Initialize the stack pointer,
 	   a stack is required for function calls */
-	la sp, (_kstack + 4096)
+	la sp, init_thread_union + THREAD_STACK_SIZE
 
 	/* Clear the .bss segment */
 	la a0, __bss_start
@@ -40,11 +41,11 @@ FUNCTION(_riscv_start)
 	sub a2, a2, a0
 	call memset
 
-	/* Setup supervisor trap vector */
-	call trap_init
-
 	/* Initialize current task_struct pointer */
 	/*la tp, init_task*/
+
+	/* Setup supervisor trap vector */
+	call trap_init
 
 	tail lk_main
 

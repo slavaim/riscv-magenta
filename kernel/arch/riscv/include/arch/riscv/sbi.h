@@ -5,9 +5,7 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #pragma once
 
-#include <stdint.h>
 #include <magenta/compiler.h>
-#include <sys/types.h>
 
 __BEGIN_CDECLS
 

@@ -3,5 +3,6 @@
  2017 Modified for Magenta by Slava Imameev.
  */
  
+ #pragma once
+
  #include <generated/asm-offsets.h>
- 

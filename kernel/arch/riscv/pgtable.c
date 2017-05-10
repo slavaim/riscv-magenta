@@ -11,7 +11,7 @@
 #include <magenta/errors.h>
 #include <arch/mmu.h>
 #include <kernel/vm.h>
-#include <arch/riscv/asm/sbi.h>
+#include <arch/riscv/sbi.h>
 #include <arch/riscv/asm/csr.h>
 #include <arch/riscv/page.h>
 #include <arch/riscv/pgtable.h>

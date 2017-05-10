@@ -9,11 +9,13 @@
 #include <magenta/compiler.h>
 #include <arch.h>
 #include <arch/riscv/page.h>
+#include <arch/riscv/thread-info.h>
 #include <debug.h>
 #include <err.h>
 
-/* early stack, put in the data as bss is being zeroed by memset that requires the stack */
-__SECTION(".data") uint8_t _kstack[PAGE_SIZE] __ALIGNED(16);
+/* early stack, put in the data section as the bss section 
+   is being zeroed by memset that requires the stack */
+__SECTION(".data") union thread_union init_thread_union __ALIGNED(16);
 
 void arch_early_init(void)
 {

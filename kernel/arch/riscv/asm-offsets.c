@@ -3,6 +3,11 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 2017 Modified for Magenta by Slava Imameev.
 */
 
+//
+// this file is not compiled to any object file
+// it is used to generate asm-offsets.h with 
+// offsets for assembler sources
+//
 #include <arch/riscv/asm/kbuild.h>
 #include <arch/riscv/asm/pt_regs.h>
 
