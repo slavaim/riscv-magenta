@@ -14,8 +14,15 @@
 #include <arch/riscv/mp.h>
 #include <arch/riscv/irqflags.h>
 #include <arch/riscv/sbi.h>
+#include <arch/riscv/irq.h>
 
 __BEGIN_CDECLS
+
+//
+// some forward declarations
+//
+static uint arch_curr_cpu_num(void);
+extern bool arch_cpu_in_int_handler(uint cpu);
 
 /* fast routines that most arches will implement inline */
 static inline void arch_enable_ints(void)
@@ -35,10 +42,7 @@ static inline bool arch_ints_disabled(void)
 
 static inline bool arch_in_int_handler(void)
 {
-    extern bool riscv_in_int_handler[SMP_MAX_CPUS];
-
-    // TO_DO_RISCV set/clear in the interrupt handler
-    return riscv_in_int_handler[arch_curr_cpu_num()];
+    return arch_cpu_in_int_handler(arch_curr_cpu_num());
 }
 
 static inline uint64_t arch_cycle_count(void)

@@ -1,5 +1,4 @@
-// Copyright 2017 The Fuchsia Authors
-// Copyright (c) 2014 Travis Geiselbrecht
+//
 // Copyright (c) 2017 Slava Imameev
 //
 // Use of this source code is governed by a MIT-style
@@ -13,6 +12,8 @@
 #include <trace.h>
 #include <kernel/thread.h>
 #include <platform.h>
+#include <arch/riscv/faults.h>
+#include <arch/riscv/asm/linkage.h>
 #include <arch/riscv/asm/asm-offsets.h>
 
 #if WITH_LIB_MAGENTA
@@ -20,4 +21,12 @@
 #include <magenta/exception.h>
 #endif
 
-bool riscv_in_int_handler[SMP_MAX_CPUS];
+
+/*
+ * This routine handles page faults.  It determines the address and the
+ * problem, and then passes it off to one of the appropriate routines.
+ */
+asmlinkage void do_page_fault(struct pt_regs *regs)
+{
+	PANIC_UNIMPLEMENTED;
+}

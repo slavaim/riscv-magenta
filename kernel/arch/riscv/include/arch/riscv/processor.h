@@ -7,6 +7,8 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #ifndef __ASSEMBLY__
 
+__BEGIN_CDECLS
+
 /* Optimization barrier */
 /* The "volatile" is due to gcc bugs */
 #ifndef barrier
@@ -27,5 +29,7 @@ static inline void wait_for_interrupt(void)
 {
 	__asm__ __volatile__ ("wfi");
 }
+
+__END_CDECLS
 
 #endif /*__ASSEMBLY__*/

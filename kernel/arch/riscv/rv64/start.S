@@ -8,7 +8,7 @@
 
 #include <asm.h>
 #include <arch/riscv/asm/csr.h>
-#include <arch/riscv/asm/thread-info.h>
+#include <arch/riscv/asm/thread_info.h>
 
 .section .text.boot
 FUNCTION(_riscv_start)
@@ -32,7 +32,7 @@ FUNCTION(_riscv_start)
 
 	/* Initialize the stack pointer,
 	   a stack is required for function calls */
-	la sp, init_thread_union + THREAD_STACK_SIZE
+	la sp, init_thread_union + ARCH_DEFAULT_STACK_SIZE
 
 	/* Clear the .bss segment */
 	la a0, __bss_start

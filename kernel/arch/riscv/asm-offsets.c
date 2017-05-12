@@ -3,6 +3,8 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 2017 Modified for Magenta by Slava Imameev.
 */
 
+#define _ASM_OFFSETS_ 1
+
 //
 // this file is not compiled to any object file
 // it is used to generate asm-offsets.h with 
@@ -10,6 +12,7 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 //
 #include <arch/riscv/asm/kbuild.h>
 #include <arch/riscv/asm/pt_regs.h>
+#include <arch/riscv/thread_info.h>
 
 void asm_offsets(void)
 {
@@ -30,9 +33,6 @@ void asm_offsets(void)
 	OFFSET(THREAD_S10, task_struct, thread.s[10]);
 	OFFSET(THREAD_S11, task_struct, thread.s[11]);
 	OFFSET(THREAD_SP, task_struct, thread.sp);
-	OFFSET(TI_TASK, thread_info, task);
-	OFFSET(TI_FLAGS, thread_info, flags);
-	OFFSET(TI_CPU, thread_info, cpu);
 
 	OFFSET(THREAD_F0,  task_struct, thread.fstate.f[0]);
 	OFFSET(THREAD_F1,  task_struct, thread.fstate.f[1]);
@@ -68,6 +68,10 @@ void asm_offsets(void)
 	OFFSET(THREAD_F31, task_struct, thread.fstate.f[31]);
 	OFFSET(THREAD_FCSR, task_struct, thread.fstate.fcsr);
     */
+
+	OFFSET(TI_THREAD, thread_info, thread);
+	OFFSET(TI_FLAGS, thread_info, flags);
+	OFFSET(TI_CPU, thread_info, cpu);
 
 	DEFINE(PT_SIZE, sizeof(struct pt_regs));
 	OFFSET(PT_SEPC, pt_regs, sepc);

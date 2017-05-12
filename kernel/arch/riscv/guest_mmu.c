@@ -1,4 +1,4 @@
-// Copyright 2016 The Fuchsia Authors
+//
 // Copyright 2017 Slava Imameev
 //
 // Use of this source code is governed by a MIT-style

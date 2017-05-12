@@ -9,5 +9,7 @@
 
 #pragma once
 
-#include <arch/riscv/page.h>
-#include <arch/riscv/asm/defines.h>
+#define CACHE_LINE 32
+
+#define ARCH_DEFAULT_STACK_SIZE 8192
+#define DEFAULT_TSS 4096

@@ -5,9 +5,17 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #pragma once
 
+#ifndef _ASM_OFFSETS_
+
 #include <stdint.h>
 #include <kernel/thread.h>
-#include <arch/riscv/asm/thread-info.h>
+#include <arch/riscv/asm/thread_info.h>
+
+#else
+
+typedef void thread_t;
+
+#endif //_ASM_OFFSETS_
 
 /*
  * low level task data that entry.S needs immediate access to
@@ -19,8 +27,12 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 typedef struct thread_info {
     thread_t* 	        thread;		/* main task structure */
     unsigned long		flags;		/* low level flags */
-    uint                cpu;		/* current CPU */
+    unsigned int        cpu;		/* current CPU */
 } thread_info_t;
+
+#ifndef _ASM_OFFSETS_
+
+__BEGIN_CDECLS
 
 /*
  * macros/functions for gaining access to the thread information structure
@@ -36,7 +48,7 @@ typedef struct thread_info {
 
 union thread_union {
 	thread_info_t thread_info;
-	unsigned long stack[THREAD_STACK_SIZE/sizeof(long)];
+	unsigned long stack[ARCH_DEFAULT_STACK_SIZE/sizeof(long)];
 };
 
 #define init_thread_info	(init_thread_union.thread_info)
@@ -53,8 +65,11 @@ static inline thread_info_t *current_thread_info(void)
          "move %0, sp"
          :"=r"(sp)
          ::);
-    return (thread_info_t *)(sp & ~(THREAD_STACK_SIZE - 1));
+    return (thread_info_t *)(sp & ~(ARCH_DEFAULT_STACK_SIZE - 1));
 }
 
+__END_CDECLS
+
+#endif // _ASM_OFFSETS_
 
 

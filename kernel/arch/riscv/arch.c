@@ -9,13 +9,14 @@
 #include <magenta/compiler.h>
 #include <arch.h>
 #include <arch/riscv/page.h>
-#include <arch/riscv/thread-info.h>
+#include <arch/riscv/thread_info.h>
 #include <debug.h>
 #include <err.h>
 
 /* early stack, put in the data section as the bss section 
    is being zeroed by memset that requires the stack */
 __SECTION(".data") union thread_union init_thread_union __ALIGNED(16);
+__SECTION(".data") char asm_panic_string[] = {'A','S','M'};
 
 void arch_early_init(void)
 {

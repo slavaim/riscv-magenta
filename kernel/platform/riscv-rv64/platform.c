@@ -8,7 +8,7 @@
 #include <kernel/vm.h>
 #include <arch/riscv/mmu.h>
 #include <platform.h>
-#include <memory.h>
+#include <platform/riscv/memory.h>
 
 void platform_early_init(void)
 {

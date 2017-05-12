@@ -70,6 +70,7 @@ void arch_thread_initialize(thread_t *t, vaddr_t entry_point)
 
 __NO_SAFESTACK void arch_thread_construct_first(thread_t *t)
 {
+    //*(int*)0x0 = 1;
     // Propagate the values from the fake arch_thread that the thread
     // pointer points to now (set up in start.S) into the real thread
     // structure being set up now.

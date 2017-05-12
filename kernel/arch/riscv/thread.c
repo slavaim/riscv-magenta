@@ -8,12 +8,18 @@
 #include <arch/thread.h>
 #include <kernel/thread.h>
 #include <arch/riscv/current.h>
-#include <arch/riscv/thread-info.h>
+#include <arch/riscv/thread_info.h>
 #include <debug.h>
 
 void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
 {
-    PANIC_UNIMPLEMENTED;
+    //
+    // init a thread_info on the stack
+    //
+    thread_info_t*  ti = (thread_info_t*)t->stack;
+
+    ti->thread = t;
+    ti->cpu = 0;
 }
 
 void arch_context_switch(struct thread *oldthread, struct thread *newthread)

@@ -5,10 +5,8 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #pragma once
 
+#include <arch/riscv/asm/defines.h>
 #include <arch/riscv/asm/page.h>
-
-/* thread stack allocation, should be a multiple of PAGE_SIZE */
-#define THREAD_STACK_SIZE      PAGE_SIZE
 
 
 /*

@@ -96,7 +96,8 @@ GLOBAL_DEFINES += \
     KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
     KERNEL_ASPACE_SIZE=$(KERNEL_ASPACE_SIZE) \
     USER_ASPACE_BASE=$(USER_ASPACE_BASE) \
-    USER_ASPACE_SIZE=$(USER_ASPACE_SIZE)
+    USER_ASPACE_SIZE=$(USER_ASPACE_SIZE) \
+	PLATFORM_HAS_DYNAMIC_TIMER=1 \
 
 WITH_SMP ?= 1
 SMP_MAX_CPUS ?= 8
@@ -176,8 +177,9 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/user_copy.c \
 	$(LOCAL_DIR)/page.c \
 	$(LOCAL_DIR)/pgtable.c \
-	$(LOCAL_DIR)/exceptions.c \
-	$(LOCAL_DIR)/trap.c \
+	$(LOCAL_DIR)/faults.c \
+	$(LOCAL_DIR)/traps.c \
+	$(LOCAL_DIR)/irq.c \
 	$(LOCAL_DIR)/lib/memset.S \
 	$(SUBARCH_DIR)/exception.S \
 	#$(LOCAL_DIR)/lib/clz_ctz.c \
