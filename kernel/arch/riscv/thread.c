@@ -20,6 +20,8 @@ void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
 
     ti->thread = t;
     ti->cpu = 0;
+
+    PANIC_UNIMPLEMENTED;
 }
 
 void arch_context_switch(struct thread *oldthread, struct thread *newthread)

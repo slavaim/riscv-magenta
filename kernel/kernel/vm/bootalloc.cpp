@@ -41,6 +41,10 @@ void boot_alloc_reserve(uintptr_t start, size_t len) {
     end += KERNEL_BASE;
 #endif
 
+    //
+    // check that no allocation has been made before
+    //
+    assert( boot_alloc_start == boot_alloc_end );
     if (end >= boot_alloc_start) {
         if ((start > boot_alloc_start) &&
             ((start - boot_alloc_start) > (128 * 1024 * 1024))) {
@@ -49,6 +53,13 @@ void boot_alloc_reserve(uintptr_t start, size_t len) {
             // (gigabytes) and there may not be space after it...
             return;
         }
+
+        //
+        // the might reset the allocated range back
+        // by changing boot_alloc_end,
+        // so the function must not be used after the first allocation
+        // was made
+        //
         boot_alloc_start = boot_alloc_end = end;
     }
 }

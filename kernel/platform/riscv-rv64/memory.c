@@ -43,21 +43,6 @@ static void reserve_boot_page_table(
     assert(table);
 
     //
-    // reserve the page table's page
-    //
-    // - adjust boot allocator to remove
-    // the page from it to not accidently
-    // allocate it
-    // - mark the page in arena as wired
-    //
-    // this mechanism are not the best choice but 
-    // this is the only choice that exist in the current
-    // kernel source base, take a look at
-    // platform_preserve_ramdisk that uses the same trick
-    //
-    boot_alloc_reserve(__pa(table), PAGE_SIZE);
-
-    //
     // if wire is true then the arena has been initialized and
     // pages can be wired
     //
@@ -75,7 +60,24 @@ static void reserve_boot_page_table(
         } else {
             panic("unable to reserve a boot page table\n");
         }
-    } // end if (wire_in_arena)
+
+    } else {
+
+        //
+        // reserve the page table's page
+        //
+        // - adjust boot allocator to remove
+        // the page from it to not accidently
+        // allocate it
+        // - mark the page in arena as wired
+        //
+        // this mechanism are not the best choice but
+        // this is the only choice that exist in the current
+        // kernel source base, take a look at
+        // platform_preserve_ramdisk that uses the same trick
+        //
+        boot_alloc_reserve(__pa(table), PAGE_SIZE);
+    }
 
     //
     // scan the ptes and reserve the next level page tables

@@ -21,7 +21,7 @@
 
 static platform_timer_callback t_callback[SMP_MAX_CPUS] = {NULL};
 static void*                   callback_arg[SMP_MAX_CPUS] = {NULL};
-static unsigned long           timebase; // ticks in one seconds
+static unsigned long           timebase; // ticks in one second
 
 //
 // lk_time_t is in nanoseconds
