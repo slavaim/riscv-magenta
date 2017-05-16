@@ -102,8 +102,8 @@ _save_context:
     REG_S s1, PT_SP(sp)
 	REG_S s2, PT_SSTATUS(sp)
 	REG_S s3, PT_SEPC(sp)
-	REG_S s4, PT_SBADADDR(sp)
-	REG_S s5, PT_SCAUSE(sp)
+	REG_S s4, PT_SBADADDR(sp) /* exception access address */
+	REG_S s5, PT_SCAUSE(sp)   /* cause of the exception */
 	.endm
 
 	.macro RESTORE_ALL
@@ -161,6 +161,8 @@ FUNCTION(handle_exception)
       registers usage
         s0 - a frame pointer set by SET_EXCPT_FRAME
         sp - pt_regs structure allocated on the stack
+        s4 - memory address for the exception, i.e. badaddr
+        s5 - cause of the exception, i.e. scause register
     */
 	SAVE_ALL
 
@@ -178,20 +180,20 @@ FUNCTION(handle_exception)
 1:	la ra, ret_from_exception
 	/* MSB of cause differentiates between
 	   interrupts and exceptions */
-	bge s4, zero, 1f
+	bge s5, zero, 1f
 
 	/* Handle interrupts */
-	slli a0, s4, 1
+	slli a0, s5, 1
 	srli a0, a0, 1
 	move a1, sp /* pt_regs */
 	tail do_IRQ
 1:
 	/* Handle syscalls */
 	li t0, EXC_SYSCALL
-	beq s4, t0, handle_syscall
+	beq s5, t0, handle_syscall
 
 	/* Handle other exceptions */
-	slli t0, s4, LGPTR
+	slli t0, s5, LGPTR
 	la t1, excp_vect_table
 	la t2, excp_vect_table_end
 	move a0, sp /* pt_regs */
