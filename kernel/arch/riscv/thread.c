@@ -31,6 +31,8 @@ void arch_context_switch(struct thread *oldthread, struct thread *newthread)
 
 void arch_thread_construct_first(thread_t *t)
 {
+    //*(int*)0x0 = 1; // page fault test TTTTTTTTTTTTTTTTTT
+
     //
     // initialize the boot thread's thread_info structure
     //

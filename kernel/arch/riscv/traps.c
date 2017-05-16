@@ -83,5 +83,5 @@ void trap_init(void)
 	   that we are presently executing in the kernel */
 	csr_write(sscratch, 0);
 	/* Set the exception vector address */
-	//csr_write(stvec, &handle_exception);
+	csr_write(stvec, &handle_exception);
 }

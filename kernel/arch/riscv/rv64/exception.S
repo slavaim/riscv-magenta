@@ -26,6 +26,20 @@ DATA(excp_vect_table)
 excp_vect_table_end:
 END(excp_vect_table)
 
+    /*a call frame to facilitate with debugging*/
+    .macro SET_GDB_FRAME
+    addi	sp, sp, -2*SZREG /* allocate the frame */
+    REG_S	s0, 0(sp)        /* get the frame pointer at the exception moment */
+    csrr    s0, sepc         /* get the exception PC */
+    REG_S	s0, SZREG(sp)    /* set the exception PC as $ra for the frame */
+    addi	s0, sp, 2*SZREG  /* set s0 to the current frame pointer */
+    .endm
+
+    .macro DEL_GDB_FRAME
+    REG_L	s0, 0(sp)        /* restore the caller frame pointer */
+    addi	sp, sp, 2*SZREG  /* restore the stack pointer */
+    .endm
+
 	.text
 	.altmacro
 	.macro SAVE_ALL
@@ -41,7 +55,8 @@ END(excp_vect_table)
 _restore_kernel_sp:
 	csrr sp, sscratch
 _save_context:
-	addi sp, sp, -(PT_SIZE)
+    SET_GDB_FRAME
+	addi  sp,  sp, -(PT_SIZE)
 	REG_S x1,  PT_RA(sp)
 	REG_S x3,  PT_GP(sp)
 	REG_S x4,  PT_TP(sp)
@@ -77,16 +92,18 @@ _save_context:
 	   floating point in kernel space */
 	li t0, SR_FS
 
-	csrr s0, sscratch
-	csrrc s1, sstatus, t0
-	csrr s2, sepc
-	csrr s3, sbadaddr
-	csrr s4, scause
-	REG_S s0, PT_SP(sp)
-	REG_S s1, PT_SSTATUS(sp)
-	REG_S s2, PT_SEPC(sp)
-	REG_S s3, PT_SBADADDR(sp)
-	REG_S s4, PT_SCAUSE(sp)
+    /* s0 is used as a frame pointer, do not 
+       overwrite it */
+	csrr  s1, sscratch
+	csrrc s2, sstatus, t0
+	csrr  s3, sepc
+	csrr  s4, sbadaddr
+	csrr  s5, scause
+    REG_S s1, PT_SP(sp)
+	REG_S s2, PT_SSTATUS(sp)
+	REG_S s3, PT_SEPC(sp)
+	REG_S s4, PT_SBADADDR(sp)
+	REG_S s5, PT_SCAUSE(sp)
 	.endm
 
 	.macro RESTORE_ALL
@@ -127,6 +144,8 @@ _save_context:
 	REG_L x31, PT_T6(sp)
 
 	REG_L x2,  PT_SP(sp)
+
+    DEL_GDB_FRAME
 	.endm
 
     .macro PANIC
@@ -136,22 +155,13 @@ _save_context:
     call _panic
     .endm
 
-    /*a frame pointer to facilitate with debugging*/
-    .macro SET_EX_FRAME
-    addi	sp,sp,-3*SZREG
-    REG_S	ra,2*SZREG(sp)
-    REG_S	s0,SZREG(sp)
-    REG_S	s1,0(sp)
-    addi	s0,sp,3*SZREG
-    .endm
-
-    .macro DEL_EX_FRAME
-    addi	sp,sp,3*SZREG
-    .endm
-
 .section .text
 FUNCTION(handle_exception)
-    SET_EX_FRAME
+    /*
+      registers usage
+        s0 - a frame pointer set by SET_EXCPT_FRAME
+        sp - pt_regs structure allocated on the stack
+    */
 	SAVE_ALL
 
 	/* Set sscratch register to 0, so that if a recursive exception
@@ -203,8 +213,6 @@ handle_syscall:
 check_syscall_nr:
     /* TO_DO_RISCV */
     PANIC
-1:
-	jalr s0
 
 ret_from_syscall:
 	/* Set user a0 to kernel a0 */
@@ -213,19 +221,18 @@ ret_from_syscall:
     PANIC
 
 ret_from_exception:
-	REG_L s0, PT_SSTATUS(sp)
+	REG_L s1, PT_SSTATUS(sp)
 	csrc sstatus, SR_IE
-	andi s0, s0, SR_PS
-	bnez s0, restore_all
+	andi s1, s1, SR_PS
+	bnez s1, restore_all
 
 resume_userspace:
 	/* Interrupts must be disabled here */
 	/* Save unwound kernel stack pointer in sscratch */
-	addi s0, sp, PT_SIZE
-	csrw sscratch, s0
+	addi s1, sp, PT_SIZE
+	csrw sscratch, s1
 restore_all:
 	RESTORE_ALL
-    DEL_EX_FRAME
 	sret
 END(handle_exception)
 

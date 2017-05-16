@@ -55,10 +55,10 @@ void boot_alloc_reserve(uintptr_t start, size_t len) {
         }
 
         //
-        // the might reset the allocated range back
+        // this might reset the allocated range back
         // by changing boot_alloc_end,
-        // so the function must not be used after the first allocation
-        // was made
+        // so this function must not be used after the
+        // first allocation was made
         //
         boot_alloc_start = boot_alloc_end = end;
     }
