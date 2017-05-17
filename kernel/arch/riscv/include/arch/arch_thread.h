@@ -10,13 +10,17 @@
 
 #include <magenta/compiler.h>
 #include <sys/types.h>
+#include <arch/riscv/thread_state.h>
 
 __BEGIN_CDECLS
 
 struct arch_thread {
-    vaddr_t sp;
 
-    /* if non-NULL, address to return to on data fault */
+    riscv_thread_state_t state;
+
+    //
+    // if non-NULL, address to return to on data fault
+    //
     void *data_fault_resume;
 };
 

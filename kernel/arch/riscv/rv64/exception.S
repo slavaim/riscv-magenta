@@ -28,16 +28,16 @@ END(excp_vect_table)
 
     /*a call frame to facilitate with debugging*/
     .macro SET_GDB_FRAME
-    addi	sp, sp, -2*SZREG /* allocate the frame */
-    REG_S	s0, 0(sp)        /* get the frame pointer at the exception moment */
+    addi    sp, sp, -2*SZREG /* allocate the frame */
+    REG_S   s0, 0(sp)        /* get the frame pointer at the exception moment */
     csrr    s0, sepc         /* get the exception PC */
-    REG_S	s0, SZREG(sp)    /* set the exception PC as $ra for the frame */
-    addi	s0, sp, 2*SZREG  /* set s0 to the current frame pointer */
+    REG_S   s0, SZREG(sp)    /* set the exception PC as $ra for the frame */
+    addi    s0, sp, 2*SZREG  /* set s0 to the current frame pointer */
     .endm
 
     .macro DEL_GDB_FRAME
-    REG_L	s0, 0(sp)        /* restore the caller frame pointer */
-    addi	sp, sp, 2*SZREG  /* restore the stack pointer */
+    REG_L   s0, 0(sp)        /* restore the caller frame pointer */
+    addi    sp, sp, 2*SZREG  /* restore the stack pointer */
     .endm
 
 	.text
@@ -170,7 +170,12 @@ FUNCTION(handle_exception)
 	   occurs, the exception vector knows it came from the kernel */
 	csrw sscratch, x0
 
-	/* Compute the address of current thread_info */
+	/* Compute the address of the current thread_info,
+      if we enter from a user mode the tp register
+      contains a user mode value but the stack has been
+      switch using the scratch register so we compute
+      the thread_info address on the stack and fetch
+      the current thread pointer from the thread_info */
 	li tp, ~(ARCH_DEFAULT_STACK_SIZE-1)
 	and tp, tp, sp
 
@@ -238,6 +243,49 @@ restore_all:
 	sret
 END(handle_exception)
 
+/*
+ * Integer register context switch
+ * The callee-saved registers must be saved and restored.
+ * 
+ *   a0: previous task_struct (must be preserved across the switch)
+ *   a1: next task_struct
+ */
+.section .text
+FUNCTION(__switch_to)
+	/* Save context into prev->arch.state */
+	REG_S ra,  THREAD_RA(a0)
+	REG_S sp,  THREAD_SP(a0)
+	REG_S s0,  THREAD_S0(a0)
+	REG_S s1,  THREAD_S1(a0)
+	REG_S s2,  THREAD_S2(a0)
+	REG_S s3,  THREAD_S3(a0)
+	REG_S s4,  THREAD_S4(a0)
+	REG_S s5,  THREAD_S5(a0)
+	REG_S s6,  THREAD_S6(a0)
+	REG_S s7,  THREAD_S7(a0)
+	REG_S s8,  THREAD_S8(a0)
+	REG_S s9,  THREAD_S9(a0)
+	REG_S s10, THREAD_S10(a0)
+	REG_S s11, THREAD_S11(a0)
+	/* Restore context from next->arch.state */
+	REG_L ra,  THREAD_RA(a1)
+	REG_L sp,  THREAD_SP(a1)
+	REG_L s0,  THREAD_S0(a1)
+	REG_L s1,  THREAD_S1(a1)
+	REG_L s2,  THREAD_S2(a1)
+	REG_L s3,  THREAD_S3(a1)
+	REG_L s4,  THREAD_S4(a1)
+	REG_L s5,  THREAD_S5(a1)
+	REG_L s6,  THREAD_S6(a1)
+	REG_L s7,  THREAD_S7(a1)
+	REG_L s8,  THREAD_S8(a1)
+	REG_L s9,  THREAD_S9(a1)
+	REG_L s10, THREAD_S10(a1)
+	REG_L s11, THREAD_S11(a1)
+	REG_L tp,  THREAD_TH(a1) /* Next current pointer */
+	ret
+END(__switch_to)
+
 #if 0
 .section .text
 FUNCTION(ret_from_fork)
@@ -253,50 +301,6 @@ FUNCTION(ret_from_kernel_thread)
 	move a0, s1
 	jr s0
 END(ret_from_kernel_thread)
-
-
-/*
- * Integer register context switch
- * The callee-saved registers must be saved and restored.
- * 
- *   a0: previous task_struct (must be preserved across the switch)
- *   a1: next task_struct
- */
-.section .text
-FUNCTION(__switch_to)
-	/* Save context into prev->thread */
-	REG_S ra,  THREAD_RA(a0)
-	REG_S sp,  THREAD_SP(a0)
-	REG_S s0,  THREAD_S0(a0)
-	REG_S s1,  THREAD_S1(a0)
-	REG_S s2,  THREAD_S2(a0)
-	REG_S s3,  THREAD_S3(a0)
-	REG_S s4,  THREAD_S4(a0)
-	REG_S s5,  THREAD_S5(a0)
-	REG_S s6,  THREAD_S6(a0)
-	REG_S s7,  THREAD_S7(a0)
-	REG_S s8,  THREAD_S8(a0)
-	REG_S s9,  THREAD_S9(a0)
-	REG_S s10, THREAD_S10(a0)
-	REG_S s11, THREAD_S11(a0)
-	/* Restore context from next->thread */
-	REG_L ra,  THREAD_RA(a1)
-	REG_L sp,  THREAD_SP(a1)
-	REG_L s0,  THREAD_S0(a1)
-	REG_L s1,  THREAD_S1(a1)
-	REG_L s2,  THREAD_S2(a1)
-	REG_L s3,  THREAD_S3(a1)
-	REG_L s4,  THREAD_S4(a1)
-	REG_L s5,  THREAD_S5(a1)
-	REG_L s6,  THREAD_S6(a1)
-	REG_L s7,  THREAD_S7(a1)
-	REG_L s8,  THREAD_S8(a1)
-	REG_L s9,  THREAD_S9(a1)
-	REG_L s10, THREAD_S10(a1)
-	REG_L s11, THREAD_S11(a1)
-	mv tp, a1 /* Next current pointer */
-	ret
-END(__switch_to)
 
 .section .text
 FUNCTION(__fstate_save)

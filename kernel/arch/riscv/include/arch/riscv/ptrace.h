@@ -8,7 +8,7 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 #include <magenta/compiler.h>
 #include <arch/riscv/asm/constant.h>
 #include <arch/riscv/asm/csr.h>
-#include <arch/riscv/asm/pt_regs.h>
+#include <arch/riscv/pt_regs.h>
 
 #ifndef __ASSEMBLY__
 

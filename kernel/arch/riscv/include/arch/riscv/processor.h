@@ -5,8 +5,6 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #pragma once
 
-#ifndef __ASSEMBLY__
-
 __BEGIN_CDECLS
 
 /* Optimization barrier */
@@ -32,4 +30,3 @@ static inline void wait_for_interrupt(void)
 
 __END_CDECLS
 
-#endif /*__ASSEMBLY__*/

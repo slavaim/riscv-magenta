@@ -7,8 +7,8 @@
 #pragma once
 
 #include <arch/riscv/asm/linkage.h>
-#include <arch/riscv/asm/pt_regs.h>
 #include <arch/riscv/asm/irq.h>
+#include <arch/riscv/pt_regs.h>
 
 __BEGIN_CDECLS
 

@@ -15,7 +15,7 @@
 #include <arch/riscv/irq.h>
 #include <arch/riscv/asm/linkage.h>
 #include <arch/riscv/asm/asm-offsets.h>
-#include <arch/riscv/asm/pt_regs.h>
+#include <arch/riscv/pt_regs.h>
 #include <platform/riscv/timer.h>
 
 #if WITH_LIB_MAGENTA

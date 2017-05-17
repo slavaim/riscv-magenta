@@ -5,7 +5,7 @@
 #include <asm.h>
 #include <arch/riscv/asm/linkage.h>
 #include <arch/riscv/asm/csr.h>
-#include <arch/riscv/asm/pt_regs.h>
+#include <arch/riscv/pt_regs.h>
 #include <arch/riscv/trap.h>
 #include <debug.h>
 
@@ -83,5 +83,5 @@ void trap_init(void)
 	   that we are presently executing in the kernel */
 	csr_write(sscratch, 0);
 	/* Set the exception vector address */
-	csr_write(stvec, &handle_exception);
+	//csr_write(stvec, &handle_exception);
 }

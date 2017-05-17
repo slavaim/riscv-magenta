@@ -6,68 +6,70 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 #define _ASM_OFFSETS_ 1
 
 //
-// this file is not compiled to any object file
-// it is used to generate asm-offsets.h with 
-// offsets for assembler sources
+// this file is not compiled to any object file,
+// the file is used to generate asm-offsets.h
+// with  offsets for assembler sources because
+// gnu assembler doesn't understand C structure
+// definition
 //
 #include <arch/riscv/asm/kbuild.h>
-#include <arch/riscv/asm/pt_regs.h>
+#include <arch/riscv/pt_regs.h>
 #include <arch/riscv/thread_info.h>
+#include <arch/riscv/thread_state.h>
 
 void asm_offsets(void)
 {
-    /*
-	OFFSET(TASK_THREAD_INFO, task_struct, stack);
-	OFFSET(THREAD_RA, task_struct, thread.ra);
-	OFFSET(THREAD_SP, task_struct, thread.sp);
-	OFFSET(THREAD_S0, task_struct, thread.s[0]);
-	OFFSET(THREAD_S1, task_struct, thread.s[1]);
-	OFFSET(THREAD_S2, task_struct, thread.s[2]);
-	OFFSET(THREAD_S3, task_struct, thread.s[3]);
-	OFFSET(THREAD_S4, task_struct, thread.s[4]);
-	OFFSET(THREAD_S5, task_struct, thread.s[5]);
-	OFFSET(THREAD_S6, task_struct, thread.s[6]);
-	OFFSET(THREAD_S7, task_struct, thread.s[7]);
-	OFFSET(THREAD_S8, task_struct, thread.s[8]);
-	OFFSET(THREAD_S9, task_struct, thread.s[9]);
-	OFFSET(THREAD_S10, task_struct, thread.s[10]);
-	OFFSET(THREAD_S11, task_struct, thread.s[11]);
-	OFFSET(THREAD_SP, task_struct, thread.sp);
+	OFFSET(THREAD_RA, riscv_thread_state, ra);
+	OFFSET(THREAD_SP, riscv_thread_state, sp);
+	OFFSET(THREAD_S0, riscv_thread_state, s[0]);
+	OFFSET(THREAD_S1, riscv_thread_state, s[1]);
+	OFFSET(THREAD_S2, riscv_thread_state, s[2]);
+	OFFSET(THREAD_S3, riscv_thread_state, s[3]);
+	OFFSET(THREAD_S4, riscv_thread_state, s[4]);
+	OFFSET(THREAD_S5, riscv_thread_state, s[5]);
+	OFFSET(THREAD_S6, riscv_thread_state, s[6]);
+	OFFSET(THREAD_S7, riscv_thread_state, s[7]);
+	OFFSET(THREAD_S8, riscv_thread_state, s[8]);
+	OFFSET(THREAD_S9, riscv_thread_state, s[9]);
+	OFFSET(THREAD_S10, riscv_thread_state, s[10]);
+	OFFSET(THREAD_S11, riscv_thread_state, s[11]);
+	OFFSET(THREAD_SP, riscv_thread_state, sp);
+    
+    OFFSET(THREAD_TH, riscv_thread_state, thread);
 
-	OFFSET(THREAD_F0,  task_struct, thread.fstate.f[0]);
-	OFFSET(THREAD_F1,  task_struct, thread.fstate.f[1]);
-	OFFSET(THREAD_F2,  task_struct, thread.fstate.f[2]);
-	OFFSET(THREAD_F3,  task_struct, thread.fstate.f[3]);
-	OFFSET(THREAD_F4,  task_struct, thread.fstate.f[4]);
-	OFFSET(THREAD_F5,  task_struct, thread.fstate.f[5]);
-	OFFSET(THREAD_F6,  task_struct, thread.fstate.f[6]);
-	OFFSET(THREAD_F7,  task_struct, thread.fstate.f[7]);
-	OFFSET(THREAD_F8,  task_struct, thread.fstate.f[8]);
-	OFFSET(THREAD_F9,  task_struct, thread.fstate.f[9]);
-	OFFSET(THREAD_F10, task_struct, thread.fstate.f[10]);
-	OFFSET(THREAD_F11, task_struct, thread.fstate.f[11]);
-	OFFSET(THREAD_F12, task_struct, thread.fstate.f[12]);
-	OFFSET(THREAD_F13, task_struct, thread.fstate.f[13]);
-	OFFSET(THREAD_F14, task_struct, thread.fstate.f[14]);
-	OFFSET(THREAD_F15, task_struct, thread.fstate.f[15]);
-	OFFSET(THREAD_F16, task_struct, thread.fstate.f[16]);
-	OFFSET(THREAD_F17, task_struct, thread.fstate.f[17]);
-	OFFSET(THREAD_F18, task_struct, thread.fstate.f[18]);
-	OFFSET(THREAD_F19, task_struct, thread.fstate.f[19]);
-	OFFSET(THREAD_F20, task_struct, thread.fstate.f[20]);
-	OFFSET(THREAD_F21, task_struct, thread.fstate.f[21]);
-	OFFSET(THREAD_F22, task_struct, thread.fstate.f[22]);
-	OFFSET(THREAD_F23, task_struct, thread.fstate.f[23]);
-	OFFSET(THREAD_F24, task_struct, thread.fstate.f[24]);
-	OFFSET(THREAD_F25, task_struct, thread.fstate.f[25]);
-	OFFSET(THREAD_F26, task_struct, thread.fstate.f[26]);
-	OFFSET(THREAD_F27, task_struct, thread.fstate.f[27]);
-	OFFSET(THREAD_F28, task_struct, thread.fstate.f[28]);
-	OFFSET(THREAD_F29, task_struct, thread.fstate.f[29]);
-	OFFSET(THREAD_F30, task_struct, thread.fstate.f[30]);
-	OFFSET(THREAD_F31, task_struct, thread.fstate.f[31]);
-	OFFSET(THREAD_FCSR, task_struct, thread.fstate.fcsr);
-    */
+	OFFSET(THREAD_F0,  riscv_thread_state, fstate.f[0]);
+	OFFSET(THREAD_F1,  riscv_thread_state, fstate.f[1]);
+	OFFSET(THREAD_F2,  riscv_thread_state, fstate.f[2]);
+	OFFSET(THREAD_F3,  riscv_thread_state, fstate.f[3]);
+	OFFSET(THREAD_F4,  riscv_thread_state, fstate.f[4]);
+	OFFSET(THREAD_F5,  riscv_thread_state, fstate.f[5]);
+	OFFSET(THREAD_F6,  riscv_thread_state, fstate.f[6]);
+	OFFSET(THREAD_F7,  riscv_thread_state, fstate.f[7]);
+	OFFSET(THREAD_F8,  riscv_thread_state, fstate.f[8]);
+	OFFSET(THREAD_F9,  riscv_thread_state, fstate.f[9]);
+	OFFSET(THREAD_F10, riscv_thread_state, fstate.f[10]);
+	OFFSET(THREAD_F11, riscv_thread_state, fstate.f[11]);
+	OFFSET(THREAD_F12, riscv_thread_state, fstate.f[12]);
+	OFFSET(THREAD_F13, riscv_thread_state, fstate.f[13]);
+	OFFSET(THREAD_F14, riscv_thread_state, fstate.f[14]);
+	OFFSET(THREAD_F15, riscv_thread_state, fstate.f[15]);
+	OFFSET(THREAD_F16, riscv_thread_state, fstate.f[16]);
+	OFFSET(THREAD_F17, riscv_thread_state, fstate.f[17]);
+	OFFSET(THREAD_F18, riscv_thread_state, fstate.f[18]);
+	OFFSET(THREAD_F19, riscv_thread_state, fstate.f[19]);
+	OFFSET(THREAD_F20, riscv_thread_state, fstate.f[20]);
+	OFFSET(THREAD_F21, riscv_thread_state, fstate.f[21]);
+	OFFSET(THREAD_F22, riscv_thread_state, fstate.f[22]);
+	OFFSET(THREAD_F23, riscv_thread_state, fstate.f[23]);
+	OFFSET(THREAD_F24, riscv_thread_state, fstate.f[24]);
+	OFFSET(THREAD_F25, riscv_thread_state, fstate.f[25]);
+	OFFSET(THREAD_F26, riscv_thread_state, fstate.f[26]);
+	OFFSET(THREAD_F27, riscv_thread_state, fstate.f[27]);
+	OFFSET(THREAD_F28, riscv_thread_state, fstate.f[28]);
+	OFFSET(THREAD_F29, riscv_thread_state, fstate.f[29]);
+	OFFSET(THREAD_F30, riscv_thread_state, fstate.f[30]);
+	OFFSET(THREAD_F31, riscv_thread_state, fstate.f[31]);
+	OFFSET(THREAD_FCSR, riscv_thread_state, fstate.fcsr);
 
 	OFFSET(TI_THREAD, thread_info, thread);
 	OFFSET(TI_FLAGS, thread_info, flags);
