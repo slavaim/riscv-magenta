@@ -28,16 +28,16 @@ END(excp_vect_table)
 
     /*a call frame to facilitate with debugging*/
     .macro SET_GDB_FRAME
-    addi    sp, sp, -2*SZREG /* allocate the frame */
+    addi    sp, sp, -(GDB_FRAME_SZ) /* allocate the frame */
     REG_S   s0, 0(sp)        /* get the frame pointer at the exception moment */
     csrr    s0, sepc         /* get the exception PC */
     REG_S   s0, SZREG(sp)    /* set the exception PC as $ra for the frame */
-    addi    s0, sp, 2*SZREG  /* set s0 to the current frame pointer */
+    addi    s0, sp, GDB_FRAME_SZ  /* set s0 to the current frame pointer */
     .endm
 
     .macro DEL_GDB_FRAME
-    REG_L   s0, 0(sp)        /* restore the caller frame pointer */
-    addi    sp, sp, 2*SZREG  /* restore the stack pointer */
+    REG_L   s0, 0(sp)             /* restore the caller frame pointer */
+    addi    sp, sp, GDB_FRAME_SZ  /* restore the stack pointer */
     .endm
 
 	.text
@@ -94,7 +94,8 @@ _save_context:
 
     /* s0 is used as a frame pointer, do not 
        overwrite it */
-	csrr  s1, sscratch
+	csrr  s1, sscratch            /* sp on entry */
+    addi  s1, s1, -(GDB_FRAME_SZ) /* account for the frame set by SET_GDB_FRAME */
 	csrrc s2, sstatus, t0
 	csrr  s3, sepc
 	csrr  s4, sbadaddr
@@ -163,6 +164,9 @@ FUNCTION(handle_exception)
         sp - pt_regs structure allocated on the stack
         s4 - memory address for the exception, i.e. badaddr
         s5 - cause of the exception, i.e. scause register
+      stack layout
+        FRAME [16]
+        REGISTERS [PT_SIZE]
     */
 	SAVE_ALL
 

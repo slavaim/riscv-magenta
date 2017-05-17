@@ -26,6 +26,15 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 #define SZREG		__REG_SEL(8, 4)
 #define LGREG		__REG_SEL(3, 2)
 
+/*
+the frame layout
+struct gdb_frame{
+    struct gdb_frame* prev;
+    void*  ra;
+    };
+*/
+#define GDB_FRAME_SZ  2*SZREG
+
 #if __SIZEOF_POINTER__ == 8
 #define __PTR_SEL(a,b)	__ASM_STR(a)
 #elif __SIZEOF_POINTER__ == 4

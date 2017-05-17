@@ -45,8 +45,11 @@ status_t platform_set_oneshot_timer(platform_timer_callback callback,
 
     DEBUG_ASSERT(arch_ints_disabled());
 
-    t_callback[cpu] = callback;
-    callback_arg[cpu] = arg;
+    if (t_callback[cpu] != callback)
+        t_callback[cpu] = callback;
+
+    if (callback_arg[cpu] != arg)
+        callback_arg[cpu] = arg;
     
     sbi_set_timer((deadline * timebase) / LK_SEC(1));
 
@@ -76,4 +79,11 @@ static void platform_init_timer(uint level)
 	csr_set(sie, SIE_STIE);
 }
 
-// LK_INIT_HOOK(timer, &platform_init_timer, LK_INIT_LEVEL_VM + 3);
+void platform_stop_timer(void)
+{
+    //
+    // TO_DO_RISCV implement it
+    //
+}
+
+LK_INIT_HOOK(timer, &platform_init_timer, LK_INIT_LEVEL_VM + 3);

@@ -15,6 +15,7 @@
 #include <arch/riscv/irqflags.h>
 #include <arch/riscv/sbi.h>
 #include <arch/riscv/irq.h>
+#include <arch/riscv/processor.h>
 
 __BEGIN_CDECLS
 
@@ -68,19 +69,21 @@ static inline uint arch_max_num_cpus(void)
 
 static inline void arch_spinloop_pause(void)
 {
-    PANIC_UNIMPLEMENTED;
+    cpu_relax();
 }
 
 /* function to call when an event happens that may trigger the exit from
  * a spinloop */
 static inline void arch_spinloop_signal(void)
 {
-    PANIC_UNIMPLEMENTED;
+    //
+    // TO_DO_RISCV implement
+    //
 }
 
-#define mb()        do{ PANIC_UNIMPLEMENTED; }while(0);
-#define wmb()       do{ PANIC_UNIMPLEMENTED; }while(0);
-#define rmb()       do{ PANIC_UNIMPLEMENTED; }while(0);
+#define mb()        do{ __asm__ __volatile__ ("fence" : : : "memory"); }while(0);
+#define wmb()       do{ mb() }while(0);
+#define rmb()       do{ mb() }while(0);
 
 #define smp_mb()    mb()
 #define smp_wmb()   wmb()
