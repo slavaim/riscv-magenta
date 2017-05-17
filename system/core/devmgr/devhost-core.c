@@ -44,77 +44,61 @@
 bool __dm_locked = false;
 mtx_t __devhost_api_lock = MTX_INIT;
 
+static mx_device_t* dev_create_parent;
+static mx_device_t* dev_create_device;
+
+mx_device_t* device_create_setup(mx_device_t* parent) {
+    DM_LOCK();
+    mx_device_t* dev = dev_create_device;
+    dev_create_parent = parent;
+    dev_create_device = NULL;
+    DM_UNLOCK();
+    return dev;
+}
+
 static mx_device_t* root_dev;
 
-static mx_status_t default_get_protocol(mx_device_t* dev, uint32_t proto_id, void** proto) {
-    if (proto_id == MX_PROTOCOL_DEVICE) {
-        *proto = dev->ops;
-        return NO_ERROR;
-    }
-    if ((proto_id == dev->protocol_id) && (dev->protocol_ops != NULL)) {
-        *proto = dev->protocol_ops;
-        return NO_ERROR;
-    }
-    return ERR_NOT_SUPPORTED;
-}
-
-static mx_status_t default_open(mx_device_t* dev, mx_device_t** out, uint32_t flags) {
+static mx_status_t default_open(void* ctx, mx_device_t** out, uint32_t flags) {
     return NO_ERROR;
 }
 
-static mx_status_t default_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
+static mx_status_t default_open_at(void* ctx, mx_device_t** out, const char* path, uint32_t flags) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t default_close(mx_device_t* dev, uint32_t flags) {
+static mx_status_t default_close(void* ctx, uint32_t flags) {
     return NO_ERROR;
 }
 
-static mx_status_t default_release(mx_device_t* dev) {
+static void default_unbind(void* ctx) {
+}
+
+static void default_release(void* ctx) {
+}
+
+static mx_status_t default_read(void* ctx, void* buf, size_t count, mx_off_t off, size_t* actual) {
     return ERR_NOT_SUPPORTED;
 }
 
-static ssize_t default_read(mx_device_t* dev, void* buf, size_t count, mx_off_t off) {
+static mx_status_t default_write(void* ctx, const void* buf, size_t count, mx_off_t off, size_t* actual) {
     return ERR_NOT_SUPPORTED;
 }
 
-static ssize_t default_write(mx_device_t* dev, const void* buf, size_t count, mx_off_t off) {
-    return ERR_NOT_SUPPORTED;
-}
-
-static void default_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
-    ssize_t rc;
-    void* buf;
-    iotxn_mmap(txn, &buf);
-    if (txn->opcode == IOTXN_OP_READ) {
-        rc = device_op_read(dev, buf, txn->length, txn->offset);
-    } else if (txn->opcode == IOTXN_OP_WRITE) {
-        rc = device_op_write(dev, buf, txn->length, txn->offset);
-    } else {
-        rc = ERR_NOT_SUPPORTED;
-    }
-    if (rc < 0) {
-        iotxn_complete(txn, rc, 0);
-    } else {
-        iotxn_complete(txn, NO_ERROR, rc);
-    }
-}
-
-static mx_off_t default_get_size(mx_device_t* dev) {
+static mx_off_t default_get_size(void* ctx) {
     return 0;
 }
 
-static ssize_t default_ioctl(mx_device_t* dev, uint32_t op,
+static mx_status_t default_ioctl(void* ctx, uint32_t op,
                              const void* in_buf, size_t in_len,
-                             void* out_buf, size_t out_len) {
+                             void* out_buf, size_t out_len, size_t* out_actual) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t default_suspend(mx_device_t* dev) {
+static mx_status_t default_suspend(void* ctx, uint32_t flags) {
     return ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t default_resume(mx_device_t* dev) {
+static mx_status_t default_resume(void* ctx, uint32_t flags) {
     return ERR_NOT_SUPPORTED;
 }
 
@@ -155,78 +139,6 @@ void dev_ref_release(mx_device_t* dev) {
         DM_LOCK();
     }
 }
-
-#if !DEVHOST_V2
-static mx_status_t devhost_device_probe(mx_device_t* dev, mx_driver_t* drv, bool autobind) {
-    mx_status_t status;
-
-    xprintf("devhost: probe dev=%p(%s) drv=%p(%s)\n",
-            dev, dev->name, drv, drv->name ? drv->name : "<NULL>");
-
-    // don't bind to the driver that published this device
-    if (drv == dev->driver) {
-        return ERR_NOT_SUPPORTED;
-    }
-
-    // evaluate the driver's binding program against the device's properties
-    if (!devhost_is_bindable_drv(drv, dev, autobind)) {
-        return ERR_NOT_SUPPORTED;
-    }
-
-    void *cookie = NULL;
-    DM_UNLOCK();
-    // Load driver if it's not already loaded
-    if ((status = devhost_load_driver(drv)) < 0) {
-        DM_LOCK();
-        return status;
-    }
-    status = drv->ops->bind(drv, dev, &cookie);
-    DM_LOCK();
-    if (status < 0) {
-        return status;
-    }
-    dev_ref_acquire(dev);
-
-    // multi-bind devices are not "owned" by a single driver
-    // and they currently are permanent singleton devices (like /dev/misc)
-    // which will never result in child->op->unbind(), so the fact that
-    // we do not track the cookie here is not a problem.
-    if (!(dev->flags & DEV_FLAG_MULTI_BIND)) {
-        dev->owner = drv;
-        dev->owner_cookie = cookie;
-
-        // remove from unbound list if we succeeded
-        if (list_in_list(&dev->unode)) {
-            list_delete(&dev->unode);
-        }
-    }
-
-    return NO_ERROR;
-}
-
-static void devhost_device_probe_all(mx_device_t* dev, bool autobind) {
-    if ((dev->flags & DEV_FLAG_UNBINDABLE) || device_is_bound(dev)) {
-        return;
-    }
-
-    mx_driver_t* drv = NULL;
-    list_for_every_entry (&driver_list, drv, mx_driver_t, node) {
-        if (devhost_device_probe(dev, drv, autobind) == NO_ERROR) {
-            // if the probe succeeded and we are not a multi-bind
-            // device, we can stop looking for further matches now
-            if (!(dev->flags & DEV_FLAG_MULTI_BIND)) {
-                break;
-            }
-        }
-    }
-
-    // if no driver is bound, add the device to the unmatched list
-    if (!device_is_bound(dev)) {
-        list_add_tail(&unmatched_device_list, &dev->unode);
-    }
-}
-#endif
-
 
 mx_status_t devhost_device_create(const char* name, void* ctx, mx_protocol_device_t* ops,
                                   mx_driver_t* driver, mx_device_t** out) {
@@ -297,20 +209,11 @@ static mx_status_t device_validate(mx_device_t* dev) {
         printf("device add: %p(%s): NULL ops\n", dev, dev->name);
         return ERR_INVALID_ARGS;
     }
-    if (dev->protocol_id == MX_PROTOCOL_MISC_PARENT) {
-        // This protocol is only allowed for the special
-        // singleton misc parent device.
-#if DEVHOST_V2
-        printf("INVAL: MISC!\n");
+    if ((dev->protocol_id == MX_PROTOCOL_MISC_PARENT) ||
+        (dev->protocol_id == MX_PROTOCOL_ROOT)) {
+        // These protocols is only allowed for the special
+        // singleton misc or root parent devices.
         return ERR_INVALID_ARGS;
-#else
-        if (dev != driver_get_misc_device()) {
-            return ERR_INVALID_ARGS;
-        }
-        // We do not limit binding to a single child
-        // on the misc parent device.
-        dev->flags |= DEV_FLAG_MULTI_BIND;
-#endif
     }
     // devices which do not declare a primary protocol
     // are implied to be misc devices
@@ -320,14 +223,13 @@ static mx_status_t device_validate(mx_device_t* dev) {
 
     // install default methods if needed
     mx_protocol_device_t* ops = dev->ops;
-    DEFAULT_IF_NULL(ops, get_protocol)
     DEFAULT_IF_NULL(ops, open);
-    DEFAULT_IF_NULL(ops, openat);
+    DEFAULT_IF_NULL(ops, open_at);
     DEFAULT_IF_NULL(ops, close);
+    DEFAULT_IF_NULL(ops, unbind);
     DEFAULT_IF_NULL(ops, release);
     DEFAULT_IF_NULL(ops, read);
     DEFAULT_IF_NULL(ops, write);
-    DEFAULT_IF_NULL(ops, iotxn_queue);
     DEFAULT_IF_NULL(ops, get_size);
     DEFAULT_IF_NULL(ops, ioctl);
     DEFAULT_IF_NULL(ops, suspend);
@@ -382,15 +284,25 @@ mx_status_t devhost_device_add(mx_device_t* dev, mx_device_t* parent,
     if ((status = device_validate(dev)) < 0) {
         goto fail;
     }
-    if (parent == NULL) {
-        printf("device_add: cannot add %p(%s) to NULL parent\n", dev, dev->name);
-        status = ERR_NOT_SUPPORTED;
-        goto fail;
-    }
-    if (parent->flags & DEV_FLAG_DEAD) {
-        printf("device add: %p: is dead, cannot add child %p\n", parent, dev);
-        status = ERR_BAD_STATE;
-        goto fail;
+    if (parent == dev_create_parent) {
+        // check for magic parent value indicating
+        // shadow device creation, and if so, ensure
+        // we don't add more than one shadow device
+        // per create() op...
+        if (dev_create_device != NULL) {
+            return ERR_BAD_STATE;
+        }
+    } else {
+        if (parent == NULL) {
+            printf("device_add: cannot add %p(%s) to NULL parent\n", dev, dev->name);
+            status = ERR_NOT_SUPPORTED;
+            goto fail;
+        }
+        if (parent->flags & DEV_FLAG_DEAD) {
+            printf("device add: %p: is dead, cannot add child %p\n", parent, dev);
+            status = ERR_BAD_STATE;
+            goto fail;
+        }
     }
 #if TRACE_ADD_REMOVE
     printf("devhost: device add: %p(%s) parent=%p(%s)\n",
@@ -417,7 +329,13 @@ mx_status_t devhost_device_add(mx_device_t* dev, mx_device_t* parent,
     // or, for instanced devices, by the last close
     dev_ref_acquire(dev);
 
-    if (!(dev->flags & DEV_FLAG_INSTANCE)) {
+    // shadow devices are created through this handshake process
+    if (parent == dev_create_parent) {
+        dev_create_device = dev;
+        dev->flags |= DEV_FLAG_ADDED;
+        dev->flags &= (~DEV_FLAG_BUSY);
+        return NO_ERROR;
+    } else if (!(dev->flags & DEV_FLAG_INSTANCE)) {
         // add to the device tree
         dev_ref_acquire(parent);
         dev->parent = parent;
@@ -443,12 +361,6 @@ mx_status_t devhost_device_add(mx_device_t* dev, mx_device_t* parent,
         }
     }
     dev->flags |= DEV_FLAG_ADDED;
-
-#if !DEVHOST_V2
-    // probe the device
-    devhost_device_probe_all(dev, true);
-#endif
-
     dev->flags &= (~DEV_FLAG_BUSY);
     return NO_ERROR;
 
@@ -547,60 +459,32 @@ mx_status_t devhost_device_remove(mx_device_t* dev) {
     return NO_ERROR;
 }
 
-#if !DEVHOST_V2
-mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_name) {
-    if (device_is_bound(dev)) {
-        return ERR_INVALID_ARGS;
-    }
-    if (dev->flags & DEV_FLAG_UNBINDABLE) {
-        return NO_ERROR;
-    }
-    dev->flags |= DEV_FLAG_BUSY;
-    if (!drv_name) {
-        devhost_device_probe_all(dev, false);
-    } else {
-        // bind the driver with matching name
-        mx_driver_t* drv = NULL;
-        list_for_every_entry (&driver_list, drv, mx_driver_t, node) {
-            if (strcmp(drv->name, drv_name)) {
-                continue;
-            }
-            if (devhost_device_probe(dev, drv, false) == NO_ERROR) {
-                break;
-            }
-        }
-    }
-    dev->flags &= ~DEV_FLAG_BUSY;
-    return NO_ERROR;
-}
-
 mx_status_t devhost_device_rebind(mx_device_t* dev) {
-    dev->flags |= DEV_FLAG_REBIND;
+    dev->flags |= DEV_FLAG_BUSY;
 
     // remove children
-    mx_device_t* child = NULL;
-    mx_device_t* temp = NULL;
-    list_for_every_entry_safe(&dev->children, child, temp, mx_device_t, node) {
+    mx_device_t* child;
+    list_for_every_entry(&dev->children, child, mx_device_t, node) {
         devhost_device_remove(child);
     }
 
+    // notify children that they've been unbound
     devhost_unbind_children(dev);
 
     // detach from owner and downref
     if (dev->owner) {
+        if (dev->owner->ops->unbind) {
+            dev->owner->ops->unbind(dev->owner, dev, dev->owner_cookie);
+        }
         dev->owner = NULL;
         dev_ref_release(dev);
     }
 
-    // probe the device again to bind
-    devhost_device_probe_all(dev, false);
-
-    dev->flags &= ~DEV_FLAG_REBIND;
+    dev->flags &= ~DEV_FLAG_BUSY;
     return NO_ERROR;
 }
-#endif
 
-mx_status_t devhost_device_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
+mx_status_t devhost_device_open_at(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
     if (dev->flags & DEV_FLAG_DEAD) {
         printf("device open: %p(%s) is dead!\n", dev, dev->name);
         return ERR_BAD_STATE;
@@ -638,28 +522,6 @@ mx_status_t devhost_device_close(mx_device_t* dev, uint32_t flags) {
     dev_ref_release(dev);
     return r;
 }
-
-#if !DEVHOST_V2
-mx_status_t devhost_driver_add(mx_driver_t* drv) {
-    xprintf("driver add: %p(%s)\n", drv, drv->name);
-
-    // add the driver to the driver list
-    list_add_tail(&driver_list, &drv->node);
-
-    // probe unmatched devices with the driver and initialize if the probe is successful
-    mx_device_t* dev = NULL;
-    mx_device_t* temp = NULL;
-    list_for_every_entry_safe (&unmatched_device_list, dev, temp, mx_device_t, unode) {
-        devhost_device_probe(dev, drv, true);
-    }
-    return NO_ERROR;
-}
-
-mx_status_t devhost_driver_remove(mx_driver_t* drv) {
-    // TODO: implement
-    return ERR_NOT_SUPPORTED;
-}
-#endif
 
 mx_status_t devhost_driver_unbind(mx_driver_t* drv, mx_device_t* dev) {
     if (dev->owner != drv) {

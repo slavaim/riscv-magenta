@@ -12,7 +12,6 @@
 #include <string.h>
 #include <threads.h>
 
-#if DEVHOST_V2
 #include <magenta/process.h>
 #include <magenta/processargs.h>
 #define ID_HJOBROOT 4
@@ -34,12 +33,9 @@ static mx_handle_t get_sysinfo_job_root(void) {
 
     return MX_HANDLE_INVALID;
 }
-#else
-mx_handle_t get_sysinfo_job_root(void);
-#endif
 
-static ssize_t sysinfo_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, size_t cmdlen,
-                             void* reply, size_t max) {
+static mx_status_t sysinfo_ioctl(void* ctx, uint32_t op, const void* cmd, size_t cmdlen,
+                             void* reply, size_t max, size_t* out_actual) {
     switch (op) {
     case IOCTL_SYSINFO_GET_ROOT_JOB: {
         if ((cmdlen != 0) || (max < sizeof(mx_handle_t))) {
@@ -50,7 +46,8 @@ static ssize_t sysinfo_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, siz
             return ERR_NOT_SUPPORTED;
         } else {
             memcpy(reply, &h, sizeof(mx_handle_t));
-            return sizeof(mx_handle_t);
+            *out_actual = sizeof(mx_handle_t);
+            return NO_ERROR;
         }
     }
     case IOCTL_SYSINFO_GET_ROOT_RESOURCE: {
@@ -66,7 +63,8 @@ static ssize_t sysinfo_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, siz
             return status;
         }
         memcpy(reply, &h, sizeof(mx_handle_t));
-        return sizeof(mx_handle_t);
+        *out_actual = sizeof(mx_handle_t);
+        return NO_ERROR;
     }
     default:
         return ERR_INVALID_ARGS;
@@ -74,6 +72,7 @@ static ssize_t sysinfo_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, siz
 }
 
 static mx_protocol_device_t sysinfo_ops = {
+    .version = DEVICE_OPS_VERSION,
     .ioctl = sysinfo_ioctl,
 };
 
@@ -86,29 +85,14 @@ mx_status_t sysinfo_bind(mx_driver_t* drv, mx_device_t* parent, void** cookie) {
     };
 
     mx_device_t* dev;
-    return device_add2(parent, &args, &dev);
+    return device_add(parent, &args, &dev);
 }
-
-#if !DEVHOST_V2
-mx_status_t sysinfo_init(mx_driver_t* drv) {
-    return sysinfo_bind(drv, driver_get_misc_device(), NULL);
-}
-#endif
 
 static mx_driver_ops_t sysinfo_driver_ops = {
     .version = DRIVER_OPS_VERSION,
-#if DEVHOST_V2
     .bind = sysinfo_bind,
-#else
-    .init = sysinfo_init,
-#endif
 };
 
-#if DEVHOST_V2
 MAGENTA_DRIVER_BEGIN(sysinfo, sysinfo_driver_ops, "magenta", "0.1", 1)
     BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_MISC_PARENT),
 MAGENTA_DRIVER_END(sysinfo)
-#else
-MAGENTA_DRIVER_BEGIN(sysinfo, sysinfo_driver_ops, "magenta", "0.1", 0)
-MAGENTA_DRIVER_END(sysinfo)
-#endif

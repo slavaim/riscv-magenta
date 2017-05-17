@@ -26,7 +26,7 @@ public:
     }
 
     ~Array() {
-        delete[] ptr_;
+        reset();
     }
 
     Array& operator=(Array&& o) {
@@ -50,9 +50,10 @@ public:
     }
 
     void reset(T* t, size_t count) {
-        delete[] ptr_;
+        T* ptr = ptr_;
         ptr_ = t;
         count_ = count;
+        delete[] ptr;
     }
 
     void swap(Array& other) {
@@ -75,6 +76,14 @@ public:
     T& operator[](size_t i) const {
         MX_DEBUG_ASSERT(i < count_);
         return ptr_[i];
+    }
+
+    T* begin() const {
+        return ptr_;
+    }
+
+    T* end() const {
+        return &ptr_[count_];
     }
 
 private:

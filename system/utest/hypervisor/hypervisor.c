@@ -5,11 +5,11 @@
 #include <limits.h>
 #include <stdlib.h>
 
-#include <hexdump/hexdump.h>
 #include <hypervisor/guest.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/hypervisor.h>
+#include <pretty/hexdump.h>
 #include <unittest/unittest.h>
 
 static const uint64_t kVmoSize = 2 << 20;
@@ -146,16 +146,18 @@ static bool guest_start_test(void) {
     ASSERT_EQ(mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_SET_CR3,
                                &guest_cr3, sizeof(guest_cr3), NULL, 0),
               NO_ERROR, "");
+    uint32_t guest_esi = 0;
+    ASSERT_EQ(mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_SET_ESI,
+                               &guest_esi, sizeof(guest_esi), NULL, 0),
+              NO_ERROR, "");
 #endif // __x86_64__
 
+    // Enter the guest.
     ASSERT_EQ(mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_SET_ENTRY,
                                &guest_entry, sizeof(guest_entry), NULL, 0),
               NO_ERROR, "");
-
-    for (int i = 0; i < 4; i++) {
-        ASSERT_EQ(mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_ENTER, NULL, 0, NULL, 0),
-                  NO_ERROR, "");
-    }
+    ASSERT_EQ(mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_ENTER, NULL, 0, NULL, 0),
+              ERR_STOP, "");
 
     uint8_t buffer[PAGE_SIZE];
     uint32_t num_entries_read;

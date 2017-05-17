@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -32,22 +33,22 @@ static void found_driver(magenta_note_driver_t* note, mx_bind_inst_t* bi, void* 
     size_t pathlen = strlen(libname) + 1;
     size_t namelen = strlen(note->name) + 1;
     size_t bindlen = note->bindcount * sizeof(mx_bind_inst_t);
-    size_t len = sizeof(driver_ctx_t) + bindlen + pathlen + namelen;
+    size_t len = sizeof(driver_t) + bindlen + pathlen + namelen;
 
-    driver_ctx_t* ctx;
-    if ((ctx = malloc(len)) == NULL) {
+    driver_t* drv;
+    if ((drv = malloc(len)) == NULL) {
         return;
     }
 
-    memset(ctx, 0, sizeof(driver_ctx_t));
-    ctx->binding_size = bindlen;
-    ctx->binding = (void*) (ctx + 1);
-    ctx->libname = (void*) (ctx->binding + note->bindcount);
-    ctx->name = ctx->libname + pathlen;
+    memset(drv, 0, sizeof(driver_t));
+    drv->binding_size = bindlen;
+    drv->binding = (void*) (drv + 1);
+    drv->libname = (void*) (drv->binding + note->bindcount);
+    drv->name = drv->libname + pathlen;
 
-    memcpy((void*) ctx->binding, bi, bindlen);
-    memcpy((void*) ctx->libname, libname, pathlen);
-    memcpy((void*) ctx->name, note->name, namelen);
+    memcpy((void*) drv->binding, bi, bindlen);
+    memcpy((void*) drv->libname, libname, pathlen);
+    memcpy((void*) drv->name, note->name, namelen);
 
 #if VERBOSE_DRIVER_LOAD
     printf("found driver: %s\n", (char*) cookie);
@@ -60,7 +61,7 @@ static void found_driver(magenta_note_driver_t* note, mx_bind_inst_t* bi, void* 
     }
 #endif
 
-    coordinator_new_driver(ctx);
+    coordinator_new_driver(drv, note->version);
 }
 
 static void find_loadable_drivers(const char* path) {
@@ -78,7 +79,7 @@ static void find_loadable_drivers(const char* path) {
         if (de->d_name[0] == '.') {
             continue;
         }
-        int r = snprintf(libname, sizeof(libname), "driver/%s", de->d_name);
+        int r = snprintf(libname, sizeof(libname), "%s/%s", path, de->d_name);
         if ((r < 0) || (r >= (int)sizeof(libname))) {
             continue;
         }
@@ -92,9 +93,9 @@ static void find_loadable_drivers(const char* path) {
 
         if (status) {
             if (status == ERR_NOT_FOUND) {
-                printf("devhost: no driver info in '%s'\n", libname);
+                printf("devcoord: no driver info in '%s'\n", libname);
             } else {
-                printf("devhost: error reading info from '%s'\n", libname);
+                printf("devcoord: error reading info from '%s'\n", libname);
             }
         }
     }
@@ -103,4 +104,5 @@ static void find_loadable_drivers(const char* path) {
 
 void enumerate_drivers(void) {
     find_loadable_drivers("/boot/lib/driver");
+    find_loadable_drivers("/system/lib/driver");
 }

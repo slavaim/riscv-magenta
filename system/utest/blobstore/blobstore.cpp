@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <threads.h>
@@ -19,7 +21,7 @@
 
 #include <fs-management/mount.h>
 #include <fs-management/ramdisk.h>
-#include <magenta/device/devmgr.h>
+#include <magenta/device/vfs.h>
 #include <magenta/device/ramdisk.h>
 #include <magenta/new.h>
 #include <magenta/syscalls.h>
@@ -81,7 +83,8 @@ static int StartBlobstoreTest(uint64_t blk_size, uint64_t blk_count, char* ramdi
     }
 
     mx_status_t status;
-    if ((status = mkfs(ramdisk_path_out, DISK_FORMAT_BLOBFS, launch_stdio_sync)) != NO_ERROR) {
+    if ((status = mkfs(ramdisk_path_out, DISK_FORMAT_BLOBFS, launch_stdio_sync,
+                       &default_mkfs_options)) != NO_ERROR) {
         fprintf(stderr, "Could not mkfs blobstore: %d", status);
         destroy_ramdisk(ramdisk_path_out);
         return -1;
@@ -249,6 +252,101 @@ static bool TestBasic(void) {
         ASSERT_EQ(unlink(info->path), 0, "");
     }
 
+    ASSERT_EQ(EndBlobstoreTest(ramdisk_path), 0, "unmounting blobstore");
+    END_TEST;
+}
+
+static bool TestMmap(void) {
+    BEGIN_TEST;
+    char ramdisk_path[PATH_MAX];
+    ASSERT_EQ(StartBlobstoreTest(512, 1 << 20, ramdisk_path), 0, "Mounting Blobstore");
+
+    for (size_t i = 10; i < 16; i++) {
+        mxtl::unique_ptr<blob_info_t> info;
+        ASSERT_TRUE(GenerateBlob(1 << i, &info), "");
+
+        int fd;
+        ASSERT_TRUE(MakeBlob(info->path, info->merkle.get(), info->size_merkle,
+                             info->data.get(), info->size_data, &fd), "");
+        ASSERT_EQ(close(fd), 0, "");
+        fd = open(info->path, O_RDWR);
+        ASSERT_GT(fd, 0, "Failed to-reopen blob");
+
+        void* addr = mmap(NULL, info->size_data, PROT_READ, MAP_SHARED,
+                          fd, 0);
+        ASSERT_NEQ(addr, MAP_FAILED, "Could not mmap blob");
+        ASSERT_EQ(memcmp(addr, info->data.get(), info->size_data), 0, "Mmap data invalid");
+        ASSERT_EQ(munmap(addr, info->size_data), 0, "Could not unmap blob");
+        ASSERT_EQ(close(fd), 0, "");
+        ASSERT_EQ(unlink(info->path), 0, "");
+    }
+    ASSERT_EQ(EndBlobstoreTest(ramdisk_path), 0, "unmounting blobstore");
+    END_TEST;
+}
+
+static bool TestReaddir(void) {
+    BEGIN_TEST;
+    char ramdisk_path[PATH_MAX];
+    ASSERT_EQ(StartBlobstoreTest(512, 1 << 20, ramdisk_path), 0, "Mounting Blobstore");
+
+    constexpr size_t kMaxEntries = 50;
+    constexpr size_t kBlobSize = 1 << 10;
+
+    AllocChecker ac;
+    mxtl::Array<mxtl::unique_ptr<blob_info_t>>
+            info(new (&ac) mxtl::unique_ptr<blob_info_t>[kMaxEntries](), kMaxEntries);
+    ASSERT_TRUE(ac.check(), "");
+
+    // Try to readdir on an empty directory
+    DIR* dir = opendir(MOUNT_PATH);
+    ASSERT_NONNULL(dir, "");
+    ASSERT_NULL(readdir(dir), "Expected blobstore to start empty");
+
+    // Fill a directory with entries
+    for (size_t i = 0; i < kMaxEntries; i++) {
+        ASSERT_TRUE(GenerateBlob(kBlobSize, &info[i]), "");
+        int fd;
+        ASSERT_TRUE(MakeBlob(info[i]->path, info[i]->merkle.get(), info[i]->size_merkle,
+                             info[i]->data.get(), info[i]->size_data, &fd), "");
+        ASSERT_EQ(close(fd), 0, "");
+        fd = open(info[i]->path, O_RDWR);
+        ASSERT_GT(fd, 0, "Failed to-reopen blob");
+        ASSERT_TRUE(VerifyContents(fd, info[i]->data.get(), info[i]->size_data), "");
+        ASSERT_EQ(close(fd), 0, "");
+    }
+
+    // Check that we see the expected number of entries
+    size_t entries_seen = 0;
+    struct dirent* de;
+    while ((de = readdir(dir)) != nullptr) {
+        entries_seen++;
+    }
+    ASSERT_EQ(entries_seen, kMaxEntries, "");
+    entries_seen = 0;
+    rewinddir(dir);
+
+    // Readdir on a directory which contains entries, removing them as we go
+    // along.
+    while ((de = readdir(dir)) != nullptr) {
+        for (size_t i = 0; i < kMaxEntries; i++) {
+            if ((info[i]->size_data != 0) &&
+                strcmp(strrchr(info[i]->path, '/') + 1, de->d_name) == 0) {
+                ASSERT_EQ(unlink(info[i]->path), 0, "");
+                // It's a bit hacky, but we set 'size_data' to zero
+                // to identify the entry has been unlinked.
+                info[i]->size_data = 0;
+                goto found;
+            }
+        }
+        ASSERT_TRUE(false, "Blobstore Readdir found an unexpected entry");
+found:
+        entries_seen++;
+    }
+    ASSERT_EQ(entries_seen, kMaxEntries, "");
+
+    ASSERT_NULL(readdir(dir), "Expected blobstore to end empty");
+
+    ASSERT_EQ(closedir(dir), 0, "");
     ASSERT_EQ(EndBlobstoreTest(ramdisk_path), 0, "unmounting blobstore");
     END_TEST;
 }
@@ -1078,7 +1176,7 @@ static bool InvalidOps(void) {
     ASSERT_LT(utime(info->path, nullptr), 0, "");
 
     // TODO(smklein): Test that a blob fd cannot unmount the entire blobstore.
-    //    ASSERT_LT(ioctl_devmgr_unmount_fs(fd), 0, "");
+    //    ASSERT_LT(ioctl_vfs_unmount_fs(fd), 0, "");
 
     // Access the file once more, after these operations
     ASSERT_TRUE(VerifyContents(fd, info->data.get(), info->size_data), "");
@@ -1120,21 +1218,23 @@ static bool RootDirectory(void) {
 }
 
 BEGIN_TEST_CASE(blobstore_tests)
-RUN_TEST(TestBasic)
-RUN_TEST(UseAfterUnlink)
-RUN_TEST(WriteAfterRead)
-RUN_TEST(BadAllocation)
-RUN_TEST(CorruptedMerkleTree)
-RUN_TEST(CorruptedBlob)
-RUN_TEST(CorruptedDigest)
-RUN_TEST(EdgeAllocation)
-RUN_TEST(CreateUmountRemountSmall)
-RUN_TEST(EarlyRead)
-RUN_TEST(WaitForRead)
-RUN_TEST(WriteSeekIgnored)
-RUN_TEST(UnlinkTiming)
-RUN_TEST(InvalidOps)
-RUN_TEST(RootDirectory)
+RUN_TEST_MEDIUM(TestBasic)
+RUN_TEST_MEDIUM(TestMmap)
+RUN_TEST_MEDIUM(TestReaddir)
+RUN_TEST_MEDIUM(UseAfterUnlink)
+RUN_TEST_MEDIUM(WriteAfterRead)
+RUN_TEST_MEDIUM(BadAllocation)
+RUN_TEST_MEDIUM(CorruptedMerkleTree)
+RUN_TEST_MEDIUM(CorruptedBlob)
+RUN_TEST_MEDIUM(CorruptedDigest)
+RUN_TEST_MEDIUM(EdgeAllocation)
+RUN_TEST_MEDIUM(CreateUmountRemountSmall)
+RUN_TEST_MEDIUM(EarlyRead)
+RUN_TEST_MEDIUM(WaitForRead)
+RUN_TEST_MEDIUM(WriteSeekIgnored)
+RUN_TEST_MEDIUM(UnlinkTiming)
+RUN_TEST_MEDIUM(InvalidOps)
+RUN_TEST_MEDIUM(RootDirectory)
 RUN_TEST_LARGE(CreateUmountRemountLargeMultithreaded)
 RUN_TEST_LARGE(CreateUmountRemountLarge)
 RUN_TEST_LARGE(NoSpace)

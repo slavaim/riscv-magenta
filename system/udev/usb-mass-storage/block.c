@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static void ums_block_queue(mx_device_t* device, iotxn_t* txn) {
-    ums_block_t* dev = device->ctx;
+static void ums_block_queue(void* ctx, iotxn_t* txn) {
+    ums_block_t* dev = ctx;
 
     if (txn->offset % dev->block_size) {
         iotxn_complete(txn, ERR_INVALID_ARGS, 0);
@@ -35,9 +35,9 @@ static void ums_get_info(mx_device_t* device, block_info_t* info) {
     info->flags = dev->flags;
 }
 
-static ssize_t ums_block_ioctl(mx_device_t* device, uint32_t op, const void* cmd, size_t cmdlen,
-                                   void* reply, size_t max) {
-    ums_block_t* dev = device->ctx;
+static mx_status_t ums_block_ioctl(void* ctx, uint32_t op, const void* cmd, size_t cmdlen,
+                                   void* reply, size_t max, size_t* out_actual) {
+    ums_block_t* dev = ctx;
 
     // TODO implement other block ioctls
     switch (op) {
@@ -45,8 +45,13 @@ static ssize_t ums_block_ioctl(mx_device_t* device, uint32_t op, const void* cmd
         block_info_t* info = reply;
         if (max < sizeof(*info))
             return ERR_BUFFER_TOO_SMALL;
-        ums_get_info(device, info);
-        return sizeof(*info);
+        ums_get_info(dev->mxdev, info);
+        *out_actual = sizeof(*info);
+        return NO_ERROR;
+    }
+    case IOCTL_BLOCK_RR_PART: {
+        // rebind to reread the partition table
+        return device_rebind(dev->mxdev);
     }
     case IOCTL_DEVICE_SYNC: {
         ums_sync_node_t node;
@@ -74,12 +79,13 @@ static ssize_t ums_block_ioctl(mx_device_t* device, uint32_t op, const void* cmd
     }
 }
 
-static mx_off_t ums_block_get_size(mx_device_t* device) {
-    ums_block_t* dev = device->ctx;
+static mx_off_t ums_block_get_size(void* ctx) {
+    ums_block_t* dev = ctx;
     return dev->block_size * dev->total_blocks;
 }
 
 static mx_protocol_device_t ums_block_proto = {
+    .version = DEVICE_OPS_VERSION,
     .iotxn_queue = ums_block_queue,
     .ioctl = ums_block_ioctl,
     .get_size = ums_block_get_size,
@@ -155,5 +161,5 @@ mx_status_t ums_block_add_device(ums_t* ums, ums_block_t* dev) {
         .proto_ops = &ums_block_ops,
     };
 
-    return device_add2(ums->mxdev, &args, &dev->mxdev);
+    return device_add(ums->mxdev, &args, &dev->mxdev);
 }

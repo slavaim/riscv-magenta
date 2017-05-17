@@ -6,6 +6,7 @@
 #include <ddk/common/usb.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
+#include <ddk/protocol/bcm-bus.h>
 #include <ddk/protocol/ethernet.h>
 #include <magenta/device/ethernet.h>
 #include <magenta/listnode.h>
@@ -455,14 +456,13 @@ static void lan9514_free(lan9514_t* eth) {
     free(eth);
 }
 
-static mx_status_t lan9514_release(mx_device_t* device) {
-    lan9514_t* eth = get_lan9514(device);
+static void lan9514_release(void* ctx) {
+    lan9514_t* eth = ctx;
     lan9514_free(eth);
-    return NO_ERROR;
 }
 
-static void lan9514_unbind(mx_device_t* device) {
-    lan9514_t* eth = get_lan9514(device);
+static void lan9514_unbind(void* ctx) {
+    lan9514_t* eth = ctx;
 
     mtx_lock(&eth->mutex);
     eth->dead = true;
@@ -473,6 +473,7 @@ static void lan9514_unbind(mx_device_t* device) {
 }
 
 static mx_protocol_device_t lan9514_device_proto = {
+    .version = DEVICE_OPS_VERSION,
     .unbind = lan9514_unbind,
     .release = lan9514_release,
 };
@@ -545,11 +546,17 @@ static mx_status_t lan9514_reset(lan9514_t* eth) {
             goto fail;
     } while (retval & LAN9514_PM_CTRL_PHY_RST);
 
-    //if we are on rpi, then we can use this fd to retrieve mac id
-    uint8_t temp_mac[6];
-    int fd = open("/dev/soc/bcm-vc-rpc", O_RDWR);
-    if (fd) {
-        if (ioctl_bcm_get_macid(fd,temp_mac,sizeof(temp_mac))) {
+    // if we are on rpi, then try to find BCM bus device to fetch MAC address
+    // TODO(voydanoff) come up with a better way of accessing the bus protocol
+    mx_device_t* busdev = eth->usb_device;
+    bcm_bus_protocol_t* bus_proto = NULL;
+    while (busdev && device_op_get_protocol(busdev, MX_PROTOCOL_BCM_BUS, (void**)&bus_proto)
+           != NO_ERROR) {
+        busdev = device_get_parent(busdev);
+    }
+    if (busdev && bus_proto) {
+        uint8_t temp_mac[6];
+        if (bus_proto->get_macid(busdev, temp_mac) == NO_ERROR) {
             uint32_t macword = (temp_mac[5] << 8) + temp_mac[4];
             if (lan9514_write_register(eth, LAN9514_ADDR_HI_REG, macword) < 0)
                 goto fail;
@@ -560,7 +567,8 @@ static mx_status_t lan9514_reset(lan9514_t* eth) {
             if (lan9514_write_register(eth, LAN9514_ADDR_LO_REG, macword) < 0)
                 goto fail;
         }
-        close(fd);
+    } else {
+        printf("lan9514_reset could not find MX_PROTOCOL_BCM_BUS\n");
     }
 
     if (lan9514_read_mac_address(eth) < 0)
@@ -643,7 +651,7 @@ static int lan9514_start_thread(void* arg) {
         .proto_ops = &ethmac_ops,
     };
 
-    status = device_add2(eth->usb_device, &args, &eth->device);
+    status = device_add(eth->usb_device, &args, &eth->device);
     if (status < 0) {
         printf("lan9514: failed to create device: %d\n", status);
         lan9514_free(eth);

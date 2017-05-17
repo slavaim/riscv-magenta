@@ -477,7 +477,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/misc/setpriority.c \
     $(LOCAL_DIR)/src/misc/setrlimit.c \
     $(LOCAL_DIR)/src/misc/syslog.c \
-    $(LOCAL_DIR)/src/misc/uname.c \
     $(LOCAL_DIR)/src/misc/wordexp.c \
     $(LOCAL_DIR)/src/mman/madvise.c \
     $(LOCAL_DIR)/src/mman/mlock.c \
@@ -1126,6 +1125,7 @@ MODULE_SO_INSTALL_NAME := lib/$(USER_SHARED_INTERP)
 MODULE_SRCS += \
     $(LOCAL_DIR)/stubs/iostubs.c \
     $(LOCAL_DIR)/stubs/socketstubs.c \
+    $(LOCAL_DIR)/arch/$(MUSL_ARCH)/dl-entry.S \
     $(LOCAL_DIR)/ldso/dlstart.c \
     $(LOCAL_DIR)/ldso/dynlink.c
 

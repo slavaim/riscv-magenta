@@ -25,18 +25,24 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/test-link.c \
     $(LOCAL_DIR)/test-maxfile.c \
     $(LOCAL_DIR)/test-overflow.c \
-    $(LOCAL_DIR)/test-persist.c \
+    $(LOCAL_DIR)/test-persist.cpp \
     $(LOCAL_DIR)/test-rw-workers.c \
     $(LOCAL_DIR)/test-rename.c \
     $(LOCAL_DIR)/test-random-op.c \
+    $(LOCAL_DIR)/test-sparse.cpp \
     $(LOCAL_DIR)/test-sync.c \
-    $(LOCAL_DIR)/test-truncate.c \
+    $(LOCAL_DIR)/test-truncate.cpp \
     $(LOCAL_DIR)/test-unlink.c \
+    $(LOCAL_DIR)/test-watcher.c \
 
 MODULE_LDFLAGS := --wrap open --wrap unlink --wrap stat --wrap mkdir
 MODULE_LDFLAGS += --wrap rename --wrap truncate --wrap opendir
 MODULE_LDFLAGS += --wrap utimes --wrap link --wrap symlink --wrap rmdir
 MODULE_LDFLAGS += --wrap chdir --wrap renameat
+
+MODULE_STATIC_LIBS := \
+    system/ulib/mxcpp \
+    system/ulib/mxtl \
 
 MODULE_LIBS := \
     system/ulib/mxio \

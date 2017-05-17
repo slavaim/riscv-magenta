@@ -39,7 +39,8 @@ static int sleep_test(void)
 static int mutex_thread(void *arg)
 {
     int i;
-    const int iterations = 100000;
+    const int iterations = 1000000;
+    int count = 0;
 
     static volatile int shared = 0;
 
@@ -54,12 +55,19 @@ static int mutex_thread(void *arg)
             panic("someone else has messed with the shared data\n");
 
         shared = (intptr_t)get_current_thread();
-        thread_yield();
+        if ((rand() % 5) == 0)
+            thread_yield();
+
+        if (++count % 10000 == 0)
+            printf("%p: count %d\n", get_current_thread(), count);
         shared = 0;
 
         mutex_release(m);
-        thread_yield();
+        if ((rand() % 5) == 0)
+            thread_yield();
     }
+
+    printf("mutex tester %p done\n", get_current_thread());
 
     return 0;
 }
@@ -76,13 +84,26 @@ static int mutex_test(void)
     thread_t *threads[5];
 
     for (uint i=0; i < countof(threads); i++) {
-        threads[i] = thread_create("mutex tester", &mutex_thread, &m, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+        threads[i] = thread_create("mutex tester", &mutex_thread, &m,
+                get_current_thread()->priority, DEFAULT_STACK_SIZE);
         thread_resume(threads[i]);
     }
 
     for (uint i=0; i < countof(threads); i++) {
         thread_join(threads[i], NULL, INFINITE_TIME);
     }
+
+    thread_sleep_relative(LK_MSEC(100));
+
+    static const uint count = 128*1024*1024;
+    uint64_t c = arch_cycle_count();
+    for (uint i = 0; i < count; i++) {
+        mutex_acquire(&m);
+        mutex_release(&m);
+    }
+    c = arch_cycle_count() - c;
+
+    printf("%" PRIu64 " cycles to acquire/release uncontended mutex %u times (%" PRIu64 " cycles per)\n", c, count, c / count);
 
     printf("done with mutex tests\n");
 

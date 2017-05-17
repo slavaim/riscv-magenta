@@ -10,12 +10,13 @@
 #include <gpt/gpt.h>
 #include <magenta/device/block.h>
 #include <magenta/device/console.h>
-#include <magenta/device/devmgr.h>
+#include <magenta/device/vfs.h>
 #include <magenta/dlfcn.h>
 #include <magenta/process.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 #include <mxio/debug.h>
+#include <mxio/loader-service.h>
 #include <mxio/watcher.h>
 #include <mxio/util.h>
 #include <stdio.h>
@@ -222,8 +223,19 @@ static const char* argv_sh[] = { "/boot/bin/sh" };
 static const char* argv_autorun0[] = { "/boot/bin/sh", "/boot/autorun" };
 static const char* argv_init[] = { "/system/bin/init" };
 
+void do_autorun(const char* name, const char* env) {
+    char* bin = getenv(env);
+    if (bin) {
+        printf("devmgr: %s: starting %s...\n", env, bin);
+        devmgr_launch(svcs_job_handle, name,
+                      1, (const char* const*) &bin,
+                      NULL, -1, NULL, NULL, 0);
+    }
+}
+
 int devmgr_start_system_init(void* arg) {
     static bool init_started = false;
+    static bool autorun_started = false;
     static mtx_t lock = MTX_INIT;
     mtx_lock(&lock);
     struct stat s;
@@ -249,6 +261,10 @@ int devmgr_start_system_init(void* arg) {
                       NULL, -1, init_hnds, init_ids, init_hnd_count);
         init_started = true;
     }
+    if (!autorun_started) {
+        do_autorun("autorun:system", "magenta.autorun.system");
+        autorun_started = true;
+    }
     mtx_unlock(&lock);
     return 0;
 }
@@ -265,6 +281,7 @@ int service_starter(void* arg) {
                       NULL, -1, NULL, NULL, 0);
     }
 
+    do_autorun("autorun:boot", "magenta.autorun.boot");
     struct stat s;
     if (stat(argv_autorun0[1], &s) == 0) {
         printf("devmgr: starting /boot/autorun ...\n");
@@ -359,6 +376,10 @@ int main(int argc, char** argv) {
     // We won't use it any more (no dlopen calls in this process).
     mx_handle_t loader_svc = dl_set_loader_service(MX_HANDLE_INVALID);
     mx_handle_close(loader_svc);
+
+    // Ensure that devmgr doesn't try to connect to the global
+    // loader sevice (as this leads to deadlocks in devhost v2)
+    mxio_force_local_loader_service();
 
     devmgr_io_init();
 

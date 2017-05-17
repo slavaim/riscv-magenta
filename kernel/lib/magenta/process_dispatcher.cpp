@@ -69,13 +69,8 @@ mx_status_t ProcessDispatcher::Create(
     if (!ac.check())
         return ERR_NO_MEMORY;
 
-
-    if (job) {
-        // Process creation can fail if the job is in the middle of a
-        // killing operation.
-        if (!job->AddChildProcess(process.get()))
-            return ERR_BAD_STATE;
-    }
+    if (!job->AddChildProcess(process.get()))
+        return ERR_BAD_STATE;
 
     status_t result = process->Initialize();
     if (result != NO_ERROR)
@@ -102,7 +97,7 @@ mx_status_t ProcessDispatcher::Create(
 ProcessDispatcher::ProcessDispatcher(mxtl::RefPtr<JobDispatcher> job,
                                      mxtl::StringPiece name,
                                      uint32_t flags)
-    : job_(mxtl::move(job)), state_tracker_(0u) {
+    : job_(mxtl::move(job)), policy_(job_->GetPolicy()), state_tracker_(0u) {
     LTRACE_ENTRY_OBJ;
 
     // Generate handle XOR mask with top bit and bottom two bits cleared
@@ -129,8 +124,7 @@ ProcessDispatcher::~ProcessDispatcher() {
 
     // Remove ourselves from the parent job's weak ref to us. Note that this might
     // have beeen called when transitioning State::DEAD. The Job can handle double calls.
-    if (job_)
-        job_->RemoveChildProcess(this);
+    job_->RemoveChildProcess(this);
 
     LTRACE_EXIT_OBJ;
 }
@@ -175,7 +169,10 @@ void ProcessDispatcher::Exit(int retcode) {
     {
         AutoLock lock(&state_lock_);
 
-        DEBUG_ASSERT(state_ == State::RUNNING);
+        // check that we're in the RUNNING state or we're racing with something
+        // else that has already pushed us until the DYING state
+        DEBUG_ASSERT_MSG(state_ == State::RUNNING || state_ == State::DYING,
+                "state is %s", StateToString(state_));
 
         retcode_ = retcode;
 
@@ -380,8 +377,7 @@ void ProcessDispatcher::SetStateLocked(State s) {
 
         // We remove ourselves from the parent Job weak ref (to us) list early, so
         // the semantics of signaling MX_JOB_NO_PROCESSES match that of MX_TASK_TERMINATED.
-        if (job_)
-            job_->RemoveChildProcess(this);
+        job_->RemoveChildProcess(this);
 
         // The PROC_CREATE record currently emits a uint32_t.
         uint32_t koid = static_cast<uint32_t>(get_koid());
@@ -722,6 +718,18 @@ mx_status_t ProcessDispatcher::set_debug_addr(uintptr_t addr) {
         return ERR_ACCESS_DENIED;
     debug_addr_ = addr;
     return NO_ERROR;
+}
+
+mx_status_t ProcessDispatcher::QueryPolicy(uint32_t condition) const {
+    auto action = GetSystemPolicyManager()->QueryBasicPolicy(policy_, condition);
+    if (action & MX_POL_ACTION_ALARM) {
+        // TODO(cpu): Generate Port packet. Probably need to call up to the
+        // parent job for the actual port.
+        action &= ~MX_POL_ACTION_ALARM;
+    }
+    // TODO(cpu): check for the MX_POL_KILL bit and return an error code
+    // that sysgen understands as termination.
+    return (action & MX_POL_ACTION_DENY) ? ERR_ACCESS_DENIED : NO_ERROR;
 }
 
 const char* StateToString(ProcessDispatcher::State state) {

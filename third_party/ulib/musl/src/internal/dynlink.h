@@ -73,8 +73,10 @@ typedef struct {
     (dl_start_return_t) { (arg), (entry) }
 #endif
 
-typedef dl_start_return_t stage2_func(void* start_arg, void* vdso);
-typedef dl_start_return_t stage3_func(void* start_arg);
+dl_start_return_t _dl_start(void* start_arg, void* vdso)
+    __attribute__((__visibility__("hidden")));
+dl_start_return_t __dls2(void* start_arg, void* vdso)
+    __attribute__((visibility("hidden")));
 
 // We can access these with simple PC-relative relocs.
 // Both of these symbols are defined automagically by the linker.

@@ -12,6 +12,7 @@
 
 typedef struct intel_serialio_i2c_slave_device {
     mx_device_t* mxdev;
+    struct intel_serialio_i2c_device* controller;
 
     uint8_t chip_address_width;
     uint16_t chip_address;
@@ -21,6 +22,5 @@ typedef struct intel_serialio_i2c_slave_device {
     struct list_node slave_list_node;
 } intel_serialio_i2c_slave_device_t;
 
-mx_status_t intel_serialio_i2c_slave_device_init(
-    mx_device_t* cont, intel_serialio_i2c_slave_device_t* slave,
-    uint8_t width, uint16_t address);
+// device protocol for a slave device
+extern mx_protocol_device_t intel_serialio_i2c_slave_device_proto;

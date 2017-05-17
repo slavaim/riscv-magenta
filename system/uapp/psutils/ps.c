@@ -6,6 +6,8 @@
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/exception.h>
 #include <magenta/syscalls/object.h>
+#include <pretty/sizes.h>
+#include <task-utils/walker.h>
 
 #include <inttypes.h>
 #include <math.h>
@@ -13,9 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "format.h"
-#include "processes.h"
 
 #define MAX_STATE_LEN (7 + 1)  // +1 for trailing NUL
 
@@ -77,7 +76,11 @@ static mx_status_t process_callback(int depth, mx_handle_t process, mx_koid_t ko
     mx_info_task_stats_t info;
     status = mx_object_get_info(
         process, MX_INFO_TASK_STATS, &info, sizeof(info), NULL, NULL);
-    if (status != NO_ERROR) {
+    if (status == ERR_BAD_STATE) {
+        // process has exited, but has not been destroyed
+        info.mem_mapped_bytes = 0;
+        info.mem_committed_bytes = 0;
+    } else if (status != NO_ERROR) {
         return status;
     }
     format_size(e.mapped_bytes_str, sizeof(e.mapped_bytes_str),
@@ -103,6 +106,8 @@ static const char* state_string(const mx_info_thread_t* info) {
                 return "susp";
             case MX_THREAD_STATE_BLOCKED:
                 return "blocked";
+            case MX_THREAD_STATE_DYING:
+                return "dying";
             case MX_THREAD_STATE_DEAD:
                 return "dead";
             default:
@@ -204,10 +209,10 @@ int main(int argc, char** argv) {
     }
 
     int ret = 0;
-    mx_status_t status = walk_process_tree(job_callback, process_callback,
-                                           with_threads ? thread_callback : NULL);
+    mx_status_t status = walk_root_job_tree(job_callback, process_callback,
+                                            with_threads ? thread_callback : NULL);
     if (status != NO_ERROR) {
-        fprintf(stderr, "WARNING: walk_process_tree failed: %s (%d)\n",
+        fprintf(stderr, "WARNING: walk_root_job_tree failed: %s (%d)\n",
                 mx_status_get_string(status), status);
         ret = 1;
     }

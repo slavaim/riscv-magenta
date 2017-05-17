@@ -14,6 +14,7 @@ MODULE_DEPS := \
     kernel/lib/crypto \
     kernel/lib/magenta \
     kernel/lib/user_copy \
+    kernel/lib/vdso \
 
 MODULE_SRCS := \
     $(LOCAL_DIR)/syscalls.cpp \
@@ -32,6 +33,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/syscalls_port.cpp \
     $(LOCAL_DIR)/syscalls_resource.cpp \
     $(LOCAL_DIR)/syscalls_socket.cpp \
+    $(LOCAL_DIR)/syscalls_system.cpp \
     $(LOCAL_DIR)/syscalls_task.cpp \
     $(LOCAL_DIR)/syscalls_test.cpp \
     $(LOCAL_DIR)/syscalls_vmar.cpp \

@@ -112,8 +112,8 @@ GLOBAL_COMPILEFLAGS += -Wthread-safety
 else
 GLOBAL_COMPILEFLAGS += -Wno-nonnull-compare
 endif
-GLOBAL_CFLAGS := --std=c11 -Werror-implicit-function-declaration -Wstrict-prototypes -Wwrite-strings
-GLOBAL_CPPFLAGS := --std=c++14 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wconversion -Wno-sign-conversion
+GLOBAL_CFLAGS := -std=c11 -Werror-implicit-function-declaration -Wstrict-prototypes -Wwrite-strings
+GLOBAL_CPPFLAGS := -std=c++14 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wconversion -Wno-sign-conversion
 #GLOBAL_CPPFLAGS += -Weffc++
 GLOBAL_ASMFLAGS := -DASSEMBLY
 GLOBAL_LDFLAGS := -nostdlib --build-id
@@ -294,6 +294,12 @@ ALLHOST_APPS :=
 # sysroot (exported libraries and headers)
 SYSROOT_DEPS :=
 
+# MDI source files used to generate the mdi.bin binary blob
+MDI_SRCS :=
+
+# MDI source files used to generate the mdi-defs.h header file
+MDI_INCLUDES :=
+
 # For now always enable frame pointers so kernel backtraces
 # can work and define WITH_PANIC_BACKTRACE to enable them in panics
 # MG-623
@@ -351,6 +357,8 @@ include make/sysgen.mk
 # modules in the ALLMODULES list
 include make/recurse.mk
 
+# rules for generating MDI header and binary
+include make/mdi.mk
 
 ifneq ($(EXTRA_IDFILES),)
 $(BUILDDIR)/ids.txt: $(EXTRA_IDFILES)

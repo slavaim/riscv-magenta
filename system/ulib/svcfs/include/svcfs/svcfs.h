@@ -9,6 +9,7 @@
 #include <mx/channel.h>
 #include <mxtl/array.h>
 #include <mxtl/intrusive_double_list.h>
+#include <mxtl/ref_ptr.h>
 
 namespace svcfs {
 
@@ -20,19 +21,9 @@ protected:
     virtual ~ServiceProvider();
 };
 
-struct VnodeWatcher : public mxtl::DoublyLinkedListable<mxtl::unique_ptr<VnodeWatcher>> {
-public:
-    VnodeWatcher();
-    ~VnodeWatcher();
-
-    mx_handle_t h;
-};
-
 class Vnode : public fs::Vnode {
 public:
-    void Release() override final;
-    mx_status_t Close() override final;
-    mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) override final;
+    mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) final;
 
     ~Vnode() override;
 
@@ -45,7 +36,7 @@ protected:
 class VnodeSvc : public Vnode {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(VnodeSvc);
-    using NodeState = mxtl::DoublyLinkedListNodeState<VnodeSvc*>;
+    using NodeState = mxtl::DoublyLinkedListNodeState<mxtl::RefPtr<VnodeSvc>>;
 
     struct TypeChildTraits {
         static NodeState& node_state(VnodeSvc& vn) {
@@ -59,8 +50,8 @@ public:
              ServiceProvider* provider);
     ~VnodeSvc() override;
 
-    mx_status_t Open(uint32_t flags) override final;
-    mx_status_t Serve(mx_handle_t h, uint32_t flags) override final;
+    mx_status_t Open(uint32_t flags) final;
+    mx_status_t Serve(mx_handle_t h, uint32_t flags) final;
 
     uint64_t node_id() const { return node_id_; }
     const mxtl::Array<char>& name() const { return name_; }
@@ -71,7 +62,11 @@ public:
 private:
     NodeState type_child_state_;
 
+    // If non-zero, this vnode is a persistent child of a |VnodeDir|. Otherwise,
+    // if zero, this vnode is a temporary result of a |Lookup| and supports
+    // exactly one |Serve| operation.
     uint64_t node_id_;
+
     mxtl::Array<char> name_;
     ServiceProvider* provider_;
 };
@@ -81,28 +76,42 @@ public:
     explicit VnodeDir(mxio_dispatcher_cb_t dispatcher);
     ~VnodeDir() override;
 
-    mx_status_t Open(uint32_t flags) override final;
-    mx_status_t Lookup(fs::Vnode** out, const char* name, size_t len) override final;
-    mx_status_t Getattr(vnattr_t* a) override final;
+    mx_status_t Open(uint32_t flags) final;
+    mx_status_t Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) final;
+    mx_status_t Getattr(vnattr_t* a) final;
 
-    void NotifyAdd(const char* name, size_t len) override final;
+    void NotifyAdd(const char* name, size_t len) final;
+    mx_status_t WatchDir(mx_handle_t* out) final;
 
-    mx_status_t IoctlWatchDir(const void* in_buf,
-                              size_t in_len,
-                              void* out_buf,
-                              size_t out_len) override final;
-    mx_status_t Readdir(void* cookie, void* dirents, size_t len) override final;
+    mx_status_t Readdir(void* cookie, void* dirents, size_t len) final;
 
     bool AddService(const char* name, size_t len, ServiceProvider* provider);
     void RemoveAllServices();
 
 private:
-    using ServiceList = mxtl::DoublyLinkedList<VnodeSvc*, VnodeSvc::TypeChildTraits>;
+    using ServiceList = mxtl::DoublyLinkedList<mxtl::RefPtr<VnodeSvc>, VnodeSvc::TypeChildTraits>;
 
     // Starts at 3 because . has ID one and .. has ID two.
     uint64_t next_node_id_;
     ServiceList services_;
-    mxtl::DoublyLinkedList<mxtl::unique_ptr<VnodeWatcher>> watch_list_;
+    fs::WatcherContainer watcher_;
+};
+
+// Similar to VnodeDir, but doesn't support enumeration or watching.
+class VnodeProviderDir : public Vnode {
+public:
+    explicit VnodeProviderDir(mxio_dispatcher_cb_t dispatcher);
+    ~VnodeProviderDir() override;
+
+    mx_status_t Open(uint32_t flags) final;
+    mx_status_t Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) final;
+    mx_status_t Getattr(vnattr_t* a) final;
+
+    // Set the service provider to null to prevent further requests.
+    void SetServiceProvider(ServiceProvider* provider);
+
+private:
+    ServiceProvider* provider_;
 };
 
 } // namespace svcfs

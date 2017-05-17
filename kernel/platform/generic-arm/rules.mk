@@ -14,6 +14,7 @@ LK_HEAP_IMPLEMENTATION ?= cmpctmalloc
 
 MODULE_SRCS += \
 	$(LOCAL_DIR)/platform.cpp \
+	$(LOCAL_DIR)/bcm28xx-spin.S \
 
 GLOBAL_DEFINES += \
 	ARM_ARCH_WAIT_FOR_SECONDARIES=1
@@ -27,6 +28,7 @@ ARM_CPU := cortex-a53
 MODULE_DEPS += \
 	kernel/lib/cbuf \
 	kernel/lib/mdi \
+	kernel/lib/memory_limit \
 	kernel/dev/bcm28xx \
 	kernel/dev/pcie \
 	kernel/dev/pdev \
@@ -37,7 +39,6 @@ MODULE_DEPS += \
 	kernel/dev/psci \
 	kernel/dev/qemu \
 	kernel/dev/uart/bcm28xx \
-	kernel/dev/uart/msm \
 	kernel/dev/uart/qemu \
 
 include make/module.mk

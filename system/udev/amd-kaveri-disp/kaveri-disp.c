@@ -65,8 +65,8 @@ static mx_display_protocol_t kaveri_disp_display_proto = {
 
 // implement device protocol
 
-static mx_status_t kaveri_disp_release(mx_device_t* dev) {
-    kaveri_disp_device_t* device = dev->ctx;
+static void kaveri_disp_release(void* ctx) {
+    kaveri_disp_device_t* device = ctx;
 
     if (device->regs) {
         mx_handle_close(device->regs_handle);
@@ -79,10 +79,10 @@ static mx_status_t kaveri_disp_release(mx_device_t* dev) {
     }
 
     free(device);
-    return NO_ERROR;
 }
 
 static mx_protocol_device_t kaveri_disp_device_proto = {
+    .version = DEVICE_OPS_VERSION,
     .release = kaveri_disp_release,
 };
 
@@ -151,7 +151,7 @@ static mx_status_t kaveri_disp_bind(mx_driver_t* drv, mx_device_t* dev, void** c
         .proto_ops = &kaveri_disp_display_proto,
     };
 
-    status = device_add2(dev, &args, &device->mxdev);
+    status = device_add(dev, &args, &device->mxdev);
     if (status != NO_ERROR) {
         goto fail;
     }

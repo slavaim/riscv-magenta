@@ -13,15 +13,18 @@
 
 // null is the /dev/null device.
 
-static ssize_t null_read(mx_device_t* dev, void* buf, size_t count, mx_off_t off) {
-    return 0;
+static mx_status_t null_read(void* ctx, void* buf, size_t count, mx_off_t off, size_t* actual) {
+    *actual = 0;
+    return NO_ERROR;
 }
 
-static ssize_t null_write(mx_device_t* dev, const void* buf, size_t count, mx_off_t off) {
-    return count;
+static mx_status_t null_write(void* ctx, const void* buf, size_t count, mx_off_t off, size_t* actual) {
+    *actual = count;
+    return NO_ERROR;
 }
 
 static mx_protocol_device_t null_device_proto = {
+    .version = DEVICE_OPS_VERSION,
     .read = null_read,
     .write = null_write,
 };
@@ -36,24 +39,14 @@ mx_status_t null_bind(mx_driver_t* drv, mx_device_t* parent, void** cookie) {
     };
 
     mx_device_t* dev;
-    return device_add2(parent, &args, &dev);
+    return device_add(parent, &args, &dev);
 }
-
-#if !DEVHOST_V2
-mx_status_t null_init(mx_driver_t* drv) {
-    return null_bind(drv, driver_get_root_device(), NULL);
-}
-#endif
 
 mx_driver_t _driver_null;
 
 static mx_driver_ops_t null_driver_ops = {
     .version = DRIVER_OPS_VERSION,
-#if DEVHOST_V2
     .bind = null_bind,
-#else
-    .init = null_init,
-#endif
 };
 
 MAGENTA_DRIVER_BEGIN(null, null_driver_ops, "magenta", "0.1", 0)

@@ -29,6 +29,10 @@
 #include <string.h>
 #include <trace.h>
 
+#if WITH_LIB_VDSO
+#include <lib/vdso.h>
+#endif
+
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
 // pointer to a singleton kernel address space
@@ -227,6 +231,13 @@ status_t VmAspace::Destroy() {
     LTRACEF("%p '%s'\n", this, name_);
 
     AutoLock guard(&lock_);
+
+#if WITH_LIB_VDSO
+    // Don't let a vDSO mapping prevent destroying a VMAR
+    // when the whole process is being destroyed.
+    vdso_code_mapping_.reset();
+#endif
+
     // tear down and free all of the regions in our address space
     status_t status = root_vmar_->DestroyLocked();
     if (status != NO_ERROR && status != ERR_BAD_STATE) {
@@ -562,3 +573,10 @@ void VmAspace::InitializeAslr() {
     crypto::GlobalPRNG::GetInstance()->Draw(aslr_seed_, sizeof(aslr_seed_));
     aslr_prng_.AddEntropy(aslr_seed_, sizeof(aslr_seed_));
 }
+
+#if WITH_LIB_VDSO
+uintptr_t VmAspace::vdso_base_address() const {
+    AutoLock a(&lock_);
+    return VDso::base_address(vdso_code_mapping_);
+}
+#endif

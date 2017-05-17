@@ -9,11 +9,11 @@
 #include <ddk/protocol/pci.h>
 
 #include <assert.h>
-#include <hexdump/hexdump.h>
 #include <magenta/listnode.h>
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
 #include <magenta/assert.h>
+#include <pretty/hexdump.h>
 #include <sync/completion.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -27,17 +27,6 @@
 #include "sata.h"
 
 // clang-format off
-#define INTEL_VID           (0x8086)
-#define LYNX_POINT_AHCI_DID (0x8c02)
-#define WILDCAT_AHCI_DID    (0x9c83)
-#define SUNRISE_AHCI_DID    (0x9d03)
-#define ICH9_AHCI_DID       (0x2922)
-#define SERIES_6_AHCI_DID   (0x1c02)
-#define SUNRISE_POINT_H_AHCI_DID (0xa102)
-
-#define AMD_AHCI_VID        (0x1022)
-#define AMD_FCH_AHCI_DID    (0x7801)
-
 #define TRACE 0
 
 #if TRACE
@@ -455,9 +444,9 @@ static void ahci_hba_reset(ahci_device_t* dev) {
     }
 }
 
-static void ahci_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
+static void ahci_iotxn_queue(void* ctx, iotxn_t* txn) {
     sata_pdata_t* pdata = sata_iotxn_pdata(txn);
-    ahci_device_t* device = dev->ctx;
+    ahci_device_t* device = ctx;
     ahci_port_t* port = &device->ports[pdata->port];
 
     assert(pdata->port < AHCI_MAX_PORTS);
@@ -472,11 +461,10 @@ static void ahci_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     completion_signal(&device->worker_completion);
 }
 
-static mx_status_t ahci_release(mx_device_t* dev) {
+static void ahci_release(void* ctx) {
     // FIXME - join threads created by this driver
-    ahci_device_t* device = dev->ctx;
+    ahci_device_t* device = ctx;
     free(device);
-    return NO_ERROR;
 }
 
 // worker thread (for iotxn queue):
@@ -638,6 +626,7 @@ static int ahci_irq_thread(void* arg) {
 // implement device protocol:
 
 static mx_protocol_device_t ahci_device_proto = {
+    .version = DEVICE_OPS_VERSION,
     .iotxn_queue = ahci_iotxn_queue,
     .release = ahci_release,
 };
@@ -807,7 +796,7 @@ static mx_status_t ahci_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) 
         .flags = DEVICE_ADD_NON_BINDABLE,
     };
 
-    status = device_add2(dev, &args, &device->mxdev);
+    status = device_add(dev, &args, &device->mxdev);
     if (status != NO_ERROR) {
         xprintf("ahci: error %d in device_add\n", status);
         goto fail;
@@ -834,20 +823,9 @@ static mx_driver_ops_t ahci_driver_ops = {
 };
 
 // clang-format off
-MAGENTA_DRIVER_BEGIN(ahci, ahci_driver_ops, "magenta", "0.1", 13)
+MAGENTA_DRIVER_BEGIN(ahci, ahci_driver_ops, "magenta", "0.1", 4)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
-    BI_GOTO_IF(EQ, BIND_PCI_VID, AMD_AHCI_VID, 1),
-    // intel devices
-    BI_ABORT_IF(NE, BIND_PCI_VID, INTEL_VID),
-    BI_MATCH_IF(EQ, BIND_PCI_DID, LYNX_POINT_AHCI_DID), // Simics
-    BI_MATCH_IF(EQ, BIND_PCI_DID, WILDCAT_AHCI_DID),    // Pixel2
-    BI_MATCH_IF(EQ, BIND_PCI_DID, SUNRISE_AHCI_DID),    // NUC
-    BI_MATCH_IF(EQ, BIND_PCI_DID, ICH9_AHCI_DID),       // QEMU
-    BI_MATCH_IF(EQ, BIND_PCI_DID, SERIES_6_AHCI_DID),   // 6x era chipset (Sandy/Ivy Bridge)
-    BI_MATCH_IF(EQ, BIND_PCI_DID, SUNRISE_POINT_H_AHCI_DID), // H110 chipset
-    BI_ABORT(),
-    // AMD devices
-    BI_LABEL(1),
-    BI_MATCH_IF(EQ, BIND_PCI_DID, AMD_FCH_AHCI_DID),
-    BI_ABORT(),
+    BI_ABORT_IF(NE, BIND_PCI_CLASS, 0x01),
+    BI_ABORT_IF(NE, BIND_PCI_SUBCLASS, 0x06),
+    BI_MATCH_IF(EQ, BIND_PCI_INTERFACE, 0x01),
 MAGENTA_DRIVER_END(ahci)

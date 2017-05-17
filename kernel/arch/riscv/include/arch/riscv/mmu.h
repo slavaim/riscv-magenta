@@ -10,6 +10,14 @@
 #pragma once
 
 /* top level defines for the RISC-V mmu */
-#define KB                (1024UL)
-#define MB                (1024UL*1024UL)
-#define GB                (1024UL*1024UL*1024UL)
+#ifndef KB
+    #define KB                (1024UL)
+#endif
+
+#ifndef MB
+    #define MB                (1024UL*1024UL)
+#endif
+
+#ifndef GB
+    #define GB                (1024UL*1024UL*1024UL)
+#endif

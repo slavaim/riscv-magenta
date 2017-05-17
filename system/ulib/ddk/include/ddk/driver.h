@@ -41,9 +41,9 @@ typedef struct mx_driver_ops {
 
     // Only provided by bus manager drivers, create() is invoked to
     // instantiate a bus device instance in a new device host process
-    mx_status_t (*create)(mx_driver_t* driver,
+    mx_status_t (*create)(mx_driver_t* driver, mx_device_t* parent,
                           const char* name, const char* args,
-                          mx_handle_t resource, mx_device_t** out);
+                          mx_handle_t resource);
 
     // Last call before driver is unloaded.
     mx_status_t (*release)(mx_driver_t* driver);
@@ -51,18 +51,8 @@ typedef struct mx_driver_ops {
 
 struct mx_driver {
     const char* name;
-
     mx_driver_ops_t* ops;
-
     uint32_t flags;
-
-#if !DEVHOST_V2
-    struct list_node node;
-
-    const mx_bind_inst_t* binding;
-    uint32_t binding_size;
-    // binding instructions
-#endif
 };
 
 // echo -n "device_add_args_v0.5" | sha256sum | cut -c1-16
@@ -103,7 +93,7 @@ typedef struct {
     uint32_t flags;
 } device_add_args_t;
 
-mx_status_t device_add2(mx_device_t* parent, device_add_args_t* args, mx_device_t** out);
+mx_status_t device_add(mx_device_t* parent, device_add_args_t* args, mx_device_t** out);
 // Creates a device and adds it to the devmgr.
 // device_add_args_t contains all "in" arguments.
 // All device_add_args_t values are copied, so device_add_args_t can be stack allocated.
@@ -112,32 +102,28 @@ mx_status_t device_add2(mx_device_t* parent, device_add_args_t* args, mx_device_
 // The newly added device will be active before this call returns, so be sure to have
 // the "out" pointer point to your device-local structure so callbacks can access
 // it immediately.
-// This will later be renamed device_add() after we eliminate device_create()
-// and the current device_add() APIs.
 
 mx_status_t device_create(const char* name, void* ctx, mx_protocol_device_t* ops,
-                          mx_driver_t* driver, mx_device_t** out)
-  __attribute__((deprecated("use device_add2 instead")));
-// Devices are created by device_create().  The mx_device_t will be completely
-// written during initialization, and after initialization and before calling
-// device_add() they driver may only modify the protocol_id and protocol_ops
-// fields of the mx_device_t.
+                          mx_driver_t* driver, uint32_t proto_id, void* proto_ops,
+                          mx_device_t** out);
+// device_create() is used to create a device without adding it to the devmgr.
+// This should only be used in mx_driver_ops_t create() callbacks for creating bus device children.
 
-mx_status_t device_add(mx_device_t* device, mx_device_t* parent)
-  __attribute__((deprecated("use device_add2 instead")));
+mx_status_t device_add_deprecated(mx_device_t* device, mx_device_t* parent)
+  __attribute__((deprecated("use device_add instead")));
 mx_status_t device_add_with_props(mx_device_t* device, mx_device_t* parent,
                                   mx_device_prop_t* props, uint32_t prop_count)
-  __attribute__((deprecated("use device_add2 instead")));
+  __attribute__((deprecated("use device_add instead")));
 // Adds the device to the devmgr. This makes the device visible to other drivers for binding, as
 // well as through an entry in the devfs. The props must remain accessible until the device is
 // unbound (or until after device_add fails).
 
 mx_status_t device_add_instance(mx_device_t* device, mx_device_t* parent)
-  __attribute__((deprecated("use device_add2 instead")));
+  __attribute__((deprecated("use device_add instead")));
 mx_status_t device_add_busdev(mx_device_t* device, mx_device_t* parent,
                        mx_device_prop_t* props, uint32_t prop_count,
                        const char* args, mx_handle_t rsrc)
-  __attribute__((deprecated("use device_add2 instead")));
+  __attribute__((deprecated("use device_add instead")));
 mx_status_t device_remove(mx_device_t* device);
 mx_status_t device_rebind(mx_device_t* device);
 
@@ -155,11 +141,11 @@ mx_device_t* driver_get_misc_device(void);
 // This can be used to prevent a device from being bound by a driver.
 // Must be called before the device is added.
 void device_set_bindable(mx_device_t* dev, bool bindable)
-  __attribute__((deprecated("use device_add2 instead")));
+  __attribute__((deprecated("use device_add instead")));
 // Sets the additional protocol for the device.
 // Must be called before the device is added.
 void device_set_protocol(mx_device_t* dev, uint32_t proto_id, void* proto_ops)
-  __attribute__((deprecated("use device_add2 instead")));
+  __attribute__((deprecated("use device_add instead")));
 
 void driver_unbind(mx_driver_t* driver, mx_device_t* dev);
 

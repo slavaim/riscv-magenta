@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <err.h>
+#include <string.h>
 #include <kernel/vm.h>
 #include <kernel/vm/page.h>
 #include <arch/riscv/setup.h>
@@ -104,12 +105,16 @@ static void reserve_boot_pages(bool wire_in_arena)
 
 static int setup_system_arena(pmm_arena_info_t *mem_arena)
 {
-    mem_arena->name = "memory";
+    #define ARENA_NAME "memory"
+    #define _min(a, b)   ((a) < (b) ? a : b)
+    memcpy(mem_arena->name, ARENA_NAME, _min(sizeof(ARENA_NAME), sizeof(mem_arena->name)));
     mem_arena->base = PFN_PHYS(min_low_pfn);
     mem_arenas->size = PFN_PHYS(max_low_pfn - min_low_pfn);
     mem_arenas->priority = 1;
     mem_arenas->flags = PMM_ARENA_FLAG_KMAP;
     return 0;
+    #undef _min
+    #undef ARENA_NAME
 }
 
 void platform_mem_init(void)

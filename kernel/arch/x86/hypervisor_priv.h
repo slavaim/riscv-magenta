@@ -10,9 +10,12 @@
 
 #include <arch/x86/hypervisor.h>
 #include <arch/x86/hypervisor_state.h>
+#include <kernel/event.h>
+#include <kernel/timer.h>
 
 static const uint64_t kIoApicPhysBase = 0xfec00000;
 static const uint8_t kIoApicRedirectOffsets = 0x36;
+static const uint32_t kInvalidInterrupt = UINT32_MAX >> 1;
 
 #define X86_MSR_IA32_FEATURE_CONTROL                0x003a      /* Feature control */
 #define X86_MSR_IA32_VMX_BASIC                      0x0480      /* Basic info */
@@ -80,13 +83,15 @@ enum class VmcsField32 : uint64_t {
     EXIT_MSR_LOAD_COUNT             = 0x4010,   /* VM-exit MSR-load count */
     ENTRY_CTLS                      = 0x4012,   /* VM-entry controls */
     ENTRY_MSR_LOAD_COUNT            = 0x4014,   /* VM-entry MSR-load count */
+    ENTRY_INTERRUPTION_INFORMATION  = 0x4016,   /* VM-entry interruption-information field */
+    ENTRY_EXCEPTION_ERROR_CODE      = 0x4018,   /* VM-entry exception error code */
     PROCBASED_CTLS2                 = 0x401e,   /* Secondary processor-based controls */
-    VM_INSTRUCTION_ERROR            = 0x4400,   /* VM instruction error */
+    INSTRUCTION_ERROR               = 0x4400,   /* VM instruction error */
     EXIT_REASON                     = 0x4402,   /* Exit reason */
-    INTERRUPTION_INFORMATION        = 0x4404,   /* VM-exit interruption information */
-    INTERRUPTION_ERROR_CODE         = 0x4406,   /* VM-exit interruption error code */
-    INSTRUCTION_LENGTH              = 0x440c,   /* VM-exit instruction length */
-    INSTRUCTION_INFORMATION         = 0x440e,   /* VM-exit instruction information */
+    EXIT_INTERRUPTION_INFORMATION   = 0x4404,   /* VM-exit interruption information */
+    EXIT_INTERRUPTION_ERROR_CODE    = 0x4406,   /* VM-exit interruption error code */
+    EXIT_INSTRUCTION_LENGTH         = 0x440c,   /* VM-exit instruction length */
+    EXIT_INSTRUCTION_INFORMATION    = 0x440e,   /* VM-exit instruction information */
     HOST_IA32_SYSENTER_CS           = 0x4c00,   /* Host SYSENTER CS */
     GUEST_GDTR_LIMIT                = 0x4810,   /* Guest GDTR Limit */
     GUEST_IDTR_LIMIT                = 0x4812,   /* Guest IDTR Limit */
@@ -138,6 +143,8 @@ enum class VmcsFieldXX : uint64_t {
 #define PROCBASED_CTLS2_VPID                (1u << 5)
 
 /* PROCBASED_CTLS flags */
+#define PROCBASED_CTLS_INT_WINDOW_EXITING   (1u << 2)
+#define PROCBASED_CTLS_HLT_EXITING          (1u << 7)
 #define PROCBASED_CTLS_CR3_LOAD_EXITING     (1u << 15)
 #define PROCBASED_CTLS_CR3_STORE_EXITING    (1u << 16)
 #define PROCBASED_CTLS_CR8_LOAD_EXITING     (1u << 19)
@@ -148,12 +155,11 @@ enum class VmcsFieldXX : uint64_t {
 #define PROCBASED_CTLS_PROCBASED_CTLS2      (1u << 31)
 
 /* PINBASED_CTLS flags */
-#define PINBASED_CTLS_EXTINT_EXITING        (1u << 0)
+#define PINBASED_CTLS_EXT_INT_EXITING       (1u << 0)
 #define PINBASED_CTLS_NMI_EXITING           (1u << 3)
 
 /* EXIT_CTLS flags */
 #define EXIT_CTLS_64BIT_MODE                (1u << 9)
-#define EXIT_CTLS_ACK_INTERRUPT             (1u << 15)
 #define EXIT_CTLS_SAVE_IA32_PAT             (1u << 18)
 #define EXIT_CTLS_LOAD_IA32_PAT             (1u << 19)
 #define EXIT_CTLS_SAVE_IA32_EFER            (1u << 20)
@@ -165,20 +171,7 @@ enum class VmcsFieldXX : uint64_t {
 #define ENTRY_CTLS_LOAD_IA32_EFER           (1u << 15)
 
 /* LINK_POINTER values */
-#define LINK_POINTER_INVALIDATE             0xffffffffffffffff
-
-/* EXIT_REASON values */
-enum class ExitReason : uint32_t {
-    EXTERNAL_INTERRUPT          = 1u,
-    CPUID                       = 10u,
-    IO_INSTRUCTION              = 30u,
-    RDMSR                       = 31u,
-    WRMSR                       = 32u,
-    ENTRY_FAILURE_GUEST_STATE   = 33u,
-    ENTRY_FAILURE_MSR_LOADING   = 34u,
-    EPT_VIOLATION               = 48u,
-    XSETBV                      = 55u,
-};
+#define LINK_POINTER_INVALIDATE             UINT64_MAX
 
 /* GUEST_XX_ACCESS_RIGHTS flags */
 #define GUEST_XX_ACCESS_RIGHTS_UNUSABLE     (1u << 16)
@@ -193,7 +186,6 @@ enum class ExitReason : uint32_t {
 #define GUEST_XX_ACCESS_RIGHTS_L            (1u << 13)
 // See Volume 3, Section 3.5 for valid system selectors types.
 #define GUEST_TR_ACCESS_RIGHTS_TSS_BUSY     (11u << 0)
-
 
 /* Stores VMX info from the IA32_VMX_BASIC MSR. */
 struct VmxInfo {
@@ -227,33 +219,6 @@ struct EptInfo {
     EptInfo();
 };
 
-/* Stores VM exit info from VMCS fields. */
-struct ExitInfo {
-    ExitReason exit_reason;
-    uint64_t exit_qualification;
-    uint32_t interruption_information;
-    uint32_t interruption_error_code;
-    uint32_t instruction_length;
-    uint32_t instruction_information;
-    uint64_t guest_physical_address;
-    uint64_t guest_linear_address;
-    uint32_t guest_interruptibility_state;
-    uint64_t guest_rip;
-
-    ExitInfo();
-};
-
-/* Stores IO instruction info from the VMCS exit qualification field. */
-struct IoInfo {
-    uint8_t bytes;
-    bool input;
-    bool string;
-    bool repeat;
-    uint16_t port;
-
-    IoInfo(uint64_t qualification);
-};
-
 /* VMX region to be used with both VMXON and VMCS. */
 struct VmxRegion {
     uint32_t revision_id;
@@ -280,9 +245,31 @@ private:
     bool is_on_ = false;
 };
 
-struct AutoVmcsLoad {
+class AutoVmcsLoad {
+public:
     AutoVmcsLoad(VmxPage* page);
     ~AutoVmcsLoad();
+
+    void reload();
+
+private:
+    VmxPage* page_;
+};
+
+/* Stores the local APIC state across VM exits. */
+struct LocalApicState {
+    // Timer for APIC timer.
+    timer_t timer;
+    // Event for handling block on HLT.
+    event_t event;
+    // Active interrupt, one of enum x86_interrupt_vector or kInvalidInterrupt.
+    uint32_t active_interrupt;
+    // TSC deadline.
+    uint64_t tsc_deadline;
+    // Virtual local APIC address.
+    void* virtual_apic;
+    // Virtual local APIC page.
+    VmxPage virtual_apic_page;
 };
 
 /* Stores the IO APIC state across VM exits. */
@@ -300,16 +287,16 @@ class VmcsPerCpu : public PerCpu {
 public:
     status_t Init(const VmxInfo& vmx_info) override;
     status_t Clear();
-    status_t Setup(paddr_t pml4_address, paddr_t msr_bitmaps_address);
+    status_t Setup(paddr_t pml4_address, paddr_t apic_access_address,
+                   paddr_t msr_bitmaps_address);
     status_t Enter(const VmcsContext& context, GuestPhysicalAddressSpace* gpas,
                    FifoDispatcher* serial_fifo);
 
 private:
-    bool do_resume_ = false;
     VmxPage host_msr_page_;
     VmxPage guest_msr_page_;
-    VmxPage virtual_apic_page_;
     VmxState vmx_state_;
+    LocalApicState local_apic_state_;
     IoApicState io_apic_state_;
 };
 

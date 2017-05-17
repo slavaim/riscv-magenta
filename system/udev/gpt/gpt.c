@@ -38,6 +38,7 @@
 
 typedef struct gptpart_device {
     mx_device_t* mxdev;
+    mx_device_t* parent;
 
     gpt_entry_t gpt_entry;
 
@@ -73,93 +74,98 @@ static uint64_t getsize(gptpart_device_t* dev) {
     return lbacount * dev->info.block_size;
 }
 
-static bool prepare_txn(gptpart_device_t* dev, iotxn_t* txn) {
-    // sanity check
-    uint64_t off_lba = txn->offset / dev->info.block_size;
-    uint64_t first = dev->gpt_entry.first_lba;
-    uint64_t last = dev->gpt_entry.last_lba;
-    if (first + off_lba > last) {
-        xprintf("%s: offset 0x%" PRIx64 " is past the end of partition!\n", dev->device.name, txn->offset);
-        return false;
-    }
-    // constrain if too many bytes are requested
-    txn->length = MIN((last - (first + off_lba) + 1) * dev->info.block_size, txn->length);
-    // adjust offset
-    txn->offset = first * dev->info.block_size + txn->offset;
-    return true;
+static mx_off_t to_parent_offset(gptpart_device_t* dev, mx_off_t offset) {
+    return offset + dev->gpt_entry.first_lba * dev->info.block_size;
 }
 
 // implement device protocol:
 
-static ssize_t gpt_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, size_t cmdlen, void* reply, size_t max) {
-    gptpart_device_t* device = dev->ctx;
+static mx_status_t gpt_ioctl(void* ctx, uint32_t op, const void* cmd, size_t cmdlen,
+                         void* reply, size_t max, size_t* out_actual) {
+    gptpart_device_t* device = ctx;
     switch (op) {
     case IOCTL_BLOCK_GET_INFO: {
         block_info_t* info = reply;
         if (max < sizeof(*info))
             return ERR_BUFFER_TOO_SMALL;
         memcpy(info, &device->info, sizeof(*info));
-        return sizeof(*info);
+        *out_actual = sizeof(*info);
+        return NO_ERROR;
     }
     case IOCTL_BLOCK_GET_TYPE_GUID: {
         char* guid = reply;
         if (max < GPT_GUID_LEN) return ERR_BUFFER_TOO_SMALL;
         memcpy(guid, device->gpt_entry.type, GPT_GUID_LEN);
         return GPT_GUID_LEN;
+        *out_actual = GPT_GUID_LEN;
+        return NO_ERROR;
     }
     case IOCTL_BLOCK_GET_PARTITION_GUID: {
         char* guid = reply;
         if (max < GPT_GUID_LEN) return ERR_BUFFER_TOO_SMALL;
         memcpy(guid, device->gpt_entry.guid, GPT_GUID_LEN);
-        return GPT_GUID_LEN;
+        *out_actual = GPT_GUID_LEN;
+        return NO_ERROR;
     }
     case IOCTL_BLOCK_GET_NAME: {
         char* name = reply;
         memset(name, 0, max);
         // save room for the null terminator
         utf16_to_cstring(name, device->gpt_entry.name, MIN((max - 1) * 2, GPT_NAME_LEN));
-        return strnlen(name, GPT_NAME_LEN / 2);
+        *out_actual = strnlen(name, GPT_NAME_LEN / 2);
+        return NO_ERROR;
     }
     case IOCTL_DEVICE_SYNC: {
         // Propagate sync to parent device
-        return device_op_ioctl(dev->parent, IOCTL_DEVICE_SYNC, NULL, 0, NULL, 0);
+        return device_op_ioctl(device->parent, IOCTL_DEVICE_SYNC, NULL, 0, NULL, 0, NULL);
     }
     default:
         return ERR_NOT_SUPPORTED;
     }
 }
 
-static void gpt_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
-    gptpart_device_t* device = dev->ctx;
-    if (!prepare_txn(device, txn)) {
+static void gpt_iotxn_queue(void* ctx, iotxn_t* txn) {
+    gptpart_device_t* device = ctx;
+    if (txn->offset % device->info.block_size) {
+        iotxn_complete(txn, ERR_INVALID_ARGS, 0);
+        return;
+    }
+    if (txn->offset > getsize(device)) {
+        iotxn_complete(txn, ERR_OUT_OF_RANGE, 0);
+        return;
+    }
+    // transactions from read()/write() may be truncated
+    txn->length = ROUNDDOWN(txn->length, device->info.block_size);
+    txn->length = MIN(txn->length, getsize(device) - txn->offset);
+    txn->offset = to_parent_offset(device, txn->offset);
+    if (txn->length == 0) {
         iotxn_complete(txn, NO_ERROR, 0);
     } else {
-        iotxn_queue(dev->parent, txn);
+        iotxn_queue(device->parent, txn);
     }
 }
 
-static mx_off_t gpt_getsize(mx_device_t* dev) {
-    gptpart_device_t* device = dev->ctx;
+static mx_off_t gpt_getsize(void* ctx) {
+    gptpart_device_t* device = ctx;
     return getsize(device);
 }
 
-static void gpt_unbind(mx_device_t* dev) {
-    gptpart_device_t* device = dev->ctx;
+static void gpt_unbind(void* ctx) {
+    gptpart_device_t* device = ctx;
     device_remove(device->mxdev);
 }
 
-static mx_status_t gpt_release(mx_device_t* dev) {
-    gptpart_device_t* device = dev->ctx;
+static void gpt_release(void* ctx) {
+    gptpart_device_t* device = ctx;
     free(device);
-    return NO_ERROR;
 }
 
 static inline bool is_writer(uint32_t flags) {
     return (flags & O_RDWR || flags & O_WRONLY);
 }
 
-static mx_status_t gpt_open(mx_device_t* dev, mx_device_t** dev_out, uint32_t flags) {
-    gptpart_device_t* device = dev->ctx;
+static mx_status_t gpt_open(void* ctx, mx_device_t** dev_out, uint32_t flags) {
+    gptpart_device_t* device = ctx;
     mx_status_t status = NO_ERROR;
     if (is_writer(flags) && (atomic_exchange(&device->writercount, 1) == 1)) {
         printf("Partition cannot be opened as writable (open elsewhere)\n");
@@ -168,8 +174,8 @@ static mx_status_t gpt_open(mx_device_t* dev, mx_device_t** dev_out, uint32_t fl
     return status;
 }
 
-static mx_status_t gpt_close(mx_device_t* dev, uint32_t flags) {
-    gptpart_device_t* device = dev->ctx;
+static mx_status_t gpt_close(void* ctx, uint32_t flags) {
+    gptpart_device_t* device = ctx;
     if (is_writer(flags)) {
         atomic_fetch_sub(&device->writercount, 1);
     }
@@ -177,6 +183,7 @@ static mx_status_t gpt_close(mx_device_t* dev, uint32_t flags) {
 }
 
 static mx_protocol_device_t gpt_proto = {
+    .version = DEVICE_OPS_VERSION,
     .ioctl = gpt_ioctl,
     .iotxn_queue = gpt_iotxn_queue,
     .get_size = gpt_getsize,
@@ -203,52 +210,39 @@ static void gpt_block_complete(iotxn_t* txn, void* cookie) {
     iotxn_release(txn);
 }
 
-static void gpt_block_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    gptpart_device_t* device = dev->ctx;
-    mx_status_t status;
-    iotxn_t* txn;
-    if ((status = iotxn_alloc_vmo(&txn, IOTXN_ALLOC_POOL, vmo, vmo_offset, length)) != NO_ERROR) {
-        device->callbacks->complete(cookie, status);
+static void block_do_txn(gptpart_device_t* dev, uint32_t opcode, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_info_t* info = &dev->info;
+    if ((dev_offset % info->block_size) || (length % info->block_size)) {
+        dev->callbacks->complete(cookie, ERR_INVALID_ARGS);
+        return;
+    }
+    uint64_t size = getsize(dev);
+    if ((dev_offset >= size) || (length >= (size - dev_offset))) {
+        dev->callbacks->complete(cookie, ERR_OUT_OF_RANGE);
         return;
     }
 
-    txn->opcode = IOTXN_OP_READ;
+    mx_status_t status;
+    iotxn_t* txn;
+    if ((status = iotxn_alloc_vmo(&txn, IOTXN_ALLOC_POOL, vmo, vmo_offset, length)) != NO_ERROR) {
+        dev->callbacks->complete(cookie, status);
+        return;
+    }
+    txn->opcode = opcode;
     txn->length = length;
-    txn->offset = dev_offset;
+    txn->offset = to_parent_offset(dev, dev_offset);
     txn->complete_cb = gpt_block_complete;
     txn->cookie = cookie;
-    memcpy(txn->extra, &device, sizeof(gptpart_device_t*));
+    memcpy(txn->extra, &dev, sizeof(gptpart_device_t*));
+    iotxn_queue(dev->parent, txn);
+}
 
-    if (!prepare_txn(device, txn)) {
-        iotxn_release(txn);
-        device->callbacks->complete(cookie, ERR_INVALID_ARGS);
-    } else {
-        iotxn_queue(dev->parent, txn);
-    }
+static void gpt_block_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn((gptpart_device_t*)dev->ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
 static void gpt_block_write(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    gptpart_device_t* device = dev->ctx;
-    mx_status_t status;
-    iotxn_t* txn;
-    if ((status = iotxn_alloc_vmo(&txn, IOTXN_ALLOC_POOL, vmo, vmo_offset, length)) != NO_ERROR) {
-        device->callbacks->complete(cookie, status);
-        return;
-    }
-
-    txn->opcode = IOTXN_OP_WRITE;
-    txn->length = length;
-    txn->offset = dev_offset;
-    txn->complete_cb = gpt_block_complete;
-    txn->cookie = cookie;
-    memcpy(txn->extra, &device, sizeof(gptpart_device_t*));
-
-    if (!prepare_txn(device, txn)) {
-        iotxn_release(txn);
-        device->callbacks->complete(cookie, ERR_INVALID_ARGS);
-    } else {
-        iotxn_queue(dev->parent, txn);
-    }
+    block_do_txn((gptpart_device_t*)dev->ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
 static block_ops_t gpt_block_ops = {
@@ -275,9 +269,10 @@ static int gpt_bind_thread(void* arg) {
 
     unsigned partitions = 0; // used to keep track of number of partitions found
     block_info_t block_info;
+    size_t actual = 0;
     ssize_t rc = device_op_ioctl(dev, IOCTL_BLOCK_GET_INFO, NULL, 0,
-                                 &block_info, sizeof(block_info));
-    if (rc < 0) {
+                                 &block_info, sizeof(block_info), &actual);
+    if (rc < 0 || actual != sizeof(block_info)) {
         xprintf("gpt: Error %zd getting blksize for dev=%s\n", rc, dev->name);
         goto unbind;
     }
@@ -351,6 +346,7 @@ static int gpt_bind_thread(void* arg) {
             iotxn_release(txn);
             goto unbind;
         }
+        device->parent = dev;
 
         iotxn_copyfrom(txn, &device->gpt_entry, sizeof(gpt_entry_t), sizeof(gpt_entry_t) * partitions);
         if (device->gpt_entry.type[0] == 0) {
@@ -370,7 +366,7 @@ static int gpt_bind_thread(void* arg) {
                 device->mxdev->name, type_guid, partition_guid, pname);
 
         char name[128];
-        snprintf(name, sizeof(name), "%sp%u", dev->name, partitions);
+        snprintf(name, sizeof(name), "%sp%u", device_get_name(dev), partitions);
 
         device_add_args_t args = {
             .version = DEVICE_ADD_ARGS_VERSION,
@@ -382,7 +378,7 @@ static int gpt_bind_thread(void* arg) {
             .proto_ops = &gpt_block_ops,
         };
 
-        if (device_add2(dev, &args, &device->mxdev) != NO_ERROR) {
+        if (device_add(dev, &args, &device->mxdev) != NO_ERROR) {
             printf("gpt device_add failed\n");
             free(device);
             continue;

@@ -103,6 +103,8 @@ private:
     // Otherwise, returns size of the handle.
     mx_status_t GetReadableEvent(mx_handle_t* out);
 
+    mx_status_t CopyVmo(mx_rights_t rights, mx_handle_t* out);
+
     void QueueUnlink();
 
     // If successful, allocates Blob Node and Blocks (in-memory)
@@ -120,15 +122,16 @@ private:
     // Vnode I/O operations
     mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
                            uint32_t* type, void* extra, uint32_t* esize) final;
-    void Release() final;
     mx_status_t Open(uint32_t flags) final;
-    mx_status_t Close() final;
+    mx_status_t Readdir(void* cookie, void* dirents, size_t len) final;
     ssize_t Read(void* data, size_t len, size_t off) final;
     ssize_t Write(const void* data, size_t len, size_t off) final;
-    mx_status_t Lookup(fs::Vnode** out, const char* name, size_t len) final;
+    mx_status_t Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) final;
     mx_status_t Getattr(vnattr_t* a) final;
-    mx_status_t Create(fs::Vnode** out, const char* name, size_t len, uint32_t mode) final;
+    mx_status_t Create(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len,
+                       uint32_t mode) final;
     mx_status_t Unlink(const char* name, size_t len, bool must_be_dir) final;
+    mx_status_t Mmap(int flags, size_t len, size_t* off, mx_handle_t* out) final;
     mx_status_t Sync() final;
 
     // Read both VMOs into memory, if we haven't already.
@@ -181,7 +184,7 @@ public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Blobstore);
     friend class VnodeBlob;
 
-    static mx_status_t Create(int blockfd, const blobstore_info_t* info, VnodeBlob** out);
+    static mx_status_t Create(int blockfd, const blobstore_info_t* info, mxtl::RefPtr<VnodeBlob>* out);
     mx_status_t Unmount();
     virtual ~Blobstore();
 
@@ -193,20 +196,20 @@ public:
     // 'out' may be null -- the same error code will be returned as if it
     // was a valid pointer.
     //
-    // If 'out' is not null, then the blob's refcount is increased,
-    // and it will be added to the "quick lookup" map if it was not there
-    // already.
-    mx_status_t LookupBlob(const merkle::Digest& digest, VnodeBlob** out);
+    // If 'out' is not null, then the blob's  will be added to the
+    // "quick lookup" map if it was not there already.
+    mx_status_t LookupBlob(const merkle::Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
 
     // Creates a new blob in-memory, with no backing disk storage (yet).
     // If a blob with the name already exists, this function fails.
     //
     // Adds Blob to the "quick lookup" map.
-    mx_status_t NewBlob(const merkle::Digest& digest, VnodeBlob** out);
+    mx_status_t NewBlob(const merkle::Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
 
     // Removes blob from 'active' hashmap.
-    // Deletes the blob if requested.
     mx_status_t ReleaseBlob(VnodeBlob* blob);
+
+    mx_status_t Readdir(void* cookie, void* dirents, size_t len);
 
     int blockfd_;
     blobstore_info_t info_;
@@ -234,6 +237,8 @@ private:
     // Given a node within the node map at an index, write it to disk.
     mx_status_t WriteNode(size_t map_index);
 
+    // VnodeBlobs exist in the WAVLTree as long as one or more reference exists;
+    // when the Vnode is deleted, it is immediately removed from the WAVL tree.
     using WAVLTreeByMerkle = mxtl::WAVLTree<const uint8_t*,
                                             VnodeBlob*,
                                             MerkleRootTraits,
@@ -246,7 +251,7 @@ private:
 
 int blobstore_mkfs(int fd);
 
-mx_status_t blobstore_mount(VnodeBlob** out, int blockfd);
+mx_status_t blobstore_mount(mxtl::RefPtr<VnodeBlob>* out, int blockfd);
 
 mx_status_t readblk(int fd, uint64_t bno, void* data);
 mx_status_t writeblk(int fd, uint64_t bno, const void* data);

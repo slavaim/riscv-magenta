@@ -20,11 +20,10 @@
 #include <magenta/syscalls.h>
 #include <mxtl/array.h>
 #include <mxtl/unique_ptr.h>
+#include <pretty/hexdump.h>
 #include <unittest/unittest.h>
 
 #include <blktest/blktest.h>
-
-#include <hexdump/hexdump.h>
 
 #define RAMCTL_PATH "/dev/misc/ramctl"
 
@@ -80,14 +79,10 @@ bool blkdev_test_bad_requests(void) {
     ASSERT_LE(blk_size, PAGE_SIZE, "Block size is too big");
 
     // Read / write non-multiples of the block size
-    ASSERT_EQ(write(fd, buf, blk_size - 1), -1, "");
-    ASSERT_EQ(errno, EINVAL, "");
-    ASSERT_EQ(write(fd, buf, blk_size / 2), -1, "");
-    ASSERT_EQ(errno, EINVAL, "");
-    ASSERT_EQ(read(fd, buf, blk_size - 1), -1, "");
-    ASSERT_EQ(errno, EINVAL, "");
-    ASSERT_EQ(read(fd, buf, blk_size / 2), -1, "");
-    ASSERT_EQ(errno, EINVAL, "");
+    ASSERT_EQ(write(fd, buf, blk_size - 1), 0, "");
+    ASSERT_EQ(write(fd, buf, blk_size / 2), 0, "");
+    ASSERT_EQ(read(fd, buf, blk_size - 1), 0, "");
+    ASSERT_EQ(read(fd, buf, blk_size / 2), 0, "");
 
     // Read / write from unaligned offset
     ASSERT_EQ(lseek(fd, 1, SEEK_SET), 1, "");

@@ -26,10 +26,10 @@
 // plain data afterwards.
 #define IOCTL_KIND_SET_HANDLE       0x3
 
-// core device/devmgr ioctl families
+// core device/vfs ioctl families
 #define IOCTL_FAMILY_RESERVED       0x00
 #define IOCTL_FAMILY_DEVICE         0x01
-#define IOCTL_FAMILY_DEVMGR         0x02
+#define IOCTL_FAMILY_VFS            0x02
 #define IOCTL_FAMILY_DMCTL          0x03
 #define IOCTL_FAMILY_TEST           0x04
 
@@ -56,6 +56,7 @@
 #define IOCTL_FAMILY_SDMMC          0x23
 #define IOCTL_FAMILY_WLAN           0x24
 #define IOCTL_FAMILY_PTY            0x25
+#define IOCTL_FAMILY_NETCONFIG      0x26
 
 // IOCTL constructor
 // --K-FFNN

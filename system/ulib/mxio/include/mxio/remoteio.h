@@ -49,7 +49,8 @@ __BEGIN_CDECLS
 #define MXRIO_SETATTR      0x00000018
 #define MXRIO_SYNC         0x00000019
 #define MXRIO_LINK        (0x0000001a | MXRIO_ONE_HANDLE)
-#define MXRIO_NUM_OPS      27
+#define MXRIO_MMAP         0x0000001b
+#define MXRIO_NUM_OPS      28
 
 #define MXRIO_OP(n)        ((n) & 0x3FF) // opcode
 #define MXRIO_HC(n)        (((n) >> 8) & 3) // handle count
@@ -62,23 +63,21 @@ __BEGIN_CDECLS
     "read_at", "write_at", "truncate", "rename", \
     "connect", "bind", "listen", "getsockname", \
     "getpeername", "getsockopt", "setsockopt", "getaddrinfo", \
-    "setattr", "sync", "link" }
+    "setattr", "sync", "link", "mmap" }
 
 const char* mxio_opname(uint32_t op);
 
 typedef struct mxrio_msg mxrio_msg_t;
 
-typedef mx_status_t (*mxrio_cb_t)(mxrio_msg_t* msg, mx_handle_t rh, void* cookie);
+typedef mx_status_t (*mxrio_cb_t)(mxrio_msg_t* msg, void* cookie);
 // callback to process a mxrio_msg
 // - on entry datalen indicates how much valid data is in msg.data[]
-// - return value will be placed in msg.arg, negative is an error,
-//   positive values are opcode-specific
-// - on non-error return msg.len indicates how much valid data to
-//   send.  On error return msg.len will be set to 0.
-// - if rh is non-zero it is a reply handle which may be used for
-//   deferred replies.  In which case the callback must return
-//   ERR_DISPATCHER_INDIRECT to differentiate this from an immediate
-//   reply or error
+// - return value of ERR_DISPATCHER_INDIRECT indicates that the
+//   reply is being handled by the callback (forwarded to another
+//   server, sent later, etc, and no reply message should be sent.
+// - otherwise, the return value is treated as the status to send
+//   in the rpc response, and msg.len indicates how much valid data
+//   to send.  On error return msg.len will be set to 0.
 
 // a mxio_dispatcher_handler suitable for use with a mxio_dispatcher
 mx_status_t mxrio_handler(mx_handle_t h, void* cb, void* cookie);
@@ -90,7 +89,7 @@ mx_status_t mxrio_handler(mx_handle_t h, void* cb, void* cookie);
 // should be made).  handle_close() processes a "synthetic" close
 // event (eg, channel was remotely closed), and neither function
 // should be callaed again after handle_close().
-mx_status_t mxrio_handle_rpc(mx_handle_t h, mxrio_cb_t cb, void* cookie);
+mx_status_t mxrio_handle_rpc(mx_handle_t h, mxrio_msg_t* msg, mxrio_cb_t cb, void* cookie);
 mx_status_t mxrio_handle_close(mxrio_cb_t cb, void* cookie);
 
 // OPEN and CLOSE messages, can be forwarded to another remoteio server,
@@ -140,6 +139,21 @@ struct mxrio_msg {
     uint8_t data[MXIO_CHUNK_SIZE];     // payload
 };
 
+#define MXIO_MMAP_FLAG_READ    (1u << 0)
+#define MXIO_MMAP_FLAG_WRITE   (1u << 1)
+#define MXIO_MMAP_FLAG_EXEC    (1u << 2)
+#define MXIO_MMAP_FLAG_PRIVATE (1u << 10)
+
+static_assert(MXIO_MMAP_FLAG_READ == MX_VM_FLAG_PERM_READ, "Vmar / Mmap flags should be aligned");
+static_assert(MXIO_MMAP_FLAG_WRITE == MX_VM_FLAG_PERM_WRITE, "Vmar / Mmap flags should be aligned");
+static_assert(MXIO_MMAP_FLAG_EXEC == MX_VM_FLAG_PERM_EXECUTE, "Vmar / Mmap flags should be aligned");
+
+typedef struct mxrio_mmap_data {
+    size_t offset;
+    uint64_t length;
+    int32_t flags;
+} mxrio_mmap_data_t;
+
 static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough to contain paths");
 
 #define READDIR_CMD_NONE  0
@@ -182,6 +196,7 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 // SETATTR     0          0        <vnattr>          0           -               -
 // SYNC        0          0        0                 0           -               -
 // LINK        0          0        <name1>0<name2>0  0           -               -
+// MMAP        maxreply   0        mmap_data_msg     0           mmap_data_msg   vmohandle
 //
 // proposed:
 //
@@ -189,7 +204,6 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 // MKDIR       0          0        <name>            0           -               -
 // SYMLINK     namelen    0        <name><path>      0           -               -
 // READLINK    maxreply   0        -                 0           <path>          -
-// MMAP        flags      offset   <uint64:len>      offset      -               vmohandle
 // FLUSH       0          0        -                 0           -               -
 //
 // on response arg32 is always mx_status, and may be positive for read/write calls

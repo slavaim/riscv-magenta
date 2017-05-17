@@ -511,27 +511,28 @@ size_t dwc_get_max_transfer_size(mx_device_t* device, uint32_t device_id, uint8_
     return PAGE_SIZE;
 }
 
-static void dwc_iotxn_queue(mx_device_t* hci_device, iotxn_t* txn) {
+static void dwc_iotxn_queue(void* ctx, iotxn_t* txn) {
+    dwc_usb_t* usb_dwc = ctx;
     usb_protocol_data_t* data = iotxn_pdata(txn, usb_protocol_data_t);
 
-    if (txn->length > dwc_get_max_transfer_size(hci_device, data->device_id, data->ep_address)) {
+    if (txn->length > dwc_get_max_transfer_size(usb_dwc->mxdev, data->device_id, data->ep_address)) {
         iotxn_complete(txn, ERR_INVALID_ARGS, 0);
     } else {
-        dwc_usb_t* dwc = hci_device->ctx;
+        dwc_usb_t* dwc = ctx;
         do_dwc_iotxn_queue(dwc, txn);
     }
 }
 
-static void dwc_unbind(mx_device_t* dev) {
+static void dwc_unbind(void* ctx) {
     printf("usb dwc_unbind not implemented\n");
 }
 
-static mx_status_t dwc_release(mx_device_t* device) {
+static void dwc_release(void* ctx) {
     printf("usb dwc_release not implemented\n");
-    return NO_ERROR;
 }
 
 static mx_protocol_device_t dwc_device_proto = {
+    .version = DEVICE_OPS_VERSION,
     .iotxn_queue = dwc_iotxn_queue,
     .unbind = dwc_unbind,
     .release = dwc_release,
@@ -1206,6 +1207,8 @@ static void dwc_start_transfer(uint8_t chan, dwc_usb_transfer_request_t* req,
 
             transfer.size = txn->length - req->bytes_transferred;
 
+            iotxn_cacheop(txn, IOTXN_CACHE_CLEAN_INVALIDATE, 0, transfer.size);
+
             if (req->bytes_transferred == 0) {
                 transfer.packet_id = DWC_TOGGLE_DATA1;
             } else {
@@ -1779,7 +1782,7 @@ static mx_status_t usb_dwc_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
         .proto_ops = &dwc_hci_protocol,
     };
 
-    if ((st = device_add2(dev, &args, &usb_dwc->mxdev)) != NO_ERROR) {
+    if ((st = device_add(dev, &args, &usb_dwc->mxdev)) != NO_ERROR) {
         free(usb_dwc);
         return st;
     }
@@ -1814,6 +1817,6 @@ static mx_driver_ops_t usb_dwc_driver_ops = {
 // clang-format off
 MAGENTA_DRIVER_BEGIN(bcm_usb_dwc, usb_dwc_driver_ops, "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
-    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_MAILBOX),
+    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_USB),
 MAGENTA_DRIVER_END(bcm_usb_dwc)
 // clang-format on

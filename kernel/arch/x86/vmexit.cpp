@@ -4,24 +4,29 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+#include <bits.h>
+#include <platform.h>
 #include <string.h>
 
 #include <arch/x86/apic.h>
 #include <arch/x86/feature.h>
+#include <arch/x86/interrupts.h>
 #include <arch/x86/mmu.h>
 #include <hypervisor/guest_physical_address_space.h>
+#include <kernel/sched.h>
+#include <kernel/timer.h>
 #include <mxtl/algorithm.h>
-
-#if WITH_LIB_MAGENTA
-#include <magenta/fifo_dispatcher.h>
-#endif // WITH_LIB_MAGENTA
+#include <platform/pc/timer.h>
 
 #include "hypervisor_priv.h"
 #include "vmexit_priv.h"
 
+#if WITH_LIB_MAGENTA
+#include <magenta/fifo_dispatcher.h>
 static const uint16_t kUartReceiveIoPort = 0x3f8;
 static const uint16_t kUartStatusIoPort = 0x3fd;
 static const uint64_t kUartStatusIdle = 1u << 6;
+#endif // WITH_LIB_MAGENTA
 
 static const uint64_t kIa32ApicBase =
     APIC_PHYS_BASE | IA32_APIC_BASE_BSP | IA32_APIC_BASE_XAPIC_ENABLE;
@@ -29,12 +34,104 @@ static const uint8_t kIoApicVersion = 0x11;
 static const uint32_t kFirstRedirectOffset = 0x10;
 static const uint32_t kLastRedirectOffset = kFirstRedirectOffset + kIoApicRedirectOffsets - 1;
 
+static const uint8_t kApicAccessRead = 0;
+
 static const uint32_t kMaxInstructionLength = 15;
 static const uint8_t kRexRMask = 1u << 2;
 static const uint8_t kRexWMask = 1u << 3;
+static const uint8_t kModRMRegMask = 0b00111000;
+
+static const uint32_t kInterruptInfoDeliverErrorCode = 1u << 11;
+static const uint32_t kInterruptInfoValid = 1u << 31;
+static const uint64_t kInvalidErrorCode = UINT64_MAX;
+
+ExitInfo::ExitInfo() {
+    exit_reason = static_cast<ExitReason>(vmcs_read(VmcsField32::EXIT_REASON));
+    exit_qualification = vmcs_read(VmcsFieldXX::EXIT_QUALIFICATION);
+    instruction_length = vmcs_read(VmcsField32::EXIT_INSTRUCTION_LENGTH);
+    guest_physical_address = vmcs_read(VmcsField64::GUEST_PHYSICAL_ADDRESS);
+    guest_rip = vmcs_read(VmcsFieldXX::GUEST_RIP);
+
+    if (exit_reason == ExitReason::EXTERNAL_INTERRUPT ||
+        exit_reason == ExitReason::IO_INSTRUCTION)
+        return;
+
+    dprintf(SPEW, "exit reason: %#" PRIx32 "\n", static_cast<uint32_t>(exit_reason));
+    dprintf(SPEW, "exit qualification: %#" PRIx64 "\n", exit_qualification);
+    dprintf(SPEW, "instruction length: %#" PRIx32 "\n", instruction_length);
+    dprintf(SPEW, "guest physical address: %#" PRIx64 "\n", guest_physical_address);
+    dprintf(SPEW, "guest linear address: %#" PRIx64 "\n",
+        vmcs_read(VmcsFieldXX::GUEST_LINEAR_ADDRESS));
+    dprintf(SPEW, "guest activity state: %#" PRIx32 "\n",
+        vmcs_read(VmcsField32::GUEST_ACTIVITY_STATE));
+    dprintf(SPEW, "guest interruptibility state: %#" PRIx32 "\n",
+        vmcs_read(VmcsField32::GUEST_INTERRUPTIBILITY_STATE));
+    dprintf(SPEW, "guest rip: %#" PRIx64 "\n", guest_rip);
+}
+
+IoInfo::IoInfo(uint64_t qualification) {
+    bytes = static_cast<uint8_t>(BITS(qualification, 2, 0) + 1);
+    input = BIT_SHIFT(qualification, 3);
+    string = BIT_SHIFT(qualification, 4);
+    repeat = BIT_SHIFT(qualification, 5);
+    port = static_cast<uint16_t>(BITS_SHIFT(qualification, 31, 16));
+}
+
+ApicAccessInfo::ApicAccessInfo(uint64_t qualification) {
+    reg = static_cast<ApicRegister>(BITS(qualification, 11, 0));
+    type = static_cast<uint8_t>(BITS_SHIFT(qualification, 15, 12));
+}
 
 static void next_rip(const ExitInfo& exit_info) {
     vmcs_write(VmcsFieldXX::GUEST_RIP, exit_info.guest_rip + exit_info.instruction_length);
+}
+
+static void set_interrupt(uint32_t interrupt, uint64_t error_code, InterruptionType type) {
+    uint32_t interrupt_info = kInterruptInfoValid | static_cast<uint32_t>(type) << 8 | interrupt;
+    if (error_code != kInvalidErrorCode) {
+        interrupt_info |= kInterruptInfoDeliverErrorCode;
+        vmcs_write(VmcsField32::ENTRY_EXCEPTION_ERROR_CODE, error_code & UINT32_MAX);
+    }
+    vmcs_write(VmcsField32::ENTRY_INTERRUPTION_INFORMATION, interrupt_info);
+}
+
+static void set_local_apic_interrupt(LocalApicState* local_apic_state) {
+    if (local_apic_state->active_interrupt == kInvalidInterrupt)
+        return;
+    set_interrupt(local_apic_state->active_interrupt, kInvalidErrorCode,
+                  InterruptionType::EXTERNAL_INTERRUPT);
+    local_apic_state->active_interrupt = kInvalidInterrupt;
+}
+
+void interrupt_window_exiting(bool enable) {
+    uint32_t controls = vmcs_read(VmcsField32::PROCBASED_CTLS);
+    if (enable) {
+        controls |= PROCBASED_CTLS_INT_WINDOW_EXITING;
+    }
+    else {
+        controls &= ~PROCBASED_CTLS_INT_WINDOW_EXITING;
+    }
+    vmcs_write(VmcsField32::PROCBASED_CTLS, controls);
+}
+
+static status_t handle_external_interrupt(const ExitInfo& exit_info, AutoVmcsLoad* vmcs_load,
+                                          LocalApicState* local_apic_state) {
+    vmcs_load->reload();
+    if (vmcs_read(VmcsFieldXX::GUEST_RFLAGS) & X86_FLAGS_IF) {
+        // If interrupts are enabled, we inject any active interrupts.
+        set_local_apic_interrupt(local_apic_state);
+    } else if (local_apic_state->active_interrupt != kInvalidInterrupt) {
+        // If interrupts are disabled, we set VM exit on interrupt enable.
+        interrupt_window_exiting(true);
+    }
+    return NO_ERROR;
+}
+
+static status_t handle_interrupt_window(const ExitInfo& exit_info,
+                                        LocalApicState* local_apic_state) {
+    interrupt_window_exiting(false);
+    set_local_apic_interrupt(local_apic_state);
+    return NO_ERROR;
 }
 
 static status_t handle_cpuid(const ExitInfo& exit_info, GuestState* guest_state) {
@@ -58,10 +155,10 @@ static status_t handle_cpuid(const ExitInfo& exit_info, GuestState* guest_state)
         if (leaf == X86_CPUID_MODEL_FEATURES) {
             // Enable the hypervisor bit.
             guest_state->rcx |= 1u << X86_FEATURE_HYPERVISOR.bit;
+            // Disable the VMX bit.
+            guest_state->rcx &= ~(1u << X86_FEATURE_VMX.bit);
             // Disable the x2APIC bit.
             guest_state->rcx &= ~(1u << X86_FEATURE_X2APIC.bit);
-            // Disable the TSC deadline bit.
-            guest_state->rcx &= ~(1u << X86_FEATURE_TSC_DEADLINE.bit);
         }
         if (leaf == X86_CPUID_XSAVE && subleaf == 1) {
             // Disable the XSAVES bit.
@@ -71,6 +168,36 @@ static status_t handle_cpuid(const ExitInfo& exit_info, GuestState* guest_state)
     default:
         return ERR_NOT_SUPPORTED;
     }
+}
+
+static status_t handle_hlt(const ExitInfo& exit_info, LocalApicState* local_apic_state) {
+    // TODO(abdulla): Use an interruptible sleep here, so that we can:
+    // a) Continue to deliver interrupts to the guest.
+    // b) Kill the hypervisor while a guest is halted.
+    event_wait(&local_apic_state->event);
+    set_local_apic_interrupt(local_apic_state);
+    next_rip(exit_info);
+    return NO_ERROR;
+}
+
+static status_t handle_io(const ExitInfo& exit_info, GuestState* guest_state,
+                          FifoDispatcher* serial_fifo) {
+    next_rip(exit_info);
+#if WITH_LIB_MAGENTA
+    IoInfo io_info(exit_info.exit_qualification);
+    if (io_info.input) {
+        if (!io_info.string && !io_info.repeat && io_info.port == kUartStatusIoPort)
+            guest_state->rax = kUartStatusIdle;
+        return NO_ERROR;
+    }
+    if (io_info.string || io_info.repeat || io_info.port != kUartReceiveIoPort)
+        return NO_ERROR;
+    uint8_t* data = reinterpret_cast<uint8_t*>(&guest_state->rax);
+    uint32_t actual;
+    return serial_fifo->Write(data, io_info.bytes, &actual);
+#else // WITH_LIB_MAGENTA
+    return NO_ERROR;
+#endif // WITH_LIB_MAGENTA
 }
 
 static status_t handle_rdmsr(const ExitInfo& exit_info, GuestState* guest_state) {
@@ -97,7 +224,24 @@ static status_t handle_rdmsr(const ExitInfo& exit_info, GuestState* guest_state)
     }
 }
 
-static status_t handle_wrmsr(const ExitInfo& exit_info, GuestState* guest_state) {
+static uint32_t* apic_reg(LocalApicState* local_apic_state, ApicRegister reg) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(local_apic_state->virtual_apic);
+    return reinterpret_cast<uint32_t*>(addr + static_cast<uint16_t>(reg));
+}
+
+static handler_return deadline_callback(timer_t* timer, lk_time_t now, void* arg) {
+    LocalApicState* local_apic_state = static_cast<LocalApicState*>(arg);
+    DEBUG_ASSERT(local_apic_state->active_interrupt == kInvalidInterrupt);
+
+    uint32_t* lvt_timer = apic_reg(local_apic_state, ApicRegister::LVT_TIMER);
+    local_apic_state->active_interrupt = *lvt_timer & LVT_TIMER_VECTOR_MASK;
+    local_apic_state->tsc_deadline = 0;
+    event_signal(&local_apic_state->event, false);
+    return INT_NO_RESCHEDULE;
+}
+
+static status_t handle_wrmsr(const ExitInfo& exit_info, GuestState* guest_state,
+                             LocalApicState* local_apic_state) {
     switch (guest_state->rcx) {
     case X86_MSR_IA32_APIC_BASE:
         if (guest_state->rax != kIa32ApicBase || guest_state->rdx != 0)
@@ -113,29 +257,23 @@ static status_t handle_wrmsr(const ExitInfo& exit_info, GuestState* guest_state)
     case X86_MSR_IA32_MTRR_PHYSBASE0 ... X86_MSR_IA32_MTRR_PHYSMASK9:
         next_rip(exit_info);
         return NO_ERROR;
+    case X86_MSR_IA32_TSC_DEADLINE: {
+        uint32_t* reg = apic_reg(local_apic_state, ApicRegister::LVT_TIMER);
+        if ((*reg & LVT_TIMER_MODE_MASK) != LVT_TIMER_MODE_TSC_DEADLINE)
+            return ERR_INVALID_ARGS;
+        next_rip(exit_info);
+        timer_cancel(&local_apic_state->timer);
+        local_apic_state->active_interrupt = kInvalidInterrupt;
+        local_apic_state->tsc_deadline = guest_state->rdx << 32 | (guest_state->rax & UINT32_MAX);
+        if (local_apic_state->tsc_deadline > 0) {
+            lk_time_t deadline = ticks_to_nanos(local_apic_state->tsc_deadline);
+            timer_set_oneshot(&local_apic_state->timer, deadline, deadline_callback, local_apic_state);
+        }
+        return NO_ERROR;
+    }
     default:
         return ERR_NOT_SUPPORTED;
     }
-}
-
-static status_t handle_io(const ExitInfo& exit_info, GuestState* guest_state,
-                          FifoDispatcher* serial_fifo) {
-    next_rip(exit_info);
-#if WITH_LIB_MAGENTA
-    IoInfo io_info(exit_info.exit_qualification);
-    if (io_info.input) {
-        if (!io_info.string && !io_info.repeat && io_info.port == kUartStatusIoPort)
-            guest_state->rax = kUartStatusIdle;
-        return NO_ERROR;
-    }
-    if (io_info.string || io_info.repeat || io_info.port != kUartReceiveIoPort)
-        return NO_ERROR;
-    uint8_t* data = reinterpret_cast<uint8_t*>(&guest_state->rax);
-    uint32_t actual;
-    return serial_fifo->Write(data, io_info.bytes, &actual);
-#else // WITH_LIB_MAGENTA
-    return NO_ERROR;
-#endif // WITH_LIB_MAGENTA
 }
 
 static status_t get_page(GuestPhysicalAddressSpace* gpas, vaddr_t guest_vaddr,
@@ -210,7 +348,7 @@ static uint8_t displacement_size(uint8_t mod_rm) {
     case 0b10:
         return 4;
     default:
-        return (mod_rm & 0b11000111) == 0b00000101 ? 4 : 0;
+        return (mod_rm & ~kModRMRegMask) == 0b00000101 ? 4 : 0;
     }
 }
 
@@ -297,7 +435,7 @@ status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len, GuestSta
             return ERR_OUT_OF_RANGE;
         inst->read = false;
         inst->rex = rex_w;
-        inst->val = 0;
+        inst->imm = 0;
         inst->reg = select_register(guest_state, register_id(mod_rm, rex_r));
         return inst->reg == nullptr ? ERR_NOT_SUPPORTED : NO_ERROR;
     // Move r/m to r.
@@ -306,7 +444,7 @@ status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len, GuestSta
             return ERR_OUT_OF_RANGE;
         inst->read = true;
         inst->rex = rex_w;
-        inst->val = 0;
+        inst->imm = 0;
         inst->reg = select_register(guest_state, register_id(mod_rm, rex_r));
         return inst->reg == nullptr ? ERR_NOT_SUPPORTED : NO_ERROR;
     // Move imm to r/m.
@@ -314,13 +452,13 @@ status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len, GuestSta
         const uint8_t imm_size = 4;
         if (inst_len != disp_size + imm_size + 2u)
             return ERR_OUT_OF_RANGE;
-        if ((mod_rm & 0b00111000) != 0)
+        if ((mod_rm & kModRMRegMask) != 0)
             return ERR_INVALID_ARGS;
         inst->read = false;
         inst->rex = false;
-        inst->val = 0;
+        inst->imm = 0;
         inst->reg = nullptr;
-        memcpy(&inst->val, inst_buf + disp_size + 2, imm_size);
+        memcpy(&inst->imm, inst_buf + disp_size + 2, imm_size);
         return NO_ERROR;
     }
     default:
@@ -330,14 +468,81 @@ status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len, GuestSta
 
 template<typename T>
 T get_value(const Instruction& inst) {
-    return static_cast<T>(inst.reg != nullptr ? *inst.reg : inst.val);
+    return static_cast<T>(inst.reg != nullptr ? *inst.reg : inst.imm);
+}
+
+template<typename T>
+void apply_inst(const Instruction& inst, T* value) {
+    if (inst.read)
+        *inst.reg = *value;
+    else
+        *value = get_value<T>(inst);
+}
+
+static status_t handle_apic_access(const ExitInfo& exit_info, GuestState* guest_state,
+                                   LocalApicState* local_apic_state,
+                                   GuestPhysicalAddressSpace* gpas) {
+    uint8_t inst_buf[kMaxInstructionLength];
+    uint32_t inst_len = exit_info.instruction_length;
+    status_t status = fetch_data(gpas, exit_info.guest_rip, inst_buf, inst_len);
+    if (status != NO_ERROR)
+        return status;
+
+    Instruction inst;
+    status = decode_instruction(inst_buf, inst_len, guest_state, &inst);
+    if (status != NO_ERROR)
+        return status;
+
+    ApicAccessInfo apic_access_info(exit_info.exit_qualification);
+    if (inst.read && apic_access_info.type != kApicAccessRead)
+        return ERR_BAD_STATE;
+
+    switch (apic_access_info.reg) {
+    case ApicRegister::LOCAL_APIC_ID:
+        if (!inst.read)
+            return ERR_NOT_SUPPORTED;
+        *inst.reg = 0;
+        next_rip(exit_info);
+        return NO_ERROR;
+    case ApicRegister::EOI:
+        // TODO(abdulla): Correctly handle EOI.
+        if (inst.read)
+            return ERR_INVALID_ARGS;
+        next_rip(exit_info);
+        return NO_ERROR;
+    case ApicRegister::SVR:
+    case ApicRegister::ESR:
+    case ApicRegister::LVT_TIMER:
+    case ApicRegister::LVT_ERROR: {
+        next_rip(exit_info);
+        // From Intel Volume 3, Section 10.5.3: Before attempt to read from the
+        // ESR, software should first write to it.
+        //
+        // Therefore, we ignore writes to the ESR.
+        if (!inst.read && apic_access_info.reg == ApicRegister::ESR)
+            return NO_ERROR;
+        uint32_t* reg = apic_reg(local_apic_state, apic_access_info.reg);
+        apply_inst(inst, reg);
+        return NO_ERROR;
+    }
+    case ApicRegister::INITIAL_COUNT:
+        uint32_t count = get_value<uint32_t>(inst);
+        if (inst.read || count > 0)
+            return ERR_NOT_SUPPORTED;
+        next_rip(exit_info);
+        return NO_ERROR;
+    }
+    return ERR_NOT_SUPPORTED;
 }
 
 static status_t handle_ept_violation(const ExitInfo& exit_info, GuestState* guest_state,
                                      IoApicState* io_apic_state, GuestPhysicalAddressSpace* gpas) {
     if (exit_info.guest_physical_address < kIoApicPhysBase ||
-        exit_info.guest_physical_address >= kIoApicPhysBase + PAGE_SIZE)
-        return ERR_OUT_OF_RANGE;
+        exit_info.guest_physical_address >= kIoApicPhysBase + PAGE_SIZE) {
+        // Inject a GP fault if there was an EPT violation outside of the IO APIC page.
+        set_interrupt(X86_INT_GP_FAULT, 0, InterruptionType::HARDWARE_EXCEPTION);
+        return NO_ERROR;
+    }
 
     uint8_t inst_buf[kMaxInstructionLength];
     uint32_t inst_len = exit_info.instruction_length;
@@ -357,35 +562,29 @@ static status_t handle_ept_violation(const ExitInfo& exit_info, GuestState* gues
     case IO_APIC_IOREGSEL:
         if (inst.read)
             return ERR_NOT_SUPPORTED;
-        next_rip(exit_info);
         io_apic_state->select = get_value<uint32_t>(inst);
+        next_rip(exit_info);
         return io_apic_state->select > UINT8_MAX ? ERR_INVALID_ARGS : NO_ERROR;
     case IO_APIC_IOWIN:
         switch (io_apic_state->select) {
         case IO_APIC_REG_ID:
+            apply_inst(inst, &io_apic_state->id);
             next_rip(exit_info);
-            if (inst.read)
-                *inst.reg = io_apic_state->id;
-            else
-                io_apic_state->id = get_value<uint32_t>(inst);
             return NO_ERROR;
         case IO_APIC_REG_VER:
             if (!inst.read || inst.reg == nullptr)
                 return ERR_NOT_SUPPORTED;
-            next_rip(exit_info);
             // There are two redirect offsets per redirection entry. We return
             // the maximum redirection entry index.
             //
             // From Intel 82093AA, Section 3.2.2.
             *inst.reg = (kIoApicRedirectOffsets / 2 - 1) << 16 | kIoApicVersion;
+            next_rip(exit_info);
             return NO_ERROR;
         case kFirstRedirectOffset ... kLastRedirectOffset: {
-            next_rip(exit_info);
             uint32_t i = io_apic_state->select - kFirstRedirectOffset;
-            if (inst.read)
-                *inst.reg = io_apic_state->redirect[i];
-            else
-                io_apic_state->redirect[i] = get_value<uint32_t>(inst);
+            apply_inst(inst, io_apic_state->redirect + i);
+            next_rip(exit_info);
             return NO_ERROR;
         }}
     }
@@ -407,7 +606,7 @@ static status_t handle_xsetbv(const ExitInfo& exit_info, GuestState* guest_state
 
     // Check that XCR0 is valid.
     uint64_t xcr0_bitmap = ((uint64_t)leaf.d << 32) | leaf.a;
-    uint64_t xcr0 = (guest_state->rdx << 32) | (guest_state->rax & 0xffffffff);
+    uint64_t xcr0 = (guest_state->rdx << 32) | (guest_state->rax & UINT32_MAX);
     if (~xcr0_bitmap & xcr0 ||
         // x87 state must be enabled.
         (xcr0 & X86_XSAVE_STATE_X87) != X86_XSAVE_STATE_X87 ||
@@ -420,21 +619,26 @@ static status_t handle_xsetbv(const ExitInfo& exit_info, GuestState* guest_state
     return NO_ERROR;
 }
 
-status_t vmexit_handler(const VmxState& vmx_state, GuestState* guest_state,
-                        IoApicState* io_apic_state, GuestPhysicalAddressSpace* gpas,
-                        FifoDispatcher* serial_fifo) {
+status_t vmexit_handler(AutoVmcsLoad* vmcs_load, GuestState* guest_state,
+                        LocalApicState* local_apic_state, IoApicState* io_apic_state,
+                        GuestPhysicalAddressSpace* gpas, FifoDispatcher* serial_fifo) {
     ExitInfo exit_info;
 
     switch (exit_info.exit_reason) {
     case ExitReason::EXTERNAL_INTERRUPT:
-        dprintf(SPEW, "handling external interrupt\n\n");
-        DEBUG_ASSERT(arch_ints_disabled());
-        arch_enable_ints();
-        arch_disable_ints();
-        return NO_ERROR;
+        return handle_external_interrupt(exit_info, vmcs_load, local_apic_state);
+    case ExitReason::INTERRUPT_WINDOW:
+        dprintf(SPEW, "handling interrupt window\n\n");
+        return handle_interrupt_window(exit_info, local_apic_state);
     case ExitReason::CPUID:
         dprintf(SPEW, "handling CPUID instruction\n\n");
         return handle_cpuid(exit_info, guest_state);
+    case ExitReason::HLT:
+        dprintf(SPEW, "handling HLT instruction\n\n");
+        return handle_hlt(exit_info, local_apic_state);
+    case ExitReason::VMCALL:
+        dprintf(SPEW, "handling VMCALL instruction\n\n");
+        return ERR_STOP;
     case ExitReason::IO_INSTRUCTION:
         return handle_io(exit_info, guest_state, serial_fifo);
     case ExitReason::RDMSR:
@@ -442,11 +646,14 @@ status_t vmexit_handler(const VmxState& vmx_state, GuestState* guest_state,
         return handle_rdmsr(exit_info, guest_state);
     case ExitReason::WRMSR:
         dprintf(SPEW, "handling WRMSR instruction\n\n");
-        return handle_wrmsr(exit_info, guest_state);
+        return handle_wrmsr(exit_info, guest_state, local_apic_state);
     case ExitReason::ENTRY_FAILURE_GUEST_STATE:
     case ExitReason::ENTRY_FAILURE_MSR_LOADING:
         dprintf(SPEW, "handling VM entry failure\n\n");
         return ERR_BAD_STATE;
+    case ExitReason::APIC_ACCESS:
+        dprintf(SPEW, "handling APIC access\n\n");
+        return handle_apic_access(exit_info, guest_state, local_apic_state, gpas);
     case ExitReason::EPT_VIOLATION:
         dprintf(SPEW, "handling EPT violation\n\n");
         return handle_ept_violation(exit_info, guest_state, io_apic_state, gpas);

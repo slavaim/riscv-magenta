@@ -5,10 +5,10 @@
 #include "gpu.h"
 
 #include <assert.h>
-#include <hexdump/hexdump.h>
 #include <inttypes.h>
 #include <magenta/compiler.h>
 #include <mxtl/auto_lock.h>
+#include <pretty/hexdump.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -440,7 +440,7 @@ mx_status_t GpuDevice::virtio_gpu_start() {
     args.proto_id = MX_PROTOCOL_DISPLAY;
     args.proto_ops = &display_proto_ops_;
 
-    auto status = device_add2(bus_device_, &args, &bus_device_);
+    auto status = device_add(bus_device_, &args, &bus_device_);
     if (status < 0) {
         device_ = nullptr;
         return status;

@@ -43,7 +43,7 @@ public:
     using DeviceList = mxtl::DoublyLinkedList<mxtl::RefPtr<Dnode>, Dnode::TypeDeviceTraits>;
 
     // Allocates a dnode, attached to a vnode
-    static mxtl::RefPtr<Dnode> Create(const char* name, size_t len, VnodeMemfs* vn);
+    static mxtl::RefPtr<Dnode> Create(const char* name, size_t len, mxtl::RefPtr<VnodeMemfs> vn);
 
     // Takes a parent-less node and makes it a child of the parent node.
     //
@@ -59,6 +59,8 @@ public:
     // Decrements dn->vnode link count by one (if it exists).
     void Detach();
 
+    bool HasChildren() const { return !children_.is_empty(); }
+
     // Look up the child dnode (within a parent directory) by name.
     // Returns NO_ERROR if the child is found.
     //
@@ -70,7 +72,7 @@ public:
 
     // Acquire a pointer to the vnode underneath this dnode.
     // Acquires a reference to the underlying vnode.
-    VnodeMemfs* AcquireVnode() const;
+    mxtl::RefPtr<VnodeMemfs> AcquireVnode() const;
 
     // Returns NO_ERROR if the dnode may be unlinked
     mx_status_t CanUnlink() const;
@@ -79,8 +81,8 @@ public:
     // ReaddirStart reads the canned "." and ".." entries that should appear
     // at the beginning of a directory.
     // On success, return the number of bytes read.
-    static mx_status_t ReaddirStart(void* cookie, void* data, size_t len);
-    mx_status_t Readdir(void* cookie, void* data, size_t len) const;
+    static mx_status_t ReaddirStart(fs::DirentFiller* df, void* cookie);
+    void Readdir(fs::DirentFiller* df, void* cookie) const;
 
     // Answers the question: "Is dn a subdirectory of this?"
     bool IsSubdirectory(mxtl::RefPtr<Dnode> dn) const;
@@ -95,14 +97,14 @@ private:
     friend struct TypeChildTraits;
     friend struct TypeDeviceTraits;
 
-    Dnode(VnodeMemfs* vn, mxtl::unique_ptr<char[]> name, uint32_t flags);
+    Dnode(mxtl::RefPtr<VnodeMemfs> vn, mxtl::unique_ptr<char[]> name, uint32_t flags);
 
     size_t NameLen() const;
     bool NameMatch(const char* name, size_t len) const;
 
     NodeState type_child_state_;
     NodeState type_device_state_;
-    VnodeMemfs* vnode_;
+    mxtl::RefPtr<VnodeMemfs> vnode_;
     mxtl::RefPtr<Dnode> parent_;
     // Used to impose an absolute order on dnodes within a directory.
     size_t ordering_token_;

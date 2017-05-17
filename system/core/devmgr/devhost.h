@@ -5,10 +5,7 @@
 #pragma once
 
 #include "device-internal.h"
-
-#if DEVHOST_V2
 #include "devcoordinator.h"
-#endif
 
 #include <ddk/binding.h>
 #include <ddk/device.h>
@@ -55,7 +52,7 @@ mx_status_t devhost_device_create(const char* name, void* ctx, mx_protocol_devic
                                   mx_driver_t* driver, mx_device_t** out);
 void devhost_device_set_protocol(mx_device_t* dev, uint32_t proto_id, void* proto_ops);
 void devhost_device_set_bindable(mx_device_t* dev, bool bindable);
-mx_status_t devhost_device_openat(mx_device_t* dev, mx_device_t** out,
+mx_status_t devhost_device_open_at(mx_device_t* dev, mx_device_t** out,
                                  const char* path, uint32_t flags);
 mx_status_t devhost_device_close(mx_device_t* dev, uint32_t flags);
 void devhost_device_destroy(mx_device_t* dev);
@@ -72,16 +69,12 @@ typedef struct devhost_iostate {
     mx_device_t* dev;
     size_t io_off;
     uint32_t flags;
-    mtx_t lock;
-#if DEVHOST_V2
+    bool dead;
     port_handler_t ph;
-#endif
 } devhost_iostate_t;
 
 devhost_iostate_t* create_devhost_iostate(mx_device_t* dev);
-mx_status_t devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie);
-mx_status_t _devhost_rio_handler(mxrio_msg_t* msg, mx_handle_t rh,
-                                 devhost_iostate_t* ios, bool* should_free_ios);
+mx_status_t devhost_rio_handler(mxrio_msg_t* msg, void* cookie);
 
 mx_status_t devhost_start_iostate(devhost_iostate_t* ios, mx_handle_t h);
 
@@ -111,6 +104,8 @@ static inline void dev_ref_acquire(mx_device_t* dev) {
 mx_handle_t get_root_resource(void);
 mx_handle_t get_sysinfo_job_root(void);
 mx_handle_t get_app_launcher(void);
+
+mx_device_t* device_create_setup(mx_device_t* parent);
 
 // locking and lock debugging
 extern mtx_t __devhost_api_lock;

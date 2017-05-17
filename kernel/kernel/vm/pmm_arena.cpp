@@ -9,13 +9,14 @@
 
 #include <err.h>
 #include <inttypes.h>
+#include <pretty/sizes.h>
 #include <string.h>
 #include <trace.h>
 
 #define LOCAL_TRACE MAX(VM_GLOBAL_TRACE, 0)
 
 PmmArena::PmmArena(const pmm_arena_info_t* info)
-    : info_(info) {}
+    : info_(*info) {}
 
 PmmArena::~PmmArena() {}
 
@@ -52,7 +53,7 @@ void PmmArena::BootAllocArray() {
     size_t size = page_count * VM_PAGE_STRUCT_SIZE;
     void* raw_page_array = boot_alloc_mem(size);
 
-    LTRACEF("arena for base 0%#" PRIxPTR " size %#zx page array at %p size %zu\n", info_->base, info_->size,
+    LTRACEF("arena for base 0%#" PRIxPTR " size %#zx page array at %p size %zu\n", info_.base, info_.size,
             raw_page_array, size);
 
     memset(raw_page_array, 0, size);
@@ -231,8 +232,9 @@ status_t PmmArena::FreePage(vm_page_t* page) {
 }
 
 void PmmArena::Dump(bool dump_pages, bool dump_free_ranges) {
-    printf("arena %p: name '%s' base %#" PRIxPTR " size 0x%zx priority %u flags 0x%x\n", this, name(), base(),
-           size(), priority(), flags());
+    char pbuf[16];
+    printf("arena %p: name '%s' base %#" PRIxPTR " size %s (0x%zx) priority %u flags 0x%x\n", this, name(), base(),
+           format_size(pbuf, sizeof(pbuf), size()), size(), priority(), flags());
     printf("\tpage_array %p, free_count %zu\n", page_array_, free_count_);
 
     /* dump all of the pages */

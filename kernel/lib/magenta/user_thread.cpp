@@ -631,6 +631,9 @@ status_t UserThread::ExceptionHandlerExchange(
     }
 
     // Continue to wait for the exception response if we get suspended.
+    // If it is suspended, the suspension will be processed after the
+    // exception response is received (requiring a second resume).
+    // Exceptions and suspensions are essentially treated orthogonally.
 
     status_t status;
     do {
@@ -771,12 +774,14 @@ void UserThread::GetInfoForUserspace(mx_info_thread_t* info) {
         info->state = MX_THREAD_STATE_SUSPENDED;
         break;
     case UserThread::State::DYING:
+        info->state = MX_THREAD_STATE_DYING;
+        break;
     case UserThread::State::DEAD:
         info->state = MX_THREAD_STATE_DEAD;
         break;
     default:
-        DEBUG_ASSERT_MSG(false, "unexpected exception port type: %d",
-                         static_cast<int>(excp_port_type));
+        DEBUG_ASSERT_MSG(false, "unexpected run state: %d",
+                         static_cast<int>(state));
         break;
     }
 

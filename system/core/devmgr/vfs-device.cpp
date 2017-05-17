@@ -22,26 +22,27 @@
 mx_status_t devfs_remove(VnodeDir* vn) {
     mxtl::AutoLock lock(&vfs_lock);
 
-    // hold a reference to ourselves so the rug doesn't get pulled out from under us
-    vn->RefAcquire();
-
     xprintf("devfs_remove(%p)\n", vn);
     vn->DetachRemote();
 
-    // if this vnode is a directory, delete its dnode
+    // If this vnode is a directory, delete its dnode
     if (vn->IsDirectory()) {
         xprintf("devfs_remove(%p) delete dnode\n", vn);
-        vn->dnode_->Detach();
-        vn->dnode_ = nullptr;
+        if (vn->dnode_->HasChildren()) {
+            // Detach the vnode, flag it to be deleted later.
+            vn->dnode_->RemoveFromParent();
+            vn->DetachDevice();
+            return NO_ERROR;
+        } else {
+            vn->dnode_->Detach();
+            vn->dnode_ = nullptr;
+        }
     }
 
-    while (!vn->devices_.is_empty()) {
-        vn->devices_.pop_front()->Detach();
-    }
-
-    vn->RefRelease();
-
-    // with all dnodes destroyed, nothing should hold a reference
-    // to the vnode and it should be release()'d
+    // The raw "vn" ptr was originally leaked from a RefPtr when
+    // the device was created. Now that no one holds a reference
+    // to it, we can delete it, since this code is the only
+    // logical "owner" of vn.
+    delete vn;
     return NO_ERROR;
 }

@@ -15,6 +15,7 @@
 #include <magenta/futex_context.h>
 #include <magenta/handle_owner.h>
 #include <magenta/magenta.h>
+#include <magenta/policy_manager.h>
 #include <magenta/state_tracker.h>
 #include <magenta/syscalls/object.h>
 #include <magenta/types.h>
@@ -208,11 +209,31 @@ public:
     uintptr_t get_debug_addr() const;
     mx_status_t set_debug_addr(uintptr_t addr);
 
+    // Checks the |condition| against the parent job's policy.
+    //
+    // Must be called by syscalls before performing an action represented by an
+    // MX_POL_xxxxx condition. If the return value is NO_ERROR the action can
+    // proceed; otherwise, the process is not allowed to perform the action,
+    // and the status value should be returned to the usermode caller.
+    //
+    // E.g., in sys_channel_create:
+    //
+    //     auto up = ProcessDispatcher::GetCurrent();
+    //     mx_status_t res = up->QueryPolicy(MX_POL_NEW_CHANNEL);
+    //     if (res != NO_ERROR) {
+    //         // Channel creation denied by the calling process's
+    //         // parent job's policy.
+    //         return res;
+    //     }
+    //     // Ok to create a channel.
+    mx_status_t QueryPolicy(uint32_t condition) const;
+
 private:
     // The diagnostic code is allow to know about the internals of this code.
     friend void DumpProcessList();
     friend uint32_t BuildHandleStats(const ProcessDispatcher&, uint32_t*, size_t);
     friend void DumpProcessHandles(mx_koid_t id);
+    friend void DumpProcessVmObjects(mx_koid_t id);
     friend void KillProcess(mx_koid_t id);
     friend void DumpProcessMemoryUsage(const char* prefix, size_t min_pages);
 
@@ -241,6 +262,12 @@ private:
 
     mxtl::Canary<mxtl::magic("PROC")> canary_;
 
+    // the enclosing job
+    const mxtl::RefPtr<JobDispatcher> job_;
+
+    // Policy set by the Job during Create().
+    const pol_cookie_t policy_;
+
     // The process can belong to either of these lists independently.
     mxtl::DoublyLinkedListNodeState<ProcessDispatcher*> dll_job_weak_;
     mxtl::SinglyLinkedListNodeState<mxtl::RefPtr<ProcessDispatcher>> dll_job_;
@@ -252,9 +279,6 @@ private:
 
     // our address space
     mxtl::RefPtr<VmAspace> aspace_;
-
-    // the enclosing job
-    const mxtl::RefPtr<JobDispatcher> job_;
 
     // our list of handles
     mutable Mutex handle_table_lock_; // protects |handles_|.

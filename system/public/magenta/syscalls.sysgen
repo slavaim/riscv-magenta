@@ -526,7 +526,7 @@ syscall clock_adjust
 
 syscall pci_get_nth_device
     (handle: mx_handle_t, index: uint32_t)
-    returns (mx_handle_t, out_info: mx_pcie_get_nth_info_t);
+    returns (mx_handle_t, out_info: mx_pcie_device_info_t);
 
 syscall pci_claim_device
     (handle: mx_handle_t)
@@ -628,14 +628,21 @@ syscall hypervisor_op
         result: any[result_len] OUT, result_len: uint32_t)
     returns (mx_status_t);
 
+# System Control
+
+syscall system_mexec
+   (kernel: mx_handle_t, bootimage: mx_handle_t)
+   returns (mx_status_t);
+
 # Test syscalls (keep at the end)
 
-syscall syscall_test_0() returns (int);
-syscall syscall_test_1(a:int) returns (int);
-syscall syscall_test_2(a:int, b:int) returns (int);
-syscall syscall_test_3(a:int, b:int, c:int) returns (int);
-syscall syscall_test_4(a:int, b:int, c:int, d:int) returns (int);
-syscall syscall_test_5(a:int, b:int, c:int, d:int, e:int) returns (int);
-syscall syscall_test_6(a:int, b:int, c:int, d:int, e:int, f:int) returns (int);
-syscall syscall_test_7(a:int, b:int, c:int, d:int, e:int, f:int, g:int) returns (int);
-syscall syscall_test_8(a:int, b:int, c:int, d:int, e:int, f:int, g:int, h:int) returns (int);
+syscall syscall_test_0() returns (mx_status_t);
+syscall syscall_test_1(a:int) returns (mx_status_t);
+syscall syscall_test_2(a:int, b:int) returns (mx_status_t);
+syscall syscall_test_3(a:int, b:int, c:int) returns (mx_status_t);
+syscall syscall_test_4(a:int, b:int, c:int, d:int) returns (mx_status_t);
+syscall syscall_test_5(a:int, b:int, c:int, d:int, e:int) returns (mx_status_t);
+syscall syscall_test_6(a:int, b:int, c:int, d:int, e:int, f:int) returns (mx_status_t);
+syscall syscall_test_7(a:int, b:int, c:int, d:int, e:int, f:int, g:int) returns (mx_status_t);
+syscall syscall_test_8(a:int, b:int, c:int, d:int, e:int, f:int, g:int, h:int) returns (mx_status_t);
+syscall syscall_test_wrapper(a:int, b:int, c:int) returns (mx_status_t);

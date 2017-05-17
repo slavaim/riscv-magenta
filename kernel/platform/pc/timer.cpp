@@ -98,12 +98,6 @@ static struct fp_32_64 tsc_per_ns;
 // HPET calibration values
 static struct fp_32_64 ns_per_hpet;
 
-// TODO: move this to a common header
-uint64_t get_tsc_ticks_per_ms(void);
-uint64_t get_tsc_ticks_per_ms(void) {
-    return tsc_ticks_per_ms;
-}
-
 #define INTERNAL_FREQ 1193182U
 #define INTERNAL_FREQ_3X 3579546U
 
@@ -165,6 +159,10 @@ static lk_time_t discrete_time_roundup(lk_time_t t) {
 uint64_t ticks_per_second(void)
 {
     return tsc_ticks_per_ms * 1000;
+}
+
+lk_time_t ticks_to_nanos(uint64_t ticks) {
+    return u64_mul_u64_fp32_64(ticks, ns_per_tsc);
 }
 
 // The PIT timer will keep track of wall time if we aren't using the TSC

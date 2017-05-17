@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <stdint.h>
+#include <limits.h>
 
 #include <hypervisor/guest.h>
 
@@ -23,25 +24,23 @@ static void acpi_header(ACPI_TABLE_HEADER* header, const char* signature, uint32
 }
 
 static void* madt_subtable(void* base, uint32_t off, uint8_t type, uint8_t length) {
-    ACPI_SUBTABLE_HEADER* subtable = (ACPI_SUBTABLE_HEADER*)((uint8_t*)base + off);
+    ACPI_SUBTABLE_HEADER* subtable = (ACPI_SUBTABLE_HEADER*)(base + off);
     subtable->Type = type;
     subtable->Length = length;
     return subtable;
 }
 #endif // __x86_64__
 
-mx_status_t guest_create_acpi_table(uintptr_t addr, size_t size, uintptr_t pte_off) {
+mx_status_t guest_create_acpi_table(uintptr_t addr, size_t size, uintptr_t acpi_off) {
 #if __x86_64__
-    if (size < ACPI_HI_RSDP_WINDOW_BASE + ACPI_HI_RSDP_WINDOW_SIZE)
+    if (size < acpi_off + PAGE_SIZE)
         return ERR_BUFFER_TOO_SMALL;
-    if (pte_off >= ACPI_HI_RSDP_WINDOW_BASE)
-        return ERR_OUT_OF_RANGE;
 
     // RSDP header. ACPI 1.0.
-    ACPI_RSDP_COMMON* rsdp = (ACPI_RSDP_COMMON*)(addr + ACPI_HI_RSDP_WINDOW_BASE);
+    ACPI_RSDP_COMMON* rsdp = (ACPI_RSDP_COMMON*)(addr + acpi_off);
     ACPI_MAKE_RSDP_SIG(rsdp->Signature);
     memcpy(rsdp->OemId, "MX_HYP", ACPI_OEM_ID_SIZE);
-    rsdp->RsdtPhysicalAddress = ACPI_HI_RSDP_WINDOW_BASE + sizeof(ACPI_RSDP_COMMON);
+    rsdp->RsdtPhysicalAddress = acpi_off + sizeof(ACPI_RSDP_COMMON);
     rsdp->Checksum = acpi_checksum(rsdp, ACPI_RSDP_CHECKSUM_LENGTH);
 
     // RSDT header.

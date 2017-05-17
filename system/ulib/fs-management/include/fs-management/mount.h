@@ -41,14 +41,31 @@ static const mount_options_t default_mount_options = {
     .create_mountpoint = false,
 };
 
+typedef struct mkfs_options {
+    bool verbose;
+} mkfs_options_t;
+
+static const mkfs_options_t default_mkfs_options = {
+    .verbose = false,
+};
+
+#define NUM_MKFS_OPTIONS 1
+
 typedef struct fsck_options {
     bool verbose;
+    // At MOST one of the following '*_modify' flags may be true.
+    bool never_modify; // Fsck still looks for problems, but it does not try to resolve them.
+    bool always_modify; // Fsck never asks to resolve problems; it assumes it should fix them.
+    bool force; // Force fsck to check the filesystem integrity, even if it is marked as "clean".
 } fsck_options_t;
 
-#define NUM_FSCK_OPTIONS 1
+#define NUM_FSCK_OPTIONS 3
 
 static const fsck_options_t default_fsck_options = {
     .verbose = false,
+    .never_modify = false,
+    .always_modify = false,
+    .force = false,
 };
 
 typedef mx_status_t (*LaunchCallback)(int argc, const char** argv,
@@ -85,7 +102,8 @@ mx_status_t fmount(int devicefd, int mountfd, disk_format_t df,
                    const mount_options_t* options, LaunchCallback cb);
 
 // Format the provided device with a requested disk format.
-mx_status_t mkfs(const char* devicepath, disk_format_t df, LaunchCallback cb);
+mx_status_t mkfs(const char* devicepath, disk_format_t df, LaunchCallback cb,
+                 const mkfs_options_t* options);
 
 // Check and repair a device with a requested disk format.
 mx_status_t fsck(const char* devicepath, disk_format_t df,

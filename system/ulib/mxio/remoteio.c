@@ -90,54 +90,50 @@ static void discard_handles(mx_handle_t* handles, unsigned count) {
     }
 }
 
-mx_status_t mxrio_handle_rpc(mx_handle_t h, mxrio_cb_t cb, void* cookie) {
-    mxrio_msg_t msg;
+mx_status_t mxrio_handle_rpc(mx_handle_t h, mxrio_msg_t* msg, mxrio_cb_t cb, void* cookie) {
     mx_status_t r;
 
-    msg.hcount = MXIO_MAX_HANDLES;
-    uint32_t dsz = sizeof(msg);
-    if ((r = mx_channel_read(h, 0, &msg, msg.handle, dsz, msg.hcount, &dsz, &msg.hcount)) < 0) {
-        if (r == ERR_SHOULD_WAIT) {
-            return ERR_DISPATCHER_NO_WORK;
-        }
+    msg->hcount = MXIO_MAX_HANDLES;
+    uint32_t dsz = sizeof(mxrio_msg_t);
+    if ((r = mx_channel_read(h, 0, msg, msg->handle, dsz, msg->hcount, &dsz, &msg->hcount)) < 0) {
         return r;
     }
 
-    if (!is_message_reply_valid(&msg, dsz)) {
-        discard_handles(msg.handle, msg.hcount);
+    if (!is_message_reply_valid(msg, dsz)) {
+        discard_handles(msg->handle, msg->hcount);
         return ERR_INVALID_ARGS;
     }
 
-    bool is_close = (MXRIO_OP(msg.op) == MXRIO_CLOSE);
+    bool is_close = (MXRIO_OP(msg->op) == MXRIO_CLOSE);
 
     xprintf("handle_rio: op=%s arg=%d len=%u hsz=%d\n",
-            mxio_opname(msg.op), msg.arg, msg.datalen, msg.hcount);
+            mxio_opname(msg->op), msg->arg, msg->datalen, msg->hcount);
 
-    if ((msg.arg = cb(&msg, h, cookie)) == ERR_DISPATCHER_INDIRECT) {
+    if ((msg->arg = cb(msg, cookie)) == ERR_DISPATCHER_INDIRECT) {
         // callback is handling the reply itself
         // and took ownership of the reply handle
-        return 0;
+        return NO_ERROR;
     }
-    if ((msg.arg < 0) || !is_message_valid(&msg)) {
+    if ((msg->arg < 0) || !is_message_valid(msg)) {
         // in the event of an error response or bad message
         // release all the handles and data payload
-        discard_handles(msg.handle, msg.hcount);
-        msg.datalen = 0;
-        msg.hcount = 0;
+        discard_handles(msg->handle, msg->hcount);
+        msg->datalen = 0;
+        msg->hcount = 0;
         // specific errors are prioritized over the bad
         // message case which we represent as ERR_INTERNAL
         // to differentiate from ERR_IO on the near side
         // TODO: consider a better error code
-        msg.arg = (msg.arg < 0) ? msg.arg : ERR_INTERNAL;
+        msg->arg = (msg->arg < 0) ? msg->arg : ERR_INTERNAL;
     }
 
-    msg.op = MXRIO_STATUS;
-    if ((r = mx_channel_write(h, 0, &msg, MXRIO_HDR_SZ + msg.datalen, msg.handle, msg.hcount)) < 0) {
-        discard_handles(msg.handle, msg.hcount);
+    msg->op = MXRIO_STATUS;
+    if ((r = mx_channel_write(h, 0, msg, MXRIO_HDR_SZ + msg->datalen, msg->handle, msg->hcount)) < 0) {
+        discard_handles(msg->handle, msg->hcount);
     }
     if (is_close) {
         // signals to not perform a close callback
-        return 1;
+        return ERR_DISPATCHER_DONE;
     } else {
         return r;
     }
@@ -151,7 +147,7 @@ mx_status_t mxrio_handle_close(mxrio_cb_t cb, void* cookie) {
     msg.arg = 0;
     msg.datalen = 0;
     msg.hcount = 0;
-    cb(&msg, 0, cookie);
+    cb(&msg, cookie);
     return NO_ERROR;
 }
 
@@ -161,7 +157,8 @@ mx_status_t mxrio_handler(mx_handle_t h, void* _cb, void* cookie) {
     if (h == MX_HANDLE_INVALID) {
         return mxrio_handle_close(cb, cookie);
     } else {
-        return mxrio_handle_rpc(h, cb, cookie);
+        mxrio_msg_t msg;
+        return mxrio_handle_rpc(h, &msg, cb, cookie);
     }
 }
 
@@ -548,11 +545,17 @@ mx_status_t mxio_service_connect(const char* svcpath, mx_handle_t h) {
     if (strncmp("/svc/", svcpath, 5)) {
         return ERR_NOT_FOUND;
     }
-    mx_handle_t svc = mxio_svc_root;
-    if (svc == MX_HANDLE_INVALID) {
+    return mxio_service_connect_at(mxio_svc_root, svcpath + 5, h);
+}
+
+mx_status_t mxio_service_connect_at(mx_handle_t dir, const char* path, mx_handle_t h) {
+    if (path == NULL) {
+        return ERR_INVALID_ARGS;
+    }
+    if (dir == MX_HANDLE_INVALID) {
         return ERR_UNAVAILABLE;
     }
-    return mxrio_connect(svc, h, MXRIO_OPEN, svcpath + 5);
+    return mxrio_connect(dir, h, MXRIO_OPEN, path);
 }
 
 mx_handle_t mxio_service_clone(mx_handle_t svc) {
@@ -621,12 +624,26 @@ mx_status_t mxrio_misc(mxio_t* io, uint32_t op, int64_t off,
         return r;
     }
 
-    discard_handles(msg.handle, msg.hcount);
-    if (msg.datalen > maxreply) {
-        return ERR_IO;
-    }
-    if (ptr && msg.datalen > 0) {
+    switch (op) {
+    case MXRIO_MMAP: {
+        // Ops which receive single handles:
+        if ((msg.hcount != 1) || (msg.datalen > maxreply)) {
+            discard_handles(msg.handle, msg.hcount);
+            return ERR_IO;
+        }
+        r = msg.handle[0];
         memcpy(ptr, msg.data, msg.datalen);
+        break;
+    }
+    default:
+        // Ops which don't receive handles:
+        discard_handles(msg.handle, msg.hcount);
+        if (msg.datalen > maxreply) {
+            return ERR_IO;
+        }
+        if (ptr && msg.datalen > 0) {
+            memcpy(ptr, msg.data, msg.datalen);
+        }
     }
     return r;
 }

@@ -18,6 +18,7 @@
 #include <platform/pc.h>
 #include <platform/pc/acpi.h>
 #include <platform/pc/bootloader.h>
+#include <platform/pc/memory.h>
 #include <platform/console.h>
 #include <platform/keyboard.h>
 #include <magenta/boot/bootdata.h>
@@ -41,7 +42,6 @@ extern bootdata_t* _bootdata_base;
 pc_bootloader_info_t bootloader;
 
 struct mmu_initial_mapping mmu_initial_mappings[] = {
-#if ARCH_X86_64
     /* 64GB of memory mapped where the kernel lives */
     {
         .phys = MEMBASE,
@@ -50,7 +50,6 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
         .flags = 0,
         .name = "memory"
     },
-#endif
     /* KERNEL_SIZE of memory mapped where the kernel lives.
      * On x86-64, this only sticks around until the VM is brought up, after
      * that this will be replaced with mappings of the correct privileges. */
@@ -58,13 +57,8 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
         .phys = MEMBASE,
         .virt = KERNEL_BASE,
         .size = KERNEL_SIZE, /* x86 maps first KERNEL_SIZE by default */
-#if ARCH_X86_64
         .flags = MMU_INITIAL_MAPPING_TEMPORARY,
         .name = "kernel_temp"
-#else
-        .flags = 0,
-        .name = "kernel",
-#endif
     },
     /* null entry to terminate the list */
     {}
@@ -111,7 +105,7 @@ static int process_bootitem(bootdata_t* bd, void* item) {
         break;
     case BOOTDATA_E820_TABLE:
         bootloader.e820_table = item;
-        bootloader.e820_count = bd->length / (8+8+4);
+        bootloader.e820_count = bd->length / sizeof(e820entry_t);
         break;
     case BOOTDATA_IGNORE:
         break;

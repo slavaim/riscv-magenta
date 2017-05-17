@@ -26,6 +26,7 @@
 #include <mxio/watcher.h>
 #include <mxtl/auto_lock.h>
 
+#include <magenta/atomic.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/log.h>
 #include <magenta/syscalls/object.h>
@@ -42,12 +43,18 @@
 // framebuffer
 static gfx_surface g_hw_gfx;
 static mx_device_t* g_fb_device;
+static mx_device_t* g_root_device;
 static mx_display_protocol_t* g_fb_display_protocol;
 
 static thrd_t g_input_poll_thread;
 
 // single driver instance
 static bool g_vc_initialized = false;
+
+// remember whether the virtual console controls the display
+static int g_vc_owns_display = 1;
+
+static mx_handle_t g_vc_owner_event = MX_HANDLE_INVALID;
 
 mtx_t g_vc_lock = MTX_INIT;
 
@@ -63,6 +70,15 @@ static mx_status_t vc_set_active_console(unsigned console) TA_REQ(g_vc_lock);
 static void vc_device_toggle_framebuffer() {
     if (g_fb_display_protocol->acquire_or_release_display)
         g_fb_display_protocol->acquire_or_release_display(g_fb_device);
+}
+
+static void vc_display_ownership_callback(bool acquired) {
+    atomic_store(&g_vc_owns_display, acquired ? 1 : 0);
+    if (acquired) {
+        mx_object_signal(g_vc_owner_event, MX_USER_SIGNAL_1, MX_USER_SIGNAL_0);
+    } else {
+        mx_object_signal(g_vc_owner_event, MX_USER_SIGNAL_0, MX_USER_SIGNAL_1);
+    }
 }
 
 // Process key sequences that affect the console (scrolling, switching
@@ -132,7 +148,16 @@ static bool vc_handle_control_keys(uint8_t keycode,
             return true;
         }
         break;
+    }
+    return false;
+}
 
+// Process key sequences that affect the low-level control of the system
+// (switching display ownership, rebooting).  This returns whether this key press
+// was handled.
+static bool vc_handle_device_control_keys(uint8_t keycode,
+                                          int modifiers) TA_REQ(g_vc_lock) {
+    switch (keycode) {
     case HID_USAGE_KEY_DELETE:
         // Provide a CTRL-ALT-DEL reboot sequence
         if ((modifiers & MOD_CTRL) && (modifiers & MOD_ALT)) {
@@ -159,6 +184,15 @@ static bool vc_handle_control_keys(uint8_t keycode,
 static void vc_handle_key_press(uint8_t keycode, int modifiers) {
     mxtl::AutoLock lock(&g_vc_lock);
 
+    // Handle device-level control keys
+    if (vc_handle_device_control_keys(keycode, modifiers))
+        return;
+
+    // Handle other keys only if we own the display
+    if (atomic_load(&g_vc_owns_display) == 0)
+        return;
+
+    // Handle other control keys
     if (vc_handle_control_keys(keycode, modifiers))
         return;
 
@@ -264,8 +298,8 @@ void vc_get_battery_info(vc_battery_info_t* info) {
 
 // implement device protocol:
 
-static mx_status_t vc_device_release(mx_device_t* dev) {
-    vc_device_t* vc = static_cast<vc_device_t*>(dev->ctx);
+static void vc_device_release(void* ctx) {
+    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
 
     mxtl::AutoLock lock(&g_vc_lock);
 
@@ -303,27 +337,36 @@ static mx_status_t vc_device_release(mx_device_t* dev) {
     if (g_active_vc) {
         vc_device_render(g_active_vc);
     }
-    return NO_ERROR;
 }
 
-static ssize_t vc_device_read(mx_device_t* dev, void* buf, size_t count, mx_off_t off) {
-    vc_device_t* vc = static_cast<vc_device_t*>(dev->ctx);
+static mx_status_t vc_device_read(void* ctx, void* buf, size_t count, mx_off_t off, size_t* actual) {
+    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
 
     mxtl::AutoLock lock(&g_vc_lock);
 
     ssize_t result = mx_hid_fifo_read(&vc->fifo, buf, count);
     if (mx_hid_fifo_size(&vc->fifo) == 0) {
-        device_state_clr(dev, DEV_STATE_READABLE);
+        device_state_clr(vc->mxdev, DEV_STATE_READABLE);
     }
 
-    if (result == 0)
+    if (result == 0) {
         result = ERR_SHOULD_WAIT;
-    return result;
+    } else {
+        *actual = result;
+        result = NO_ERROR;
+    }
+    return (mx_status_t)result;
 }
 
-ssize_t vc_device_op_write(mx_device_t* dev, const void* buf, size_t count, mx_off_t off) {
-    vc_device_t* vc = static_cast<vc_device_t*>(dev->ctx);
-    return vc_device_write(vc, buf, count, off);
+static mx_status_t vc_device_op_write(void* ctx, const void* buf, size_t count, mx_off_t off,
+                                      size_t* actual) {
+    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
+    ssize_t result = vc_device_write(vc, buf, count, off);
+    if (result >= 0) {
+        *actual = result;
+        result = NO_ERROR;
+    }
+    return (mx_status_t)result;
 }
 
 ssize_t vc_device_write(vc_device_t* vc, const void* buf, size_t count, mx_off_t off) {
@@ -352,8 +395,9 @@ ssize_t vc_device_write(vc_device_t* vc, const void* buf, size_t count, mx_off_t
     return count;
 }
 
-static ssize_t vc_device_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, size_t cmdlen, void* reply, size_t max) {
-    vc_device_t* vc = static_cast<vc_device_t*>(dev->ctx);
+static mx_status_t vc_device_ioctl(void* ctx, uint32_t op, const void* cmd, size_t cmdlen,
+                                   void* reply, size_t max, size_t* out_actual) {
+    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
 
     mxtl::AutoLock lock(&g_vc_lock);
 
@@ -365,7 +409,8 @@ static ssize_t vc_device_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, s
         }
         dims->width = vc->columns;
         dims->height = vc_device_rows(vc);
-        return sizeof(*dims);
+        *out_actual = sizeof(*dims);
+        return NO_ERROR;
     }
     case IOCTL_CONSOLE_SET_ACTIVE_VC:
         return vc_set_console_to_active(vc);
@@ -385,7 +430,8 @@ static ssize_t vc_device_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, s
         if (status < 0) {
             return status;
         } else {
-            return sizeof(ioctl_display_get_fb_t);
+            *out_actual = sizeof(ioctl_display_get_fb_t);
+            return NO_ERROR;
         }
     }
     case IOCTL_DISPLAY_FLUSH_FB:
@@ -406,6 +452,20 @@ static ssize_t vc_device_ioctl(mx_device_t* dev, uint32_t op, const void* cmd, s
         vc_device_set_fullscreen(vc, !!*(uint32_t*)cmd);
         return NO_ERROR;
     }
+    case IOCTL_DISPLAY_GET_OWNERSHIP_CHANGE_EVENT: {
+        if (max < sizeof(mx_handle_t)) {
+            return ERR_BUFFER_TOO_SMALL;
+        }
+        auto* evt = reinterpret_cast<mx_handle_t*>(reply);
+        mx_rights_t client_rights = MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ;
+        mx_status_t status = mx_handle_duplicate(g_vc_owner_event, client_rights, evt);
+        if (status < 0) {
+            return status;
+        } else {
+            *out_actual = sizeof(mx_handle_t);
+            return NO_ERROR;
+        }
+    }
     default:
         return ERR_NOT_SUPPORTED;
     }
@@ -415,37 +475,14 @@ static mx_protocol_device_t vc_device_proto;
 
 extern mx_driver_t _driver_vc_root;
 
-// opening the root device returns a new vc device instance
-static mx_status_t vc_do_root_open(mx_device_t* dev, vc_device_t** vc_out, uint32_t flags) {
+// Create a new vc_device_t and add it to the console list.
+static mx_status_t vc_device_create(vc_device_t** vc_out) {
     mxtl::AutoLock lock(&g_vc_lock);
 
     mx_status_t status;
     vc_device_t* device;
     if ((status = vc_device_alloc(&g_hw_gfx, &device)) < 0) {
         return status;
-    }
-
-    // if called normally, add the instance
-    // if dev is null, we're creating the log console
-    if (dev) {
-        // init the new device
-        char name[8];
-        snprintf(name, sizeof(name), "vc%u", g_vc_count);
-
-        device_add_args_t args = {};
-        args.version = DEVICE_ADD_ARGS_VERSION;
-        args.name = name;
-        args.ctx = device;
-        args.driver = &_driver_vc_root;
-        args.ops = &vc_device_proto;
-        args.proto_id = MX_PROTOCOL_CONSOLE;
-        args.flags = DEVICE_ADD_INSTANCE;
-
-        status = device_add2(dev, &args, &device->mxdev);
-        if (status != NO_ERROR) {
-            vc_device_free(device);
-            return status;
-        }
     }
 
     // add to the vc list
@@ -463,12 +500,34 @@ static mx_status_t vc_do_root_open(mx_device_t* dev, vc_device_t** vc_out, uint3
     return NO_ERROR;
 }
 
-static mx_status_t vc_root_open(mx_device_t* dev, mx_device_t** dev_out, uint32_t flags) {
+static mx_status_t vc_root_open(void* ctx, mx_device_t** dev_out, uint32_t flags) {
     vc_device_t* vc;
-    mx_status_t status = vc_do_root_open(dev, &vc, flags);
+    mx_status_t status = vc_device_create(&vc);
     if (status != NO_ERROR) {
         return status;
     }
+
+    mxtl::AutoLock lock(&g_vc_lock);
+
+    // Create an mx_device_t for the vc_device_t.
+    char name[8];
+    snprintf(name, sizeof(name), "vc%u", g_vc_count);
+
+    device_add_args_t args = {};
+    args.version = DEVICE_ADD_ARGS_VERSION;
+    args.name = name;
+    args.ctx = vc;
+    args.driver = &_driver_vc_root;
+    args.ops = &vc_device_proto;
+    args.proto_id = MX_PROTOCOL_CONSOLE;
+    args.flags = DEVICE_ADD_INSTANCE;
+
+    status = device_add(g_root_device, &args, &vc->mxdev);
+    if (status != NO_ERROR) {
+        vc_device_free(vc);
+        return status;
+    }
+
     *dev_out = vc->mxdev;
     return NO_ERROR;
 }
@@ -622,6 +681,16 @@ static mx_status_t vc_root_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
     g_fb_device = dev;
     g_fb_display_protocol = disp;
 
+    // Create display event
+    if ((status = mx_event_create(0, &g_vc_owner_event)) < 0) {
+        return status;
+    }
+
+    // Request notification of display ownership changes
+    if (disp->set_ownership_change_callback) {
+        disp->set_ownership_change_callback(dev, &vc_display_ownership_callback);
+    }
+
     // if the underlying device requires flushes, set the pointer to a flush op
     if (disp->flush) {
         g_hw_gfx.flush = display_flush;
@@ -635,10 +704,8 @@ static mx_status_t vc_root_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
     args.ops = &vc_root_proto;
     args.proto_id = MX_PROTOCOL_CONSOLE;
 
-    mx_device_t* device;
-    status = device_add2(dev, &args, &device);
+    status = device_add(dev, &args, &g_root_device);
     if (status != NO_ERROR) {
-        free(device);
         return status;
     }
 
@@ -652,10 +719,10 @@ static mx_status_t vc_root_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
 
     g_vc_initialized = true;
     xprintf("initialized vc on display %s, width=%u height=%u stride=%u format=%u\n",
-            dev->name, info.width, info.height, info.stride, info.format);
+            device_get_name(dev), info.width, info.height, info.stride, info.format);
 
     vc_device_t* vc;
-    if (vc_do_root_open(NULL, &vc, 0) == NO_ERROR) {
+    if (vc_device_create(&vc) == NO_ERROR) {
         thrd_t t;
         thrd_create_with_name(&t, vc_log_reader_thread, vc, "vc-log-reader");
     }
@@ -670,11 +737,13 @@ static mx_status_t vc_root_bind(mx_driver_t* drv, mx_device_t* dev, void** cooki
 static mx_driver_ops_t vc_root_driver_ops;
 
 __attribute__((constructor)) static void initialize() {
+    vc_device_proto.version = DEVICE_OPS_VERSION;
     vc_device_proto.release = vc_device_release;
     vc_device_proto.read = vc_device_read;
     vc_device_proto.write = vc_device_op_write;
     vc_device_proto.ioctl = vc_device_ioctl;
 
+    vc_root_proto.version = DEVICE_OPS_VERSION;
     vc_root_proto.open = vc_root_open;
 
     vc_root_driver_ops.version = DRIVER_OPS_VERSION,

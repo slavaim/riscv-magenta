@@ -9,9 +9,9 @@
 #include <limits.h>
 #include <stdio.h>
 
-#include <hexdump/hexdump.h>
 #include <hw/inout.h>
 #include <mxtl/auto_lock.h>
+#include <pretty/hexdump.h>
 
 #include "trace.h"
 #include "virtio_priv.h"
@@ -23,6 +23,7 @@ namespace virtio {
 Device::Device(mx_driver_t* driver, mx_device_t* bus_device)
     : driver_(driver), bus_device_(bus_device) {
     LTRACE_ENTRY;
+    device_ops_.version = DEVICE_OPS_VERSION;
 }
 
 Device::~Device() {
