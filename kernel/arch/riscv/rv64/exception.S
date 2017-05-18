@@ -43,6 +43,16 @@ END(excp_vect_table)
 	.text
 	.altmacro
 	.macro SAVE_ALL
+    /*
+      registers usage
+        s0 - a frame pointer to facilitate debugging
+        sp - pt_regs structure allocated on the stack
+        s4 - memory address for the exception, i.e. badaddr
+        s5 - cause of the exception, i.e. scause register
+      stack layout
+        gdb frame   u8[GDB_FRAME_SZ]
+        pt_regs     u8[PT_SIZE]
+    */
 	LOCAL _restore_kernel_sp
 	LOCAL _save_context
 
@@ -54,16 +64,29 @@ END(excp_vect_table)
 
 _restore_kernel_sp:
 	csrr sp, sscratch
+
 _save_context:
-    SET_GDB_FRAME
-	addi  sp,  sp, -(PT_SIZE)
+
+    /* allocate space on the stack for
+      - gdb frame
+      - pt_regs structure */
+	addi  sp,  sp, -(PT_SIZE + GDB_FRAME_SZ)
+
+    /* set a gdb frame */
+    REG_S   s0, PT_SIZE(sp)            /* save the frame pointer for the interrupted code */
+    REG_S   s0, PT_S0(sp)              /* save $s0 in the pt_regs so it has a correct value */
+    csrr    s0, sepc                   /* get the interrupted PC */
+    REG_S   s0, (PT_SIZE + SZREG)(sp)  /* set the interrupted PC as $ra for the frame */
+    addi    s0, sp, (PT_SIZE + GDB_FRAME_SZ)  /* set s0 as the current frame pointer */
+
+    /* save the registers */
 	REG_S x1,  PT_RA(sp)
 	REG_S x3,  PT_GP(sp)
 	REG_S x4,  PT_TP(sp)
 	REG_S x5,  PT_T0(sp)
 	REG_S x6,  PT_T1(sp)
 	REG_S x7,  PT_T2(sp)
-	REG_S x8,  PT_S0(sp)
+	/*REG_S x8,  PT_S0(sp)*/ /* see above, $s0 for interrupted code has been saved */
 	REG_S x9,  PT_S1(sp)
 	REG_S x10, PT_A0(sp)
 	REG_S x11, PT_A1(sp)
@@ -94,8 +117,7 @@ _save_context:
 
     /* s0 is used as a frame pointer, do not 
        overwrite it */
-	csrr  s1, sscratch            /* sp on entry */
-    addi  s1, s1, -(GDB_FRAME_SZ) /* account for the frame set by SET_GDB_FRAME */
+	csrr  s1, sscratch            /* sp for interrupted code, might be a user sp */
 	csrrc s2, sstatus, t0
 	csrr  s3, sepc
 	csrr  s4, sbadaddr
@@ -144,9 +166,12 @@ _save_context:
 	REG_L x30, PT_T5(sp)
 	REG_L x31, PT_T6(sp)
 
-	REG_L x2,  PT_SP(sp)
+    /* there is no need to unwind the gdb frame
+       as $s0 and $sp in pt_regs have values at
+       the moment of interruption by exception */
 
-    DEL_GDB_FRAME
+    /* restore $sp, this might be a user $sp */
+	REG_L x2,  PT_SP(sp)
 	.endm
 
     .macro PANIC
@@ -158,16 +183,6 @@ _save_context:
 
 .section .text
 FUNCTION(handle_exception)
-    /*
-      registers usage
-        s0 - a frame pointer set by SET_EXCPT_FRAME
-        sp - pt_regs structure allocated on the stack
-        s4 - memory address for the exception, i.e. badaddr
-        s5 - cause of the exception, i.e. scause register
-      stack layout
-        FRAME [16]
-        REGISTERS [PT_SIZE]
-    */
 	SAVE_ALL
 
 	/* Set sscratch register to 0, so that if a recursive exception
@@ -240,7 +255,7 @@ ret_from_exception:
 resume_userspace:
 	/* Interrupts must be disabled here */
 	/* Save unwound kernel stack pointer in sscratch */
-	addi s1, sp, PT_SIZE
+	addi s1, sp, (PT_SIZE + GDB_FRAME_SZ)
 	csrw sscratch, s1
 restore_all:
 	RESTORE_ALL

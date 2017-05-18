@@ -27,10 +27,10 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 #define LGREG		__REG_SEL(3, 2)
 
 /*
-the frame layout
+the gdb frame layout
 struct gdb_frame{
-    struct gdb_frame* prev;
-    void*  ra;
+    struct gdb_frame* prev; // $s0
+    void*  ra;              // $ra
     };
 */
 #define GDB_FRAME_SZ  2*SZREG
