@@ -47,12 +47,14 @@ void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
     ti = stack_to_thread_info(t->arch.state.sp);
     assert(0x0 == ((unsigned long)ti) % sizeof(void*));
     ti->thread = t;
-    ti->cpu = 0;
-}
+    t->arch.ti = ti;
 
-void arch_context_switch(struct thread *oldthread, struct thread *newthread)
-{
-    riscv_switch_to(&oldthread->arch.state, &newthread->arch.state);
+    //
+    // set a bogus cpu as the thread is not running, 
+    // the actual cpu number is updated on each
+    // context switch
+    //
+    ti->cpu = (-1);
 }
 
 void arch_thread_construct_first(thread_t *t)
@@ -65,16 +67,34 @@ void arch_thread_construct_first(thread_t *t)
     thread_info_t* ti = current_thread_info();
 
     ti->thread = t;
-    ti->cpu = arch_curr_cpu_num();
+    t->arch.ti = ti;
 
     //
-    // the boot hart must have ID equal to 0
+    // we always start at 0 heart
     //
-    assert( 0 == ti->cpu );
+    ti->cpu = 0;
+    assert( (uint)sbi_hart_id() == ti->cpu );
 
     //
     // set the thread pointer, see __switch_to for details
     //
     t->arch.state.thread = t;
 }
+
+void arch_context_switch(struct thread *oldthread, struct thread *newthread)
+{
+    //
+    // set the cpu number, look at arch_curr_cpu_num that uses it
+    //
+    if (newthread->arch.ti->cpu != oldthread->arch.ti->cpu)
+        newthread->arch.ti->cpu = oldthread->arch.ti->cpu;
+
+    assert( newthread->arch.ti->cpu < SMP_MAX_CPUS );
+    
+    //
+    // swap registers
+    //
+    riscv_switch_to(&oldthread->arch.state, &newthread->arch.state);
+}
+
 

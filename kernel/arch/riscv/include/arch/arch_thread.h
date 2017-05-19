@@ -11,12 +11,23 @@
 #include <magenta/compiler.h>
 #include <sys/types.h>
 #include <arch/riscv/thread_state.h>
+#include <arch/riscv/thread_info.h>
 
 __BEGIN_CDECLS
 
+struct thread_info;
+
 struct arch_thread {
 
+    //
+    // threads cpu state
+    //
     riscv_thread_state_t state;
+
+    //
+    // a thread info on the kernel stack
+    //
+    struct thread_info*   ti;
 
     //
     // if non-NULL, address to return to on data fault

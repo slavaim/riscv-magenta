@@ -8,14 +8,11 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 #ifndef _ASM_OFFSETS_
 
 #include <stdint.h>
-#include <kernel/thread.h>
 #include <arch/riscv/asm/thread_info.h>
 
-#else
+#endif
 
 struct thread;
-
-#endif //_ASM_OFFSETS_
 
 /*
  * low level task data that entry.S needs immediate access to

@@ -12,17 +12,25 @@ __BEGIN_CDECLS
 static inline void __switch_to_aux(struct riscv_thread_state *prev,
                                    struct riscv_thread_state *next)
 {
+    //
+    // TO DO save fp registers if a thread uses fp operations
+    //
 }
 
-extern void __switch_to(struct riscv_thread_state *,
-                        struct riscv_thread_state *);
+//
+// __switch_to return the "last" ( i.e. the old "prev" )
+// in $a0 register as a side effect of registers restoring
+// 
+extern
+struct riscv_thread_state *
+ __switch_to(struct riscv_thread_state *,
+             struct riscv_thread_state *);
 
-#define riscv_switch_to(prev, next)   \
-do { \
-    struct riscv_thread_state *__prev = (prev);     \
-    struct riscv_thread_state *__next = (next);     \
-    __switch_to_aux(__prev, __next);    \
-    __switch_to(__prev, __next); \
-} while (0)
+static inline void riscv_switch_to(struct riscv_thread_state * prev,
+                                   struct riscv_thread_state * next)
+{
+    __switch_to_aux(prev, next);
+    __switch_to(prev, next); 
+}
 
 __END_CDECLS

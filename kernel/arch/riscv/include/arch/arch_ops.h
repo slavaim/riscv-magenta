@@ -11,11 +11,13 @@
 
 #include <stdbool.h>
 #include <debug.h>
+#include <assert.h>
 #include <arch/riscv/mp.h>
 #include <arch/riscv/irqflags.h>
 #include <arch/riscv/sbi.h>
 #include <arch/riscv/irq.h>
 #include <arch/riscv/processor.h>
+#include <arch/riscv/thread_info.h>
 
 __BEGIN_CDECLS
 
@@ -55,10 +57,10 @@ static inline uint64_t arch_cycle_count(void)
 static inline uint arch_curr_cpu_num(void)
 {
     //
-    // TO_DO_RISCV return the actual index for SMP
-    // instead of a hart ID which might not be consecuitive
+    // every cpu has a valid thread info on the stack
+    // copied on each context switch
     //
-    return (uint)sbi_hart_id();
+    return (uint)current_thread_info()->cpu;
 }
 
 static inline uint arch_max_num_cpus(void)

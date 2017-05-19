@@ -271,6 +271,10 @@ END(handle_exception)
  */
 .section .text
 FUNCTION(__switch_to)
+	/*
+	* $a0 == &prev->arch.stat
+	* $a1 == &next->arch.stat
+	*/
 	/* Save context into prev->arch.state */
 	REG_S ra,  THREAD_RA(a0)
 	REG_S sp,  THREAD_SP(a0)
