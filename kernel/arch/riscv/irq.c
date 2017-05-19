@@ -30,19 +30,19 @@ typedef struct plic_context {
 
 //static plic_context_t  cpu_plic_context[SMP_MAX_CPUS];
 //static int             cpu_irq_in_progress[SMP_MAX_CPUS];
-static bool            cpu_in_int_handler[SMP_MAX_CPUS];
+static unsigned long   cpu_in_int_handler[SMP_MAX_CPUS];
 static struct pt_regs* cpu_pt_regs[SMP_MAX_CPUS];
 
 bool arch_cpu_in_int_handler(uint cpu)
 {
     assert(cpu < SMP_MAX_CPUS);
-    return cpu_in_int_handler[cpu];
+    return (0 != cpu_in_int_handler[cpu]);
 }
 
 static void arch_set_in_int_handler(bool in_irq)
 {
     uint cpu = arch_curr_cpu_num();
-    cpu_in_int_handler[cpu] = in_irq;
+    cpu_in_int_handler[cpu] += in_irq ? 1 : -1;
 }
 
 static void riscv_software_interrupt(void)
@@ -68,6 +68,9 @@ asmlinkage void do_IRQ(unsigned int cause, struct pt_regs *regs)
 {
     enum handler_return ret = INT_NO_RESCHEDULE;
 	struct pt_regs *old_regs = set_irq_regs(regs);
+
+	assert(arch_irqs_disabled());
+
 	arch_set_in_int_handler(true);
 
 	/* There are three classes of interrupt: timer, software, and
@@ -89,6 +92,8 @@ asmlinkage void do_IRQ(unsigned int cause, struct pt_regs *regs)
 
 	arch_set_in_int_handler(false);
 	set_irq_regs(old_regs);
+
+	assert(arch_irqs_disabled());
 
     if (ret != INT_NO_RESCHEDULE)
         thread_preempt(true);
