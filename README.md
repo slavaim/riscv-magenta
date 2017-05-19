@@ -5,7 +5,7 @@ This is an initiative to port Magenta kernel to RISC-V architecture. The canonic
 This repository will be periodically merged with the canonical Magenta repository to keep it up-to-date.  
 
 Milestones:
-  - 20 May 2017 the kernel is running and switching between kernel threads
+  - 20 May 2017 the kernel is running in QEMU and switching between kernel threads
 
 Below is the original Magenta's README.md  
 
