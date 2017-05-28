@@ -42,7 +42,21 @@ static void call_constructors(void)
         (*a)();
 }
 
+// TEST TTTTTTTTTTTTTTTTTTT
 static volatile int wfd = 1; // wfd stands for Wait For Debugger
+
+static int bootstrap3(void *arg)
+{
+    while(1){ arch_spinloop_pause();}
+    return 0;
+}
+
+static int bootstrap4(void *arg)
+{
+    while(1){ arch_spinloop_pause();}
+    return 0;
+}
+// end TEST 
 
 /* called from arch code */
 void lk_main(void)
@@ -90,6 +104,22 @@ void lk_main(void)
     thread_set_pinned_cpu(t, 0);
     thread_detach(t);
     thread_resume(t);
+
+    //
+    // TEST TTTTTTTT
+    //
+    thread_t *t3 = thread_create("bootstrap3", &bootstrap3, NULL, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+    thread_set_pinned_cpu(t3, 0);
+    thread_detach(t3);
+    thread_resume(t3);
+
+    thread_t *t4 = thread_create("bootstrap4", &bootstrap4, NULL, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+    thread_set_pinned_cpu(t4, 0);
+    thread_detach(t4);
+    thread_resume(t4);
+    //
+    // end TEST
+    //
 
     // become the idle thread and enable interrupts to start the scheduler
     thread_become_idle();

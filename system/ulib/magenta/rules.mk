@@ -35,6 +35,13 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/mx_futex_wake_handle_close_thread_exit-x86-64.S \
     $(LOCAL_DIR)/mx_vmar_unmap_handle_close_thread_exit-x86-64.S \
     $(LOCAL_DIR)/syscalls-x86-64.S
+else ifeq ($(ARCH),riscv)
+MODULE_SRCS += \
+    $(LOCAL_DIR)/mx_futex_wake_handle_close_thread_exit-riscv64.S \
+    $(LOCAL_DIR)/mx_vmar_unmap_handle_close_thread_exit-riscv64.S \
+    $(LOCAL_DIR)/syscalls-riscv64.S
+    # disable float point instructions
+    #MODULE_COMPILEFLAGS += -march=rv64ima -mabi=lp64
 endif
 
 # This gets an ABI stub installed in sysroots, but the DSO never gets

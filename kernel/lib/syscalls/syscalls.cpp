@@ -1,4 +1,5 @@
 // Copyright 2016 The Fuchsia Authors
+// RISC-V code added by Slava Imameev
 //
 // Use of this source code is governed by a MIT-style
 // license that can be found in the LICENSE file or at
@@ -121,6 +122,51 @@ struct x86_64_syscall_result x86_64_syscall(
     result.status = ret;
     result.is_signaled = thread_is_signaled(thread);
     return result;
+}
+
+#endif
+
+#if ARCH_RISCV_RV64
+#include <arch/riscv.h> 
+
+void riscv_syscall(struct pt_regs*  regs)
+{
+    uint64_t syscall_num = regs->t0;
+    uint64_t syscall_imm = regs->t0 >> 32;
+
+    ktrace_tiny(TAG_SYSCALL_ENTER, ((uint32_t)syscall_num << 8) | arch_curr_cpu_num());
+
+    /* check for magic value to differentiate our syscalls */
+    if (unlikely(syscall_imm != 0xf0f)) {
+        LTRACEF("syscall does not have magenta magic, %#" PRIx64
+                " @ PC %#" PRIx64 "\n", syscall_num, regs->sepc);
+        regs->a0 = ERR_BAD_SYSCALL;
+        return;
+    }
+
+    THREAD_STATS_INC(syscalls);
+
+    /* re-enable interrupts to maintain kernel preemptiveness */
+    arch_enable_ints();
+
+    LTRACEF_LEVEL(2, "num %" PRIu64 "\n", syscall_num);
+
+    /* call the routine */
+    uint64_t ret = invoke_syscall(syscall_num, regs->a0, regs->a1, regs->a2, regs->a3,
+                                  regs->a4, regs->a5, regs->a6, regs->a7);
+
+    LTRACEF_LEVEL(2, "ret %#" PRIx64 "\n", ret);
+
+    /* put the return code back */
+    regs->a0 = ret;
+
+    /* check to see if there are any pending signals */
+    thread_process_pending_signals();
+
+    /* re-disable interrupts on the way out */
+    arch_disable_ints();
+
+    ktrace_tiny(TAG_SYSCALL_EXIT, ((uint32_t)syscall_num << 8) | arch_curr_cpu_num());
 }
 
 #endif

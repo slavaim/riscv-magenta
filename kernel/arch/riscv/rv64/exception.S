@@ -44,21 +44,24 @@ END(excp_vect_table)
 	.altmacro
 	.macro SAVE_ALL
     /*
-      registers usage
-        s0 - a frame pointer to facilitate debugging
-        sp - pt_regs structure allocated on the stack
-        s4 - memory address for the exception, i.e. badaddr
-        s5 - cause of the exception, i.e. scause register
-      stack layout
-        gdb frame   u8[GDB_FRAME_SZ]
-        pt_regs     u8[PT_SIZE]
-    */
+     * registers usage
+     *   s0 - a frame pointer to facilitate debugging
+     *   sp - pt_regs structure allocated on the stack
+	 *   s3 - $pc when the exception happened or scall address
+     *   s4 - memory address for the exception, i.e. badaddr
+     *   s5 - cause of the exception, i.e. scause register
+     * stack layout
+     *   gdb frame   u8[GDB_FRAME_SZ]
+     *   pt_regs     u8[PT_SIZE]
+     */
 	LOCAL _restore_kernel_sp
 	LOCAL _save_context
 
-	/* If coming from userspace, preserve the user stack pointer and load
-	   the kernel stack pointer.  If we came from the kernel, sscratch
-	   will contain 0, and we should continue on the current stack. */
+	/* 
+	 * If coming from userspace, preserve the user stack pointer and load
+	 * the kernel stack pointer.  If we came from the kernel, sscratch
+	 * will contain 0, and we should continue on the current stack. 
+	 */
 	csrrw sp, sscratch, sp
 	bnez sp, _save_context
 
@@ -67,9 +70,11 @@ _restore_kernel_sp:
 
 _save_context:
 
-    /* allocate space on the stack for
-      - gdb frame
-      - pt_regs structure */
+    /*
+	 * allocate space on the stack for
+     * - gdb frame
+     * - pt_regs structure
+	 */
 	addi  sp,  sp, -(PT_SIZE + GDB_FRAME_SZ)
 
     /* set a gdb frame */
@@ -111,8 +116,10 @@ _save_context:
 	REG_S x30, PT_T5(sp)
 	REG_S x31, PT_T6(sp)
 
-	/* Disable FPU to detect illegal usage of
-	   floating point in kernel space */
+	/*
+	 * Disable FPU to detect illegal usage of
+	 * floating point in kernel space
+	 */
 	li t0, SR_FS
 
     /* s0 is used as a frame pointer, do not 
@@ -166,9 +173,11 @@ _save_context:
 	REG_L x30, PT_T5(sp)
 	REG_L x31, PT_T6(sp)
 
-    /* there is no need to unwind the gdb frame
-       as $s0 and $sp in pt_regs have values at
-       the moment of interruption by exception */
+    /*
+	 * there is no need to unwind the gdb frame
+     * as $s0 and $sp in pt_regs have values at
+     * the moment of interruption by exception
+	 */
 
     /* restore $sp, this might be a user $sp */
 	REG_L x2,  PT_SP(sp)
@@ -185,16 +194,20 @@ _save_context:
 FUNCTION(handle_exception)
 	SAVE_ALL
 
-	/* Set sscratch register to 0, so that if a recursive exception
-	   occurs, the exception vector knows it came from the kernel */
+	/*
+	* Set sscratch register to 0, so that if a recursive exception
+	* occurs, the exception vector knows it came from the kernel
+	*/
 	csrw sscratch, x0
 
-	/* Compute the address of the current thread_info,
-      if we enter from a user mode the tp register
-      contains a user mode value but the stack has been
-      switch using the scratch register so we compute
-      the thread_info address on the stack and fetch
-      the current thread pointer from the thread_info */
+	/*
+	 * Compute the address of the current thread_info,
+     * if we enter from a user mode the tp register
+     * contains a user mode value but the stack has been
+     * switch using the scratch register so we compute
+     * the thread_info address on the stack and fetch
+     * the current thread pointer from the thread_info
+	 */
 	li tp, ~(ARCH_DEFAULT_STACK_SIZE-1)
 	and tp, tp, sp
 
@@ -202,15 +215,17 @@ FUNCTION(handle_exception)
 	REG_L tp, TI_THREAD(tp)
 
 1:	la ra, ret_from_exception
-	/* MSB of cause differentiates between
-	   interrupts and exceptions */
+	/*
+	 * MSB of cause differentiates between
+	 * interrupts and exceptions
+	 */
 	bge s5, zero, 1f
 
 	/* Handle interrupts */
 	slli a0, s5, 1
-	srli a0, a0, 1
-	move a1, sp /* pt_regs */
-	tail do_IRQ
+	srli a0, a0, 1 /* $a0 == cause */
+	move a1, sp    /* $a1 == pt_regs */
+	tail do_IRQ    /* $ra == ret_from_exception */
 1:
 	/* Handle syscalls */
 	li t0, EXC_SYSCALL
@@ -220,41 +235,47 @@ FUNCTION(handle_exception)
 	slli t0, s5, LGPTR
 	la t1, excp_vect_table
 	la t2, excp_vect_table_end
-	move a0, sp /* pt_regs */
+	move a0, sp /* $a0 == pt_regs */
 	add t0, t1, t0
 	/* Check if exception code lies within bounds */
 	bgeu t0, t2, 1f
 	REG_L t0, 0(t0)
-	jr t0
+	jr t0 /* $ra == ret_from_exception */
 1:
-	tail do_trap_unknown
+	tail do_trap_unknown /* $ra == ret_from_exception */
 
 handle_syscall:
-	/* Advance SEPC to avoid executing the original
-	   scall instruction on sret */
-	addi s2, s2, 0x4
-	REG_S s2, PT_SEPC(sp)
+	/* 
+	 * Advance SEPC to avoid executing the original
+	 * scall instruction on sret
+	 */
+	addi  s3, s3, 0x4
+	REG_S s3, PT_SEPC(sp)
 	/* System calls run with interrupts enabled */
 	csrs sstatus, SR_IE
-check_syscall_nr:
-    /* TO_DO_RISCV */
-    PANIC
+	move a0, sp /* $a0 == pt_regs */
+	la ra, ret_from_syscall
+	tail riscv_syscall  /* $ra == ret_from_syscall */
 
 ret_from_syscall:
-	/* Set user a0 to kernel a0 */
-	REG_S a0, PT_A0(sp)
-	/* TO_DO_RISCV */
-    PANIC
-
 ret_from_exception:
-	REG_L s1, PT_SSTATUS(sp)
+
+	/*
+	 * disable interrupts enabled before executing syscall
+	 * or inside an exception handler
+	 */
 	csrc sstatus, SR_IE
-	andi s1, s1, SR_PS
-	bnez s1, restore_all
+
+	/* check if previous mode is supervisor */
+	REG_L s1, PT_SSTATUS(sp)
+	andi  s1, s1, SR_PS
+	bnez  s1, restore_all
 
 resume_userspace:
-	/* Interrupts must be disabled here */
-	/* Save unwound kernel stack pointer in sscratch */
+	/*
+	 * Interrupts must be disabled here
+	 * Save unwound kernel stack pointer in sscratch
+	 */
 	addi s1, sp, (PT_SIZE + GDB_FRAME_SZ)
 	csrw sscratch, s1
 restore_all:

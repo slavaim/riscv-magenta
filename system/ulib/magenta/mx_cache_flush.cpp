@@ -31,6 +31,18 @@ mx_status_t _mx_cache_flush(const void* addr, size_t len, uint32_t flags) {
         }
     }
 
+#elif defined(__riscv)
+
+    if (flags & MX_CACHE_FLUSH_INSN) {
+        __asm__ __volatile("fence.i" "\n\t"
+	                       "sfence.vm" "\n\t"
+                           :::"memory");
+    }
+
+    if (flags & MX_CACHE_FLUSH_DATA) {
+        // TO_DO_RISCV
+    }
+
 #else
 
 # error what architecture?

@@ -10,8 +10,10 @@ ifndef ARCH_riscv_TOOLCHAIN_INCLUDED
 ARCH_riscv_TOOLCHAIN_INCLUDED := 1
 
 ifndef ARCH_riscv_TOOLCHAIN_PREFIX
-ARCH_riscv_TOOLCHAIN_PREFIX := riscv64-unknown-elf-
+#ARCH_riscv_TOOLCHAIN_PREFIX := riscv64-unknown-elf-
+ARCH_riscv_TOOLCHAIN_PREFIX := riscv64-unknown-linux-gnu-
 endif
+
 FOUNDTOOL=$(shell which $(ARCH_riscv_TOOLCHAIN_PREFIX)gcc)
 
 ifeq ($(FOUNDTOOL),)

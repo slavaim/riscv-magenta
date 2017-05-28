@@ -83,6 +83,16 @@ static inline void arch_spinloop_signal(void)
     //
 }
 
+// Log architecture-specific data for process creation.
+// This can only be called after the process has been created and before
+// it is running: |aspace| is assumed to live across the call.
+// Alas we can't use mx_koid_t here as the arch layer is at a lower level
+// than magenta.
+struct arch_aspace;
+static inline void arch_trace_process_create(uint64_t pid, const struct arch_aspace* aspace) {
+    // nothing to do
+}
+
 #define mb()        do{ __asm__ __volatile__ ("fence" : : : "memory"); }while(0);
 #define wmb()       do{ mb() }while(0);
 #define rmb()       do{ mb() }while(0);

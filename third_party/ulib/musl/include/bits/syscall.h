@@ -2,6 +2,8 @@
 #include "x86_64/syscall.h"
 #elif defined(__aarch64__)
 #include "aarch64/syscall.h"
+#elif defined(__riscv) && __riscv_xlen == 64
+#include "riscv64/syscall.h"
 #else
 #error Unsupported architecture!
 #endif

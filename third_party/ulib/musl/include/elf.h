@@ -210,6 +210,7 @@ typedef struct {
 #define EM_MICROBLAZE 189
 #define EM_TILEGX 191
 #define EM_NUM 192
+#define EM_RISCV 243
 #define EM_ALPHA 0x9026
 
 #define EV_NONE 0

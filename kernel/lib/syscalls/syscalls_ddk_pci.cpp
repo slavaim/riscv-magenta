@@ -574,7 +574,7 @@ mx_status_t sys_pci_set_irq_mode(mx_handle_t dev_handle,
     return pci_device->SetIrqMode((mx_pci_irq_mode_t)mode, requested_irq_count);
 }
 #else  // WITH_DEV_PCIE
-mx_status_t sys_pci_init(mx_handle_t, user_ptr<<const>mx_pci_init_arg_t>, uint32_t) {
+mx_status_t sys_pci_init(mx_handle_t, user_ptr<const mx_pci_init_arg_t>, uint32_t) {
     shutdown_early_init_console();
     return ERR_NOT_SUPPORTED;
 }

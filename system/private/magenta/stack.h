@@ -27,6 +27,8 @@ static inline uintptr_t compute_initial_stack_pointer(uintptr_t base,
     sp -= 8;
 #elif defined(__arm__) || defined(__aarch64__)
     // The ARMv7 and ARMv8 ABIs both just require that SP be aligned.
+#elif defined(__riscv)
+    // The RISC-V ABIs both just require that SP be aligned.
 #else
 # error what machine?
 #endif
