@@ -12,5 +12,5 @@ SUBARCH := riscv-rv64
 MODULES +=
 
 #include kernel/project/virtual/test.mk
-#include kernel/project/virtual/user.mk
+include kernel/project/virtual/user.mk
 include kernel/project/target/qemu-riscv-rv64.mk
