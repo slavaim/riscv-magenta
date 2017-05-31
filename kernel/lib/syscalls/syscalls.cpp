@@ -179,8 +179,16 @@ void riscv_syscall(struct pt_regs*  regs)
     LTRACEF_LEVEL(2, "num %" PRIu64 "\n", syscall_num);
 
     /* call the routine */
-    uint64_t ret = invoke_syscall(syscall_num, regs->a0, regs->a1, regs->a2, regs->a3,
-                                  regs->a4, regs->a5, regs->a6, regs->a7);
+    uint64_t ret = invoke_syscall(syscall_num,
+                                  regs->sepc,
+                                  regs->a0,
+                                  regs->a1,
+                                  regs->a2,
+                                  regs->a3,
+                                  regs->a4,
+                                  regs->a5,
+                                  regs->a6,
+                                  regs->a7);
 
     LTRACEF_LEVEL(2, "ret %#" PRIx64 "\n", ret);
 

@@ -46,6 +46,9 @@ typedef struct mx_guest_gpr {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
+#elif __riscv && __riscv_xlen == 64
+    uint64_t x[32];
+    uint64_t pc;
 #else
 #error Unsupported architecture
 #endif
@@ -89,6 +92,8 @@ typedef struct mx_guest_mem_trap {
     uint8_t instruction_length;
     // NOTE: x86 instructions are guaranteed to be 15 bytes or fewer.
     uint8_t instruction_buffer[15];
+#elif __riscv && __riscv_xlen == 64
+    uint32_t instruction;
 #else
 #error Unsupported architecture
 #endif

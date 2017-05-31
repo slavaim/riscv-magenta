@@ -18,13 +18,13 @@ syscall_entry_begin mx_futex_wake_handle_close_thread_exit
     addi sp, sp, -8
     sd   a2, 0(sp)
 
-    magenta_syscall MX_SYS_futex_wake
+    magenta_syscall MX_SYS_futex_wake, mx_futex_wake, mx_futex_wake_handle_close_thread_exit
     bnez a0, .Lfutex_wake_fail
 
     // Now the stack might be gone and we can never return!
 
     ld a0, 0(sp)
-    magenta_syscall MX_SYS_handle_close
+    magenta_syscall MX_SYS_handle_close, mx_thread_exit, mx_futex_wake_handle_close_thread_exit
     bnez a0, .Lhandle_close_fail
 
     magenta_syscall MX_SYS_thread_exit

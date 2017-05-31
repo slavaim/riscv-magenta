@@ -18,16 +18,16 @@ syscall_entry_begin mx_vmar_unmap_handle_close_thread_exit
     addi sp, sp, -8
     sd   a3, 0(sp)
 
-    magenta_syscall MX_SYS_vmar_unmap
+    magenta_syscall MX_SYS_vmar_unmap, mx_vmar_unmap, mx_vmar_unmap_handle_close_thread_exit
     bnez a0, .Lvmar_unmap_fail
 
     // Now the stack is gone and we can never return!
 
     ld a0, 0(sp)
-    magenta_syscall MX_SYS_handle_close
+    magenta_syscall MX_SYS_handle_close, mx_handle_close, mx_vmar_unmap_handle_close_thread_exit
     bnez a0, .Lhandle_close_fail
 
-    magenta_syscall MX_SYS_thread_exit
+    magenta_syscall MX_SYS_thread_exit, mx_thread_exit, mx_vmar_unmap_handle_close_thread_exit
 
     // It should be impossible to get here.
 .Lthread_exit_returned:
