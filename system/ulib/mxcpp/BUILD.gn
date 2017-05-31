@@ -9,8 +9,7 @@ config("mxcpp_config") {
 static_library("mxcpp") {
   # Don't forget to update rules.mk as well for the Magenta build.
   sources = [
-    "include/magenta/cpp.h",
-    "include/magenta/new.h",
+    "include/mxcpp/new.h",
     "new.cpp",
     "pure_virtual.cpp",
   ]

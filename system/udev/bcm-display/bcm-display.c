@@ -13,6 +13,7 @@
 #include <ddk/binding.h>
 #include <ddk/protocol/bcm-bus.h>
 #include <ddk/protocol/display.h>
+#include <ddk/protocol/platform-device.h>
 
 #include <magenta/syscalls.h>
 #include <magenta/assert.h>
@@ -120,17 +121,18 @@ static mx_status_t bcm_vc_get_framebuffer(bcm_display_t* display, bcm_fb_desc_t*
     return sizeof(bcm_fb_desc_t);
 }
 
-mx_status_t bcm_display_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
+mx_status_t bcm_display_bind(void* ctx, mx_device_t* parent, void** cookie) {
     bcm_display_t* display = calloc(1, sizeof(bcm_display_t));
     if (!display) {
         return ERR_NO_MEMORY;
     }
 
-    display->busdev = parent;
-    if (device_op_get_protocol(parent, MX_PROTOCOL_BCM_BUS, (void**)&display->bus_proto)) {
+    mx_status_t status = platform_device_find_protocol(parent, MX_PROTOCOL_BCM_BUS, &display->busdev,
+                                                       (void**)&display->bus_proto);
+    if (status != NO_ERROR) {
         printf("bcm_display_bind can't find MX_PROTOCOL_BCM_BUS\n");
         free(display);
-        return ERR_NOT_SUPPORTED;
+        return status;
     }
 
     bcm_fb_desc_t framebuff_descriptor;
@@ -164,13 +166,12 @@ mx_status_t bcm_display_bind(mx_driver_t* driver, mx_device_t* parent, void** co
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "bcm-vc-fbuff",
         .ctx = display,
-        .driver = driver,
         .ops = &empty_device_proto,
         .proto_id = MX_PROTOCOL_DISPLAY,
         .proto_ops = &vc_display_proto,
     };
 
-    mx_status_t status = device_add(parent, &vc_fbuff_args, &display->mxdev);
+    status = device_add(parent, &vc_fbuff_args, &display->mxdev);
     if (status != NO_ERROR) {
         free(display);
     }
@@ -183,7 +184,7 @@ static mx_driver_ops_t bcm_display_driver_ops = {
 };
 
 MAGENTA_DRIVER_BEGIN(bcm_display, bcm_display_driver_ops, "magenta", "0.1", 3)
-    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
-    BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
-    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_DISPLAY),
+    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PLATFORM_DEV),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_BROADCOMM),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_BROADCOMM_DISPLAY),
 MAGENTA_DRIVER_END(bcm_display)

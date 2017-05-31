@@ -23,7 +23,7 @@
 #include <mxtl/auto_call.h>
 #include <mxtl/intrusive_double_list.h>
 #include <mxtl/type_support.h>
-#include <new.h>
+#include <mxalloc/new.h>
 #include <safeint/safe_math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -399,6 +399,11 @@ status_t VmAspace::AllocPhysical(const char* name, size_t size, void** ptr, uint
     // TODO: add new flag to precisely mean pre-map
     vmm_flags |= VMM_FLAG_COMMIT;
 
+    // Apply the cache policy
+    if (vmo->SetMappingCachePolicy(arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK) != NO_ERROR)
+        return ERR_INVALID_ARGS;
+
+    arch_mmu_flags &= ~ARCH_MMU_FLAG_CACHE_MASK;
     return MapObjectInternal(mxtl::move(vmo), name, 0, size, ptr, align_pow2, vmm_flags,
                      arch_mmu_flags);
 }
@@ -578,5 +583,10 @@ void VmAspace::InitializeAslr() {
 uintptr_t VmAspace::vdso_base_address() const {
     AutoLock a(&lock_);
     return VDso::base_address(vdso_code_mapping_);
+}
+
+uintptr_t VmAspace::vdso_code_address() const {
+    AutoLock a(&lock_);
+    return vdso_code_mapping_ ? vdso_code_mapping_->base() : 0;
 }
 #endif

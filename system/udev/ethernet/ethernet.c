@@ -42,12 +42,6 @@ typedef struct ethdev0 {
 
     mtx_t lock;
 
-    // ethdev0 can only *really* be released
-    // when it is removed *and* all the instances
-    // (which depend on it for locking and global
-    // state) are gone.
-    uint32_t refcount;
-
     // active and idle instances (ethdev_t)
     list_node_t list_active;
     list_node_t list_idle;
@@ -56,17 +50,6 @@ typedef struct ethdev0 {
 
     mx_device_t* mxdev;
 } ethdev0_t;
-
-static void eth0_downref(ethdev0_t* edev0) {
-    mtx_lock(&edev0->lock);
-    edev0->refcount--;
-    if (edev0->refcount == 0) {
-        mtx_unlock(&edev0->lock);
-        free(edev0);
-    } else {
-        mtx_unlock(&edev0->lock);
-    }
-}
 
 // transmit thread has been created
 #define ETHDEV_TX_THREAD (1u)
@@ -514,7 +497,6 @@ static void eth_kill_locked(ethdev_t* edev) {
 
 static void eth_release(void* ctx) {
     ethdev_t* edev = ctx;
-    eth0_downref(edev->edev0);
     free(edev);
 }
 
@@ -537,8 +519,6 @@ static mx_protocol_device_t ethdev_ops = {
     .release = eth_release,
 };
 
-mx_driver_t _driver_ethernet;
-
 static mx_status_t eth0_open(void* ctx, mx_device_t** out, uint32_t flags) {
     ethdev0_t* edev0 = ctx;
 
@@ -552,7 +532,6 @@ static mx_status_t eth0_open(void* ctx, mx_device_t** out, uint32_t flags) {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "ethernet",
         .ctx = edev,
-        .driver = &_driver_ethernet,
         .ops = &ethdev_ops,
         .proto_id = MX_PROTOCOL_ETHERNET,
         .flags = DEVICE_ADD_INSTANCE,
@@ -565,7 +544,6 @@ static mx_status_t eth0_open(void* ctx, mx_device_t** out, uint32_t flags) {
     }
 
     mtx_lock(&edev0->lock);
-    edev0->refcount++;
     list_add_tail(&edev0->list_idle, &edev->node);
     mtx_unlock(&edev0->lock);
 
@@ -595,7 +573,7 @@ static void eth0_unbind(void* ctx) {
 
 static void eth0_release(void* ctx) {
     ethdev0_t* edev0 = ctx;
-    eth0_downref(edev0);
+    free(edev0);
 }
 
 static mx_protocol_device_t ethdev0_ops = {
@@ -608,7 +586,7 @@ static mx_protocol_device_t ethdev0_ops = {
 
 #define BAD_FEATURES (ETHMAC_FEATURE_RX_QUEUE | ETHMAC_FEATURE_TX_QUEUE)
 
-static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
+static mx_status_t eth_bind(void* ctx, mx_device_t* dev, void** cookie) {
     ethdev0_t* edev0;
     if ((edev0 = calloc(1, sizeof(ethdev0_t))) == NULL) {
         return ERR_NO_MEMORY;
@@ -637,16 +615,12 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
     list_initialize(&edev0->list_active);
     list_initialize(&edev0->list_idle);
 
-    // start with a reference that will live until release()
-    edev0->refcount = 1;
-
     edev0->mac = dev;
 
     device_add_args_t args = {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "ethernet",
         .ctx = edev0,
-        .driver = drv,
         .ops = &ethdev0_ops,
         .proto_id = MX_PROTOCOL_ETHERNET,
     };

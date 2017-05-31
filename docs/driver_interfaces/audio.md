@@ -55,7 +55,7 @@ including.
  * Format negotiation
  * Hardware gain control
  * Determining outboard latency.
- * Plug detection notification (TBD)
+ * Plug detection notification.
  * Access control capability detection and signalling
  * Policy level stream purpose indication/Stream Association (TBD)
 
@@ -245,7 +245,7 @@ Notes
 
 In order to select a stream format, applications send an
 `AUDIO2_STREAM_CMD_SET_FORMAT` message over the stream channel.  In the message,
-for uncompressed audio streamds, the application specifies
+for uncompressed audio streams, the application specifies
  * The frame rate of the stream in Hz using the `frames_per_second` field (in the
    case of an uncompressed audio stream).
  * The number of channels packed into each frame using the `channels` field.
@@ -274,11 +274,69 @@ channel as is mandated for a successful operation.
 
 ### Hardware gain control capability reporting
 
-> TODO: specify how this is done
+In order to determine a stream's gain control capabilities, applications send an
+`AUDIO2_STREAM_CMD_GET_GAIN` message over the stream channel.  No parameters
+need to be supplied with this message.  All stream drivers **must** respond to
+this message, regardless of whether or not the stream hardware is capable of any
+gain control.  All gain values are expressed using 32 bit floating point numbers
+expressed in dB.
+
+Drivers respond to this message with values which indicate the current gain
+settings of the stream, as well as the stream's gain control capabilities.
+Current gain settings are expressed using a bool/float tuple indicating if the
+stream is currently muted or not along with the current dB gain of the stream.
+Gain capabilities consist of bool and 3 floats.  The bool indicates whether or
+not the stream can be muted.  The floats give the minimum and maximum gain
+settings, along with the `gain step size`.  The `gain step size` indicates the
+smallest increment with which the gain can be controlled counting from the
+minimum gain value.
+
+For example, an amplifier which has 5 gain steps of 7.5 dB each and a maximum
+0 dB gain would indicate a range of (-30.0, 0.0) and a step size of 7.5.
+Amplifiers capable of functionally continuous gain control **may** encode their
+gain step size as 0.0.
+
+Regardless of mute capabilities, drivers for fixed gain streams **must** report
+their min/max gain as (0.0, 0.0).  The gain step size is meaningless in this
+situation, but drivers **should** report their step size as 0.0.
 
 ### Setting hardware gain control levels
 
-> TODO: specify how this is done
+In order to change a stream's current gain settings, applications send an
+`AUDIO2_STREAM_CMD_SET_GAIN` message over the stream channel.  Two parameters
+are supplied with this message, a set of flags which control the request, and a
+float indicating the dB gain which should be applied to the stream.
+
+Three valid flags are currently defined.
+ * `AUDIO2_SGF_MUTE_VALID`.  Set when the application wishes to set the
+   muted/un-muted state of the stream.  Clear if the application wishes to
+   preserve the current muted/un-muted state.
+ * `AUDIO2_SGF_GAIN_VALID`.  Set when the application wishes to set the
+   dB gain state of the stream.  Clear if the application wishes to
+   preserve the current gain state.
+ * `AUDIO2_SGF_MUTE`.  Indicates the application's desired mute/un-mute state
+   for the stream.  Significant only if `AUDIO2_SGF_MUTE_VALID` is also set.
+
+Drivers **must** fail the request with an `ERR_INVALID_ARGS` result if the
+application's request is incompatible with the stream's capabilities.
+Incompatible requests include.
+ * The requested gain is less than the minimum support gain for the stream.
+ * The requested gain is more than the maximum support gain for the stream.
+ * Mute was requested, but the stream does not support an explicit mute.
+
+Presuming that the request is valid, drivers **should** round the request to the
+nearest supported gain step size.  For example, if a stream can control its
+gain on the range from -60.0 to 0.0 dB, a request to set the gain to -33.3 dB
+will result in a gain of -33.5 being applied.  A request for a gain of -33.2 dB
+will result in a gain of -33.0 being applied.
+
+Applications **may** choose not to receive an acknowledgement of a SET_GAIN
+command by setting the `AUDIO2_FLAG_NO_ACK` flag on their command.  No response
+message will be sent to the application, regardless of the success or failure of
+the command.  If an acknowledgement was requested by the application, drivers
+respond with a message indicating the success or failure of the operation as
+well as the current gain/mute status of the system (regardless of whether the
+request was a success).
 
 ## Determining outboard latency
 
@@ -286,10 +344,78 @@ channel as is mandated for a successful operation.
 
 ## Plug Detection
 
-> TODO: specify how asynchronous plug detection messages will be sent by the
-> driver to applications will be sent to applications by drivers.  In
-> particular, should such notifications be sent at all, or should
-> stream/ring-buffer channels simply be closed when connections are unplugged.
+In addition to streams being published/unpublished in response to being
+connected or disconnected to/from their bus, streams may have the ability to be
+plugged or unplugged at any given point in time.  For example, a set of USB
+headphones publish a new output stream when connected to USB, but be "hardwired"
+from a plug detection standpoint.  A different USB audio adapter with a standard
+3.5mm phono jack might publish an output stream when connected via USB, but
+might change its plugged/unplugged state as the user plugs/unplugs devices via
+the 3.5mm jack.
+
+The ability to query the currently plugged or unplugged state of a stream, and
+to register for asynchonous notifications of plug state changes (if supported)
+is handled via plug detection messages.
+
+### AUDIO2_STREAM_CMD_PLUG_DETECT
+
+In order to determine a stream's plug detection capabilities, current plug
+state, and to enable or disable for asynchronous plug detection notifications,
+applications send a `AUDIO2_STREAM_CMD_PLUG_DETECT` command over the stream
+channel.  Drivers respond with a set of `audio2_pd_notify_flags_t`, along with a
+timestamp referenced from MX_CLOCK_MONOTONIC indicating the last time the plug
+state changed.
+
+Three valid flags are currently defined.
+ * `AUDIO2_PDNF_HARDWIRED`.  Set when the stream hardware is considered to be
+   "hardwired".  In other words, the stream is considered to be connected as
+   long as the device is published.  Examples include a set of built in
+   speakers, a pair of USB headphones, or a plug-able audio device with no plug
+   detect functionality.
+ * `AUDIO2_PDNF_CAN_NOTIFY`.  Set when the stream hardware is capable of
+   asynchronously detecting that a device's plug state has changed and sending a
+   notification message if requested by the application.
+ * `AUDIO2_PDNF_PLUGGED`  Set when the stream hardware considers the
+   stream to be currently in the "plugged-in" state.
+
+Drivers for "hardwired" streams **must not** set the `CAN_NOTIFY` flag, and
+**must** set the `PLUGGED` flag.  In addition, the plug state time of the
+response to the `PLUG_DETECT` message **should** always be set to the time at
+which the stream device was published by the driver.
+
+Applications **may** choose not to receive an acknowledgement of a `PLUG_DETECT`
+command by setting the `AUDIO2_FLAG_NO_ACK` flag on their command.  No response
+message will be sent to the application, regardless of the success or failure of
+the command.  The most common use for this would be when an application wanted
+to disable asynchronous plug state detection messages and was not actually
+interested in the current plugged/unplugged state of the stream.
+
+### AUDIO2_STREAM_PLUG_DETECT_NOTIFY
+
+Applications may request that streams send them asynchronous notifications of
+plug state changes using the flags field of the `AUDIO2_STREAM_CMD_PLUG_DETECT`
+command.
+
+Two valid flags are currently defined.
+ * `AUDIO2_PDF_ENABLE NOTIFICATIONS` Set by applications in order to
+   request that `AUDIO2_STREAM_PLUG_DETECT_NOTIFY`
+ * `AUDIO2_PDF_DISABLE_NOTIFICATIONS` Set by applications in order to
+   stop new `AUDIO2_STREAM_PLUG_DETECT_NOTIFY` messages from being sent.
+
+In order to request the current plug state without altering the current
+notification enable/disable state, clients simply set neither flag by passing
+either 0, or the value `AUDIO2_PDF_NONE`.  Clients **should** not set both flags
+at the same time.  If they do, drivers **must** interpret this to mean that the
+final state of the system should be disabled.
+
+Applications which request asynchronous notifications of plug state changes
+**should** always check the `CAN_NOTIFY` flag in the driver response.  Streams
+may be capable of plug detection (`HARDWIRED` is not set), but may not be
+capable of detecting plug state changes asynchronously.  Applications may still
+learn of plug state changes, but will need to do so by polling with repeated
+`PLUG_DETECT` commands.  Drivers for streams which do not set the `CAN_NOTIFY`
+flag are free to ignore enable/disable notification requests from applications,
+and **must** not ever send an `AUDIO2_STREAM_PLUG_DETECT_NOTIFY` message.
 
 ## Access control capability detection and signaling
 

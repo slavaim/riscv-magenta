@@ -14,7 +14,7 @@
 __BEGIN_CDECLS;
 
 typedef struct mx_device mx_device_t;
-typedef struct mx_driver mx_driver_t;
+typedef struct mx_driver_rec mx_driver_rec_t;
 typedef struct mx_device_prop mx_device_prop_t;
 
 typedef struct mx_protocol_device mx_protocol_device_t;
@@ -46,6 +46,7 @@ struct mx_device {
 
     mx_handle_t DDK_PRIVATE(event);
     mx_handle_t DDK_PRIVATE(rpc);
+    mx_handle_t DDK_PRIVATE(resource);
 
     // most devices implement a single
     // protocol beyond the base device protocol
@@ -53,13 +54,13 @@ struct mx_device {
     void* DDK_PRIVATE(protocol_ops);
 
     // driver that has published this device
-    mx_driver_t* DDK_PRIVATE(driver);
+    mx_driver_rec_t* DDK_PRIVATE(driver);
 
     // parent in the device tree
     mx_device_t* DDK_PRIVATE(parent);
 
     // driver that is bound to this device, NULL if unbound
-    mx_driver_t* DDK_PRIVATE(owner);
+    mx_driver_rec_t* DDK_PRIVATE(owner);
 
     void* DDK_PRIVATE(owner_cookie);
 
@@ -69,13 +70,8 @@ struct mx_device {
     // list of this device's children in the device tree
     struct list_node DDK_PRIVATE(children);
 
-    // for list of all unmatched devices, if not bound
-    // TODO: use this for general lifecycle tracking
-    struct list_node DDK_PRIVATE(unode);
-
-    // properties for driver binding
-    mx_device_prop_t* DDK_PRIVATE(props);
-    uint32_t DDK_PRIVATE(prop_count);
+    // list of this device's instances
+    struct list_node DDK_PRIVATE(instances);
 
     // iostate
     void* DDK_PRIVATE(ios);
@@ -106,8 +102,8 @@ typedef struct mx_protocol_device {
     // that child device instead).  If dev_out is not modified the device itself
     // is opened.
     //
-    // The per-instance child should be created with device_create(),
-    // but added with device_add_instance() instead of device_add().
+    // The per-instance child should be created with the DEVICE_ADD_INSTANCE flag set
+    // in the arguments to device_add().
     //
     // open is also called whenever a device is cloned (a new handle is obtained).
     mx_status_t (*open)(void* ctx, mx_device_t** dev_out, uint32_t flags);
@@ -173,6 +169,13 @@ static inline const char* device_get_name(mx_device_t* dev) {
 
 static inline mx_device_t* device_get_parent(mx_device_t* dev) {
     return dev->DDK_PRIVATE(parent);
+}
+
+static inline mx_handle_t device_get_resource(mx_device_t* dev) {
+    // the resource handle is read once and consumed immediately
+    mx_handle_t result = dev->DDK_PRIVATE(resource);
+    dev->DDK_PRIVATE(resource) = MX_HANDLE_INVALID;
+    return result;
 }
 
 mx_status_t device_op_get_protocol(mx_device_t* dev, uint32_t proto_id, void** protocol);

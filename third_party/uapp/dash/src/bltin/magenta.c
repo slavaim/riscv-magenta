@@ -375,7 +375,7 @@ static int mxc_rm_recursive(int atfd, char* path, bool force) {
         return force ? 0 : -1;
     }
     if (S_ISDIR(st.st_mode)) {
-        int dfd = openat(atfd, path, 0, O_DIRECTORY | O_RDWR);
+        int dfd = openat(atfd, path, 0, O_RDONLY | O_DIRECTORY);
         if (dfd < 0) {
             return -1;
         }
@@ -529,15 +529,4 @@ int mxc_k(int argc, char** argv) {
     }
 
     return send_dmctl(buffer, command_length);
-}
-
-int mxc_at(int argc, char** argv) {
-    char command[1024];
-    char* command_end = join(command, sizeof(command), argc, argv);
-    if (!command_end) {
-        fprintf(stderr, "error: application environment command too long\n");
-        return -1;
-    }
-
-    return send_dmctl(command, command_end - command);
 }

@@ -313,6 +313,19 @@ syscall port_cancel
     (handle: mx_handle_t, source: mx_handle_t, key: uint64_t)
     returns (mx_status_t);
 
+# Timers
+
+syscall timer_create
+    (options: uint32_t)
+    returns (mx_status_t, out: mx_handle_t);
+
+syscall timer_start
+    (handle: mx_handle_t, deadline: mx_time_t, period: mx_duration_t, slack: mx_duration_t)
+    returns (mx_status_t);
+
+syscall timer_cancel(handle: mx_handle_t)
+    returns (mx_status_t);
+
 # Memory management
 
 syscall vmo_create
@@ -343,6 +356,10 @@ syscall vmo_op_range
 syscall vmo_clone
     (handle: mx_handle_t, options: uint32_t, offset: uint64_t, size: uint64_t)
     returns (mx_status_t, out: mx_handle_t);
+
+syscall vmo_set_cache_policy
+    (handle: mx_handle_t, cache_policy: uint32_t)
+    returns (mx_status_t);
 
 # Address space management
 
@@ -548,6 +565,14 @@ syscall pci_map_mmio
     (handle: mx_handle_t, bar_num: uint32_t, cache_policy: mx_cache_policy_t)
     returns (mx_status_t, out_handle: mx_handle_t);
 
+syscall pci_get_bar
+    (handle: mx_handle_t, bar_num: uint32_t, out_bar: mx_pci_resource_t[1] OUT)
+    returns (mx_status_t);
+
+syscall pci_get_config
+    (handle: mx_handle_t, out_config: mx_pci_resource_t[1] OUT)
+    returns (mx_status_t);
+
 syscall pci_io_write
     (handle: mx_handle_t, bar_num: uint32_t, offset: uint32_t, len: uint32_t, value: uint32_t)
     returns (mx_status_t);
@@ -637,9 +662,9 @@ syscall system_mexec
 # Test syscalls (keep at the end)
 
 syscall syscall_test_0() returns (mx_status_t);
-syscall syscall_test_1(a:int) returns (mx_status_t);
-syscall syscall_test_2(a:int, b:int) returns (mx_status_t);
-syscall syscall_test_3(a:int, b:int, c:int) returns (mx_status_t);
+syscall syscall_test_1 test_category1 (a:int) returns (mx_status_t);
+syscall syscall_test_2 test_category1 (a:int, b:int) returns (mx_status_t);
+syscall syscall_test_3 test_category2 (a:int, b:int, c:int) returns (mx_status_t);
 syscall syscall_test_4(a:int, b:int, c:int, d:int) returns (mx_status_t);
 syscall syscall_test_5(a:int, b:int, c:int, d:int, e:int) returns (mx_status_t);
 syscall syscall_test_6(a:int, b:int, c:int, d:int, e:int, f:int) returns (mx_status_t);

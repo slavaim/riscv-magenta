@@ -11,10 +11,8 @@ MODULE_TYPE := userlib
 MODULE_SRCS := \
     $(LOCAL_DIR)/message.c \
     $(LOCAL_DIR)/mutex.c \
-    $(LOCAL_DIR)/once.c \
     $(LOCAL_DIR)/processargs.c \
     $(LOCAL_DIR)/thread.c \
-    $(LOCAL_DIR)/sysinfo.c \
 
 MODULE_LIBS += \
     system/ulib/magenta

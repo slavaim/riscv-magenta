@@ -16,6 +16,7 @@
 #include <magenta/compiler.h>
 #include <magenta/process.h>
 #include <magenta/processargs.h>
+#include <mxtl/unique_ptr.h>
 
 #include "minfs-private.h"
 #ifndef __Fuchsia__
@@ -24,26 +25,26 @@
 
 #ifndef __Fuchsia__
 
-static minfs::Bcache* the_block_cache;
 extern mxtl::RefPtr<minfs::VnodeMinfs> fake_root;
 
 int run_fs_tests(int argc, char** argv);
-void drop_cache() {
-    the_block_cache->Invalidate();
-}
 
 #endif
 
 namespace {
 
-int do_minfs_check(minfs::Bcache* bc, int argc, char** argv) {
-    return minfs_check(bc);
+int do_minfs_check(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+#ifdef __Fuchsia__
+    return minfs_check(mxtl::move(bc));
+#else
+    return -1;
+#endif
 }
 
 #ifdef __Fuchsia__
-int do_minfs_mount(minfs::Bcache* bc, int argc, char** argv) {
+int do_minfs_mount(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     mxtl::RefPtr<minfs::VnodeMinfs> vn;
-    if (minfs_mount(&vn, bc) < 0) {
+    if (minfs_mount(&vn, mxtl::move(bc)) < 0) {
         return -1;
     }
 
@@ -57,30 +58,29 @@ int do_minfs_mount(minfs::Bcache* bc, int argc, char** argv) {
     return 0;
 }
 #else
-int io_setup(minfs::Bcache* bc) {
+int io_setup(mxtl::unique_ptr<minfs::Bcache> bc) {
     mxtl::RefPtr<minfs::VnodeMinfs> vn;
-    if (minfs_mount(&vn, bc) < 0) {
+    if (minfs_mount(&vn, mxtl::move(bc)) < 0) {
         return -1;
     }
     fake_root = vn;
-    the_block_cache = bc;
     return 0;
 }
 
-int do_minfs_test(minfs::Bcache* bc, int argc, char** argv) {
-    if (io_setup(bc)) {
+int do_minfs_test(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+    if (io_setup(mxtl::move(bc))) {
         return -1;
     }
     return run_fs_tests(argc, argv);
 }
 
-int do_cp(minfs::Bcache* bc, int argc, char** argv) {
+int do_cp(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "cp requires two arguments\n");
         return -1;
     }
 
-    if (io_setup(bc)) {
+    if (io_setup(mxtl::move(bc))) {
         return -1;
     }
 
@@ -120,12 +120,12 @@ done:
     return r;
 }
 
-int do_mkdir(minfs::Bcache* bc, int argc, char** argv) {
+int do_mkdir(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 1) {
         fprintf(stderr, "mkdir requires one argument\n");
         return -1;
     }
-    if (io_setup(bc)) {
+    if (io_setup(mxtl::move(bc))) {
         return -1;
     }
     // TODO(jpoichet) add support making parent directories when not present
@@ -137,12 +137,12 @@ int do_mkdir(minfs::Bcache* bc, int argc, char** argv) {
     return emu_mkdir(path, 0);
 }
 
-int do_unlink(minfs::Bcache* bc, int argc, char** argv) {
+int do_unlink(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 1) {
         fprintf(stderr, "unlink requires one argument\n");
         return -1;
     }
-    if (io_setup(bc)) {
+    if (io_setup(mxtl::move(bc))) {
         return -1;
     }
     const char* path = argv[0];
@@ -153,12 +153,12 @@ int do_unlink(minfs::Bcache* bc, int argc, char** argv) {
     return emu_unlink(path);
 }
 
-int do_rename(minfs::Bcache* bc, int argc, char** argv) {
+int do_rename(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "rename requires two arguments\n");
         return -1;
     }
-    if (io_setup(bc)) {
+    if (io_setup(mxtl::move(bc))) {
         return -1;
     }
     const char* old_path = argv[0];
@@ -189,12 +189,12 @@ static const char* modestr(uint32_t mode) {
     }
 }
 
-int do_ls(minfs::Bcache* bc, int argc, char** argv) {
+int do_ls(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     if (argc != 1) {
         fprintf(stderr, "ls requires one argument\n");
         return -1;
     }
-    if (io_setup(bc)) {
+    if (io_setup(mxtl::move(bc))) {
         return -1;
     }
     const char* path = argv[0];
@@ -227,13 +227,13 @@ int do_ls(minfs::Bcache* bc, int argc, char** argv) {
 
 #endif
 
-int do_minfs_mkfs(minfs::Bcache* bc, int argc, char** argv) {
-    return minfs_mkfs(bc);
+int do_minfs_mkfs(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
+    return minfs_mkfs(mxtl::move(bc));
 }
 
 struct {
     const char* name;
-    int (*func)(minfs::Bcache* bc, int argc, char** argv);
+    int (*func)(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv);
     uint32_t flags;
     const char* help;
 } CMDS[] = {
@@ -377,16 +377,15 @@ found:
     }
     size /= minfs::kMinfsBlockSize;
 
-    minfs::Bcache* bc;
-    if (minfs::Bcache::Create(&bc, fd, (uint32_t) size, minfs::kMinfsBlockSize,
-                              minfs::kMinfsBlockCacheSize) < 0) {
+    mxtl::unique_ptr<minfs::Bcache> bc;
+    if (minfs::Bcache::Create(&bc, fd, (uint32_t) size) < 0) {
         fprintf(stderr, "error: cannot create block cache\n");
         return -1;
     }
 
     for (unsigned i = 0; i < countof(CMDS); i++) {
         if (!strcmp(cmd, CMDS[i].name)) {
-            return CMDS[i].func(bc, argc - 3, argv + 3);
+            return CMDS[i].func(mxtl::move(bc), argc - 3, argv + 3);
         }
     }
     return -1;

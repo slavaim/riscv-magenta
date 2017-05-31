@@ -24,10 +24,12 @@ class PolicyManager;
 // specific arena which makes their addresses come from a fixed range.
 Handle* MakeHandle(mxtl::RefPtr<Dispatcher> dispatcher, mx_rights_t rights);
 
-// Duplicate a handle created by MakeHandle().
-Handle* DupHandle(Handle* source, mx_rights_t rights);
+// Duplicate a handle created by MakeHandle(). If |is_replace| is true
+// then the logic to triger MX_SIGNAL_LAST_HANDLE is not executed.
+Handle* DupHandle(Handle* source, mx_rights_t rights, bool is_replace);
 
-// Deletes a handle created by MakeHandle() or DupHandle().
+// Deletes a handle created by MakeHandle() or DupHandle(). This might
+// trigger MX_SIGNAL_LAST_HANDLE.
 void DeleteHandle(Handle* handle);
 
 // Maps an integer obtained by Handle->base_value() back to a Handle.
@@ -46,7 +48,6 @@ PolicyManager* GetSystemPolicyManager();
 bool magenta_rights_check(const Handle* handle, mx_rights_t desired);
 
 mx_status_t magenta_sleep(mx_time_t deadline);
-void magenta_check_deadline(const char* name, mx_time_t deadline);
 
 // Determines if this handle is to a Resource object.
 // Used to provide access to privileged syscalls.
@@ -59,7 +60,11 @@ mx_status_t get_process(ProcessDispatcher* up,
                         mxtl::RefPtr<ProcessDispatcher>* proc);
 
 namespace internal {
-    // Dumps internal details of the handle table using printf().
-    // Should only be called by diagnostics.cpp.
-    void DumpHandleTableInfo();
+// Dumps internal details of the handle table using printf().
+// Should only be called by diagnostics.cpp.
+void DumpHandleTableInfo();
+
+// Returns the number of outstanding handles.
+// Should only be called by diagnostics.cpp.
+size_t OutstandingHandles();
 } // namespace internal

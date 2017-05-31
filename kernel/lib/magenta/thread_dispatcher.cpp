@@ -6,17 +6,17 @@
 
 #include <magenta/thread_dispatcher.h>
 
-#include <new.h>
 #include <trace.h>
 
 #include <magenta/handle.h>
 #include <magenta/process_dispatcher.h>
+#include <mxalloc/new.h>
 
 #define LOCAL_TRACE 0
 
 constexpr mx_rights_t kDefaultThreadRights =
     MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER |
-    MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
+    MX_RIGHT_DESTROY | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
 
 // static
 status_t ThreadDispatcher::Create(mxtl::RefPtr<UserThread> thread, mxtl::RefPtr<Dispatcher>* dispatcher,
@@ -50,6 +50,13 @@ status_t ThreadDispatcher::GetInfo(mx_info_thread_t* info) {
     canary_.Assert();
 
     thread_->GetInfoForUserspace(info);
+    return NO_ERROR;
+}
+
+status_t ThreadDispatcher::GetStats(mx_info_thread_stats_t* info) {
+    canary_.Assert();
+
+    thread_->GetStatsForUserspace(info);
     return NO_ERROR;
 }
 

@@ -13,8 +13,8 @@
 #include <kernel/vm.h>
 #include <kernel/vm/vm_aspace.h>
 #include <kernel/vm/vm_object.h>
+#include <mxalloc/new.h>
 #include <mxtl/auto_lock.h>
-#include <new.h>
 #include <pow2.h>
 #include <safeint/safe_math.h>
 #include <trace.h>
@@ -27,19 +27,21 @@
 
 VmAddressRegion::VmAddressRegion(VmAspace& aspace, vaddr_t base, size_t size, uint32_t vmar_flags)
     : VmAddressRegionOrMapping(base, size, vmar_flags | VMAR_CAN_RWX_FLAGS,
-                               &aspace, nullptr, "root") {
+                               &aspace, nullptr) {
 
     // We add in CAN_RWX_FLAGS above, since an address space can't usefully
     // contain a process without all of these.
 
+    strlcpy(const_cast<char*>(name_), "root", sizeof(name_));
     LTRACEF("%p '%s'\n", this, name_);
 }
 
 VmAddressRegion::VmAddressRegion(VmAddressRegion& parent, vaddr_t base, size_t size,
                                  uint32_t vmar_flags, const char* name)
     : VmAddressRegionOrMapping(base, size, vmar_flags, parent.aspace_.get(),
-                               &parent, name) {
+                               &parent) {
 
+    strlcpy(const_cast<char*>(name_), name, sizeof(name_));
     LTRACEF("%p '%s'\n", this, name_);
 }
 
@@ -52,8 +54,9 @@ VmAddressRegion::VmAddressRegion(VmAspace& kernel_aspace)
 }
 
 VmAddressRegion::VmAddressRegion()
-    : VmAddressRegionOrMapping(0, 0, 0, nullptr, nullptr, "dummy") {
+    : VmAddressRegionOrMapping(0, 0, 0, nullptr, nullptr) {
 
+    strlcpy(const_cast<char*>(name_), "dummy", sizeof(name_));
     LTRACEF("%p '%s'\n", this, name_);
 }
 
@@ -100,6 +103,30 @@ status_t VmAddressRegion::CreateSubVmarInternal(size_t offset, size_t size, uint
         return ERR_INVALID_ARGS;
     }
 
+    // Check to see if a cache policy exists if a VMO is passed in. VMOs that are not physical
+    // return ERR_UNSUPPORTED, anything aside from that and NO_ERROR is an error.
+    // TODO(cja): explore whether it makes sense to add a default PAGED value to VmObjectPaged
+    // and allow them to be treated the same, since by default we're mapping those objects that
+    // way anyway.
+    if (vmo) {
+        uint32_t cache_policy;
+        status_t status = vmo->GetMappingCachePolicy(&cache_policy);
+        if (status == NO_ERROR) {
+            // Warn in the event that we somehow receive a VMO that has a cache
+            // policy set while also holding cache policy flags within the arch
+            // flags. The only path that should be able to achieve this is if
+            // something in the kernel maps into their aspace incorrectly.
+            if ((arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK) != 0) {
+                TRACEF("warning: mapping %s has conflicting cache policies: vmo %02x "
+                        "arch_mmu_flags %02x.\n",
+                        name, cache_policy, arch_mmu_flags & ARCH_MMU_FLAG_CACHE_MASK);
+            }
+            arch_mmu_flags |= cache_policy;
+        } else if (status != ERR_NOT_SUPPORTED) {
+            return ERR_INVALID_ARGS;
+        }
+    }
+
     // Check that we have the required privileges if we want a SPECIFIC mapping
     if (is_specific && !(flags_ & VMAR_FLAG_CAN_MAP_SPECIFIC)) {
         return ERR_ACCESS_DENIED;
@@ -121,8 +148,7 @@ status_t VmAddressRegion::CreateSubVmarInternal(size_t offset, size_t size, uint
         if (!IsRangeAvailableLocked(new_base, size)) {
             if (is_specific_overwrite) {
                 return OverwriteVmMapping(new_base, size, vmar_flags,
-                                          vmo, vmo_offset, arch_mmu_flags,
-                                          name, out);
+                                          vmo, vmo_offset, arch_mmu_flags, out);
             }
             return ERR_NO_MEMORY;
         }
@@ -147,7 +173,7 @@ status_t VmAddressRegion::CreateSubVmarInternal(size_t offset, size_t size, uint
     if (vmo) {
         vmar = mxtl::AdoptRef(new (&ac)
                                   VmMapping(*this, new_base, size, vmar_flags,
-                                            mxtl::move(vmo), vmo_offset, arch_mmu_flags, name));
+                                            mxtl::move(vmo), vmo_offset, arch_mmu_flags));
     } else {
         vmar = mxtl::AdoptRef(new (&ac)
                                   VmAddressRegion(*this, new_base, size, vmar_flags, name));
@@ -248,10 +274,11 @@ status_t VmAddressRegion::CreateVmMapping(size_t mapping_offset, size_t size, ui
     return NO_ERROR;
 }
 
-status_t VmAddressRegion::OverwriteVmMapping(vaddr_t base, size_t size, uint32_t vmar_flags,
-                                             mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset,
-                                             uint arch_mmu_flags, const char* name,
-                                             mxtl::RefPtr<VmAddressRegionOrMapping>* out) {
+status_t VmAddressRegion::OverwriteVmMapping(
+    vaddr_t base, size_t size, uint32_t vmar_flags,
+    mxtl::RefPtr<VmObject> vmo, uint64_t vmo_offset,
+    uint arch_mmu_flags, mxtl::RefPtr<VmAddressRegionOrMapping>* out) {
+
     canary_.Assert();
     DEBUG_ASSERT(is_mutex_held(aspace_->lock()));
     DEBUG_ASSERT(vmo);
@@ -261,7 +288,7 @@ status_t VmAddressRegion::OverwriteVmMapping(vaddr_t base, size_t size, uint32_t
     mxtl::RefPtr<VmAddressRegionOrMapping> vmar;
     vmar = mxtl::AdoptRef(new (&ac)
                               VmMapping(*this, base, size, vmar_flags,
-                                        mxtl::move(vmo), vmo_offset, arch_mmu_flags, name));
+                                        mxtl::move(vmo), vmo_offset, arch_mmu_flags));
     if (!ac.check()) {
         return ERR_NO_MEMORY;
     }

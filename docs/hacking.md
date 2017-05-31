@@ -4,6 +4,17 @@ This file contains a random collection of notes for hacking on Magenta.
 
 [TOC]
 
+## Building and testing
+
+To ensure changes don't impact any of the builds it is recommended that
+that one tests all targets, with gcc and clang, and in both release mode
+and debug mode. This can all be executed with the `buildall` script:
+
+```./scripts/buildall -q -c -r```
+
+From the magenta shell run `k ut all` to execute all kernel tests, and
+`runtests` to execute all userspace tests.
+
 ## Syscall generation
 
 Syscall support is generated from
@@ -29,9 +40,17 @@ its output.
 Since the kernel can't reliably draw to a framebuffer when the GPU is enabled,
 the system will reboot by default if the kernel crashes or panics.
 
-The `k prevpanic` command can get some information about the crash most of the
-time on Acer and NUC.  We're working on being able to get more extensive
-previous crash logs.
+If the kernel crashes and the system reboots, the log from the kernel panic will
+appear at `/boot/log/last-panic.txt`, suitable for viewing, downloading, etc.
+
+> Please attach your `last-panic.txt` and `magenta.elf` files to any kernel
+> panic bugs you file.
+
+If there's a `last-panic.txt`, that indicates that this is the first successful
+boot since a kernel panic occurred.
+
+It is not "sticky" -- if you reboot cleanly, it will be gone, and if you crash
+again it will be replaced.
 
 To disable reboot-on-panic, pass the kernel commandline argument
 [`kernel.halt_on_panic=true`](kernel_cmdline.md#kernel_halt_on_panic_bool).

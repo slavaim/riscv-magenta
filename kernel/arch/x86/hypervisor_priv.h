@@ -13,6 +13,8 @@
 #include <kernel/event.h>
 #include <kernel/timer.h>
 
+typedef struct mx_guest_gpr mx_guest_gpr_t;
+
 static const uint64_t kIoApicPhysBase = 0xfec00000;
 static const uint8_t kIoApicRedirectOffsets = 0x36;
 static const uint32_t kInvalidInterrupt = UINT32_MAX >> 1;
@@ -267,19 +269,9 @@ struct LocalApicState {
     // TSC deadline.
     uint64_t tsc_deadline;
     // Virtual local APIC address.
-    void* virtual_apic;
-    // Virtual local APIC page.
-    VmxPage virtual_apic_page;
-};
-
-/* Stores the IO APIC state across VM exits. */
-struct IoApicState {
-    // IO register-select register.
-    uint32_t select;
-    // IO APIC identification register.
-    uint32_t id;
-    // IO redirection table offsets.
-    uint32_t redirect[kIoApicRedirectOffsets];
+    void* apic_addr;
+    // Virtual local APIC memory.
+    mxtl::RefPtr<VmObject> apic_mem;
 };
 
 /* Creates a VMCS CPU context to initialize a VM. */
@@ -290,14 +282,19 @@ public:
     status_t Setup(paddr_t pml4_address, paddr_t apic_access_address,
                    paddr_t msr_bitmaps_address);
     status_t Enter(const VmcsContext& context, GuestPhysicalAddressSpace* gpas,
-                   FifoDispatcher* serial_fifo);
+                   FifoDispatcher* ctl_fifo);
+    status_t SetGpr(const mx_guest_gpr_t& guest_gpr);
+    status_t GetGpr(mx_guest_gpr_t* guest_gpr) const;
+    status_t SetApicMem(mxtl::RefPtr<VmObject> apic_mem);
+
+    bool ShouldResume() const { return vmx_state_.resume; }
+    bool HasApicMem() const { return local_apic_state_.apic_addr != nullptr; }
 
 private:
     VmxPage host_msr_page_;
     VmxPage guest_msr_page_;
     VmxState vmx_state_;
     LocalApicState local_apic_state_;
-    IoApicState io_apic_state_;
 };
 
 uint16_t vmcs_read(VmcsField16 field);

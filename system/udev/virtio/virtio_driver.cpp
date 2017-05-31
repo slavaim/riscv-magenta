@@ -11,10 +11,10 @@
 #include <ddk/driver.h>
 #include <ddk/protocol/pci.h>
 
+#include <mxalloc/new.h>
 #include <mxtl/unique_ptr.h>
 
 #include <magenta/compiler.h>
-#include <magenta/new.h>
 #include <magenta/types.h>
 
 #include "block.h"
@@ -26,8 +26,8 @@
 
 // implement driver object:
 
-extern "C" mx_status_t virtio_bind(mx_driver_t* driver, mx_device_t* device, void** cookie) {
-    LTRACEF("driver %p, device %p\n", driver, device);
+extern "C" mx_status_t virtio_bind(void* ctx, mx_device_t* device, void** cookie) {
+    LTRACEF("device %p\n", device);
     mx_status_t status;
     pci_protocol_t* pci;
 
@@ -53,11 +53,11 @@ extern "C" mx_status_t virtio_bind(mx_driver_t* driver, mx_device_t* device, voi
     switch (config->device_id) {
     case 0x1001:
         LTRACEF("found block device\n");
-        vd.reset(new virtio::BlockDevice(driver, device));
+        vd.reset(new virtio::BlockDevice(device));
         break;
     case 0x1050:
         LTRACEF("found gpu device\n");
-        vd.reset(new virtio::GpuDevice(driver, device));
+        vd.reset(new virtio::GpuDevice(device));
         break;
     default:
         printf("unhandled device id, how did this happen?\n");

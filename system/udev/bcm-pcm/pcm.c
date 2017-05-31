@@ -66,7 +66,6 @@ typedef struct {
 
     mx_device_t* mxdev;
     mx_device_t* parent;
-    mx_driver_t* driver;
     bcm_pcm_regs_t* control_regs;
     bcm_gpio_ctrl_t* gpio_regs;
     volatile void* clock_regs;
@@ -694,7 +693,6 @@ static int pcm_bootstrap_thread(void* arg) {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "pcm0",
         .ctx = pcm_ctx,
-        .driver = pcm_ctx->driver,
         .ops = &pcm_audio_ctx_device_proto,
         .proto_id = MX_PROTOCOL_AUDIO2_OUTPUT,
     };
@@ -713,13 +711,12 @@ pcm_err:
     return -1;
 }
 
-static mx_status_t bcm_pcm_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
+static mx_status_t bcm_pcm_bind(void* ctx, mx_device_t* parent, void** cookie) {
 
     bcm_pcm_t* pcm_ctx = calloc(1, sizeof(*pcm_ctx));
     if (!pcm_ctx)
         return ERR_NO_MEMORY;
 
-    pcm_ctx->driver = driver;
     pcm_ctx->parent = parent;
 
     thrd_t bootstrap_thrd;
@@ -742,7 +739,7 @@ static mx_driver_ops_t bcm_pcm_driver_ops = {
 
 // clang-format off
 MAGENTA_DRIVER_BEGIN(bcm_pcm, bcm_pcm_driver_ops, "magenta", "0.1", 3)
-    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_SOC),
-    BI_ABORT_IF(NE, BIND_SOC_VID, SOC_VID_BROADCOMM),
-    BI_MATCH_IF(EQ, BIND_SOC_DID, SOC_DID_BROADCOMM_PCM),
+    BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PLATFORM_DEV),
+    BI_ABORT_IF(NE, BIND_PLATFORM_DEV_VID, PDEV_VID_BROADCOMM),
+    BI_MATCH_IF(EQ, BIND_PLATFORM_DEV_DID, PDEV_DID_BROADCOMM_PCM),
 MAGENTA_DRIVER_END(bcm_pcm)

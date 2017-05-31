@@ -8,6 +8,7 @@
 #include <ddk/protocol/device.h>
 #include <fs-management/mount.h>
 #include <gpt/gpt.h>
+#include <launchpad/launchpad.h>
 #include <magenta/device/block.h>
 #include <magenta/device/console.h>
 #include <magenta/device/vfs.h>
@@ -15,6 +16,7 @@
 #include <magenta/process.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
+#include <magenta/status.h>
 #include <mxio/debug.h>
 #include <mxio/loader-service.h>
 #include <mxio/watcher.h>
@@ -39,9 +41,6 @@ mx_handle_t get_service_root(void) {
 static mx_handle_t root_resource_handle;
 static mx_handle_t root_job_handle;
 static mx_handle_t svcs_job_handle;
-
-static mx_handle_t application_launcher_child;
-mx_handle_t application_launcher;
 
 mx_handle_t get_root_resource(void) {
     return root_resource_handle;
@@ -141,6 +140,10 @@ static mx_status_t mount_minfs(int fd, mount_options_t* options) {
     return ERR_INVALID_ARGS;
 }
 
+#define GPT_DRIVER_LIB "/boot/driver/gpt.so"
+#define MBR_DRIVER_LIB "/boot/driver/mbr.so"
+#define STRLEN(s) sizeof(s)/sizeof((s)[0])
+
 static mx_status_t block_device_added(int dirfd, int event, const char* name, void* cookie) {
     if (event != WATCH_EVENT_ADD_FILE) {
         printf("devmgr: block watch waiting...\n");
@@ -159,27 +162,25 @@ static mx_status_t block_device_added(int dirfd, int event, const char* name, vo
     case DISK_FORMAT_GPT: {
         printf("devmgr: /dev/class/block/%s: GPT?\n", name);
         // probe for partition table
-        ioctl_device_bind(fd, "gpt", 4);
+        ioctl_device_bind(fd, GPT_DRIVER_LIB, STRLEN(GPT_DRIVER_LIB));
         close(fd);
         return NO_ERROR;
     }
     case DISK_FORMAT_MBR: {
         printf("devmgr: /dev/class/block/%s: MBR?\n", name);
         // probe for partition table
-        ioctl_device_bind(fd, "mbr", 4);
+        ioctl_device_bind(fd, MBR_DRIVER_LIB, STRLEN(MBR_DRIVER_LIB));
         close(fd);
         return NO_ERROR;
     }
     case DISK_FORMAT_BLOBFS: {
-        mount_options_t options;
-        memcpy(&options, &default_mount_options, sizeof(mount_options_t));
+        mount_options_t options = default_mount_options;
         options.create_mountpoint = true;
         mount(fd, "/blobstore", DISK_FORMAT_BLOBFS, &options, launch_blobstore);
         return NO_ERROR;
     }
     case DISK_FORMAT_MINFS: {
-        mount_options_t options;
-        memcpy(&options, &default_mount_options, sizeof(mount_options_t));
+        mount_options_t options = default_mount_options;
         options.wait_until_ready = false;
         printf("devmgr: minfs\n");
         if (mount_minfs(fd, &options) != NO_ERROR) {
@@ -196,8 +197,7 @@ static mx_status_t block_device_added(int dirfd, int event, const char* name, vo
         if (r == GPT_GUID_LEN && !memcmp(guid, guid_efi_part, GPT_GUID_LEN)) {
             efi = true;
         }
-        mount_options_t options;
-        memcpy(&options, &default_mount_options, sizeof(mount_options_t));
+        mount_options_t options = default_mount_options;
         options.create_mountpoint = true;
         options.readonly = efi;
         static int fat_counter = 0;
@@ -243,13 +243,6 @@ int devmgr_start_system_init(void* arg) {
         unsigned int init_hnd_count = 0;
         mx_handle_t init_hnds[2] = {};
         uint32_t init_ids[2] = {};
-        if (application_launcher_child) {
-            assert(init_hnd_count < countof(init_hnds));
-            init_hnds[init_hnd_count] = application_launcher_child;
-            init_ids[init_hnd_count] = PA_HND(PA_APP_LAUNCHER, 0);
-            init_hnd_count++;
-            application_launcher_child = 0;
-        }
         if (svc_request_handle) {
             assert(init_hnd_count < countof(init_hnds));
             init_hnds[init_hnd_count] = svc_request_handle;
@@ -272,6 +265,10 @@ int devmgr_start_system_init(void* arg) {
 int service_starter(void* arg) {
     // create a directory for sevice rendezvous
     mkdir("/svc", 0755);
+
+    const char* virtcon = "/boot/bin/gfxconsole";
+    devmgr_launch(svcs_job_handle, "virtual-console",
+                  1, &virtcon, NULL, -1, NULL, NULL, 0);
 
     if (getenv("netsvc.disable") == NULL) {
         // launch the network service
@@ -371,6 +368,43 @@ int virtcon_starter(void* arg) {
     return 0;
 }
 
+static void fetch_vdsos(void) {
+    for (uint_fast16_t i = 0; true; ++i) {
+        mx_handle_t vdso_vmo = mx_get_startup_handle(PA_HND(PA_VMO_VDSO, i));
+        if (vdso_vmo == MX_HANDLE_INVALID)
+            break;
+        if (i == 0) {
+            // The first one is the default vDSO.  Since we've stolen
+            // the startup handle, launchpad won't find it on its own.
+            // So point launchpad at it.
+            launchpad_set_vdso_vmo(vdso_vmo);
+        }
+
+        // The vDSO VMOs have names like "vdso/default", so those
+        // become VMO files at "/boot/vdso/default".
+        char name[MX_MAX_NAME_LEN];
+        size_t size;
+        mx_status_t status = mx_object_get_property(vdso_vmo, MX_PROP_NAME,
+                                                    name, sizeof(name));
+        if (status != NO_ERROR) {
+            printf("devmgr: mx_object_get_property on PA_VMO_VDSO %u: %s\n",
+                   i, mx_status_get_string(status));
+            continue;
+        }
+        status = mx_vmo_get_size(vdso_vmo, &size);
+        if (status != NO_ERROR) {
+            printf("devmgr: mx_vmo_get_size on PA_VMO_VDSO %u: %s\n",
+                   i, mx_status_get_string(status));
+            continue;
+        }
+        status = bootfs_add_file(name, vdso_vmo, 0, size);
+        if (status != NO_ERROR) {
+            printf("devmgr: failed to add PA_VMO_VDSO %u to filesystem: %s\n",
+                   i, mx_status_get_string(status));
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     // Close the loader-service channel so the service can go away.
     // We won't use it any more (no dlopen calls in this process).
@@ -397,6 +431,8 @@ int main(int argc, char** argv) {
     devmgr_vfs_init();
 
     mx_object_set_property(root_job_handle, MX_PROP_NAME, "root", 4);
+
+    fetch_vdsos();
 
     mx_status_t status = mx_job_create(root_job_handle, 0u, &svcs_job_handle);
     if (status < 0) {
@@ -435,10 +471,9 @@ int main(int argc, char** argv) {
                       NULL, -1, NULL, NULL, 0);
     }
 
-    start_console_shell();
-
-    mx_channel_create(0, &application_launcher, &application_launcher_child);
     mx_channel_create(0, &svc_root_handle, &svc_request_handle);
+
+    start_console_shell();
 
     if (secondary_bootfs_ready()) {
         devmgr_start_system_init(NULL);

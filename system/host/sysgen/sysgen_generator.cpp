@@ -8,7 +8,6 @@
 #include "generator.h"
 #include "header_generator.h"
 #include "kernel_invocation_generator.h"
-#include "rust_binding_generator.h"
 #include "vdso_wrapper_generator.h"
 
 #include "sysgen_generator.h"
@@ -43,11 +42,18 @@ static VdsoWrapperGenerator vdso_wrapper_generator(
     "SYSCALL_mx_", // syscall implementation name
     wrappers);
 
+static KernelBranchGenerator kernel_branch;
+
 static KernelInvocationGenerator kernel_code(
     "sys_",     // function prefix
-    "ret",      //  variable to assign invocation result to
+    "ret",      // variable to assign invocation result to
     "uint64_t", // type of result variable
     "arg");     // prefix for syscall arguments);
+
+static KernelWrapperGenerator kernel_wrappers(
+    "sys_",     // function prefix
+    "wrapper_", // wrapper prefix
+    "MX_SYS_"); // syscall numbers constant prefix
 
 static HeaderGenerator user_header(
     "extern ",                       // function prefix
@@ -87,8 +93,9 @@ static SyscallNumbersGenerator syscall_num_generator("#define MX_SYS_");
 
 static RustBindingGenerator rust_binding_generator;
 static TraceInfoGenerator trace_generator;
+static CategoryGenerator category_generator;
 
-const map<string, const Generator&> type_to_generator = {
+const map<string, Generator&> type_to_generator = {
     // The user header, pure C.
     {"user-header", user_header},
 
@@ -100,6 +107,12 @@ const map<string, const Generator&> type_to_generator = {
 
     // The kernel C++ code. A switch statement set.
     {"kernel-code", kernel_code},
+
+    // The kernel assembly branches and jump table.
+    {"kernel-branch", kernel_branch},
+
+    // The kernel C++ wrappers.
+    {"kernel-wrappers", kernel_wrappers},
 
     //  The assembly file for x86-64.
     {"x86-asm", x86_generator},
@@ -118,26 +131,32 @@ const map<string, const Generator&> type_to_generator = {
 
     // vDSO wrappers for additional behaviour in user space.
     {"vdso-wrappers", vdso_wrapper_generator},
+
+    // Category list.
+    {"category", category_generator},
 };
 
 const map<string, string> type_to_default_suffix = {
     {"user-header", ".user.h"},
     {"vdso-header", ".vdso.h"},
     {"kernel-header", ".kernel.h"},
+    {"kernel-branch", ".kernel-branch.S"},
     {"kernel-code", ".kernel.inc"},
+    {"kernel-wrappers", ".kernel-wrappers.inc"},
     {"x86-asm", ".x86-64.S"},
     {"arm-asm", ".arm64.S"},
     {"numbers", ".syscall-numbers.h"},
     {"trace", ".trace.inc"},
     {"rust", ".rs"},
     {"vdso-wrappers", ".vdso-wrappers.inc"},
+    {"category", ".category.inc"},
 };
 
 const map<string, string>& get_type_to_default_suffix() {
     return type_to_default_suffix;
 }
 
-const map<string, const Generator&>& get_type_to_generator() {
+const map<string, Generator&>& get_type_to_generator() {
     return type_to_generator;
 }
 
@@ -161,7 +180,8 @@ bool SysgenGenerator::verbose() const {
     return verbose_;
 }
 
-bool SysgenGenerator::generate_one(const string& output_file, const Generator& generator, const string& type) {
+bool SysgenGenerator::generate_one(
+    const string& output_file, Generator& generator, const string& type) {
     std::ofstream ofile;
     ofile.open(output_file.c_str(), std::ofstream::out);
 

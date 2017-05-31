@@ -23,6 +23,8 @@
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
+typedef struct mx_guest_gpr mx_guest_gpr_t;
+
 class FifoDispatcher;
 class VmObject;
 
@@ -34,14 +36,29 @@ status_t arch_hypervisor_create(mxtl::unique_ptr<HypervisorContext>* context);
 /* Create a guest context.
  * This creates the structures to allow a guest to be run.
  */
-status_t arch_guest_create(mxtl::RefPtr<VmObject> guest_phys_mem,
-                           mxtl::RefPtr<FifoDispatcher> serial_fifo,
+status_t arch_guest_create(mxtl::RefPtr<VmObject> phys_mem,
+                           mxtl::RefPtr<FifoDispatcher> ctl_fifo,
                            mxtl::unique_ptr<GuestContext>* context);
 
 /* Enter a guest context.
  */
 status_t arch_guest_enter(const mxtl::unique_ptr<GuestContext>& context);
 
-/* Set the entry of the guest context.
+/* Create a guest context.
  */
-status_t arch_guest_set_entry(const mxtl::unique_ptr<GuestContext>& context, uintptr_t guest_entry);
+status_t arch_guest_mem_trap(const mxtl::unique_ptr<GuestContext>& context, vaddr_t guest_paddr,
+                             size_t size);
+
+/* Set general purpose registers of a guest context.
+ */
+status_t arch_guest_set_gpr(const mxtl::unique_ptr<GuestContext>& context,
+                            const mx_guest_gpr_t& guest_gpr);
+
+/* Get general purpose registers of a guest context.
+ */
+status_t arch_guest_get_gpr(const mxtl::unique_ptr<GuestContext>& context,
+                            mx_guest_gpr_t* guest_gpr);
+
+/* Set the instruction pointer of a guest context.
+ */
+status_t arch_guest_set_ip(const mxtl::unique_ptr<GuestContext>& context, uintptr_t guest_ip);

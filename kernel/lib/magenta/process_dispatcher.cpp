@@ -9,7 +9,6 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <list.h>
-#include <new.h>
 #include <rand.h>
 #include <string.h>
 #include <trace.h>
@@ -36,11 +35,13 @@
 #include <magenta/vm_address_region_dispatcher.h>
 #include <magenta/vm_object_dispatcher.h>
 
+#include <mxalloc/new.h>
+
 #define LOCAL_TRACE 0
 
 static constexpr mx_rights_t kDefaultProcessRights =
         MX_RIGHT_READ  | MX_RIGHT_WRITE | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER |
-        MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY | MX_RIGHT_ENUMERATE;
+        MX_RIGHT_ENUMERATE | MX_RIGHT_DESTROY | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
 
 
 static mx_handle_t map_handle_to_value(const Handle* handle, mx_handle_t mixer) {
@@ -97,7 +98,8 @@ mx_status_t ProcessDispatcher::Create(
 ProcessDispatcher::ProcessDispatcher(mxtl::RefPtr<JobDispatcher> job,
                                      mxtl::StringPiece name,
                                      uint32_t flags)
-    : job_(mxtl::move(job)), policy_(job_->GetPolicy()), state_tracker_(0u) {
+  : job_(mxtl::move(job)), policy_(job_->GetPolicy()), state_tracker_(0u),
+    name_(name.data(), name.length()) {
     LTRACE_ENTRY_OBJ;
 
     // Generate handle XOR mask with top bit and bottom two bits cleared
@@ -107,9 +109,6 @@ ProcessDispatcher::ProcessDispatcher(mxtl::RefPtr<JobDispatcher> job,
 
     // Handle values cannot be negative values, so we mask the high bit.
     handle_rand_ = (secret << 2) & INT_MAX;
-
-    if (name.length() > 0 && (name.length() < sizeof(name_)))
-        strlcpy(name_, name.data(), sizeof(name_));
 }
 
 ProcessDispatcher::~ProcessDispatcher() {
@@ -130,18 +129,11 @@ ProcessDispatcher::~ProcessDispatcher() {
 }
 
 void ProcessDispatcher::get_name(char out_name[MX_MAX_NAME_LEN]) const {
-    AutoSpinLock lock(name_lock_);
-    memcpy(out_name, name_, MX_MAX_NAME_LEN);
+    name_.get(MX_MAX_NAME_LEN, out_name);
 }
 
 status_t ProcessDispatcher::set_name(const char* name, size_t len) {
-    if (len >= MX_MAX_NAME_LEN)
-        len = MX_MAX_NAME_LEN - 1;
-
-    AutoSpinLock lock(name_lock_);
-    memcpy(name_, name, len);
-    memset(name_ + len, 0, MX_MAX_NAME_LEN - len);
-    return NO_ERROR;
+    return name_.set(name, len);
 }
 
 status_t ProcessDispatcher::Initialize() {
@@ -251,15 +243,6 @@ status_t ProcessDispatcher::AddThread(UserThread* t, bool initial_thread) {
 
 void ProcessDispatcher::RemoveThread(UserThread* t) {
     LTRACE_ENTRY_OBJ;
-
-    // OnThreadExitForDebugger will block in ExceptionHandlerExchange, so don't
-    // hold |exception_lock_| across the call.
-    {
-        mxtl::RefPtr<ExceptionPort> eport(debugger_exception_port());
-        if (eport) {
-            eport->OnThreadExitForDebugger(t);
-        }
-    }
 
     // we're going to check for state and possibly transition below
     AutoLock state_lock(&state_lock_);
@@ -514,7 +497,12 @@ status_t ProcessDispatcher::GetStats(mx_info_task_stats_t* stats) {
         return s;
     }
     stats->mem_mapped_bytes = usage.mapped_pages * PAGE_SIZE;
-    stats->mem_committed_bytes = usage.committed_pages * PAGE_SIZE;
+    stats->mem_private_bytes = usage.private_pages * PAGE_SIZE;
+    stats->mem_shared_bytes = usage.shared_pages * PAGE_SIZE;
+    stats->mem_scaled_shared_bytes = usage.scaled_shared_bytes;
+    // TODO: Remove mem_committed_bytes.
+    stats->mem_committed_bytes =
+        stats->mem_private_bytes + stats->mem_shared_bytes;
     return NO_ERROR;
 }
 
@@ -730,6 +718,12 @@ mx_status_t ProcessDispatcher::QueryPolicy(uint32_t condition) const {
     // TODO(cpu): check for the MX_POL_KILL bit and return an error code
     // that sysgen understands as termination.
     return (action & MX_POL_ACTION_DENY) ? ERR_ACCESS_DENIED : NO_ERROR;
+}
+
+uintptr_t ProcessDispatcher::cache_vdso_code_address() {
+    AutoLock a(&state_lock_);
+    vdso_code_address_ = aspace_->vdso_code_address();
+    return vdso_code_address_;
 }
 
 const char* StateToString(ProcessDispatcher::State state) {

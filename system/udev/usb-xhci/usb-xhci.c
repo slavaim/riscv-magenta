@@ -25,8 +25,6 @@
 
 #define MAX_SLOTS 255
 
-extern mx_driver_t _driver_usb_xhci;
-
 mx_status_t xhci_add_device(xhci_t* xhci, int slot_id, int hub_address, int speed) {
     xprintf("xhci_add_new_device\n");
 
@@ -106,12 +104,13 @@ size_t xhci_get_max_transfer_size(mx_device_t* device, uint32_t device_id, uint8
     if (ep_address == 0) {
         // control requests have uint16 length field so we need to support UINT16_MAX
         // we require one setup, status and data event TRB in addition to data transfer TRBs
-        static_assert(PAGE_SIZE * (TRANSFER_RING_SIZE - 3) >= UINT16_MAX, "TRANSFER_RING_SIZE too small");
+        // and subtract one more to account for the link TRB
+        static_assert(PAGE_SIZE * (TRANSFER_RING_SIZE - 4) >= UINT16_MAX, "TRANSFER_RING_SIZE too small");
         return UINT16_MAX;
     }
     // non-control transfers consist of normal transfer TRBs plus one data event TRB
-    // Subtract 1 to reserve a TRB for data event.
-    return PAGE_SIZE * (TRANSFER_RING_SIZE - 1);
+    // Subtract 2 to reserve a TRB for data event and to account for the link TRB
+    return PAGE_SIZE * (TRANSFER_RING_SIZE - 2);
 }
 
 usb_hci_protocol_t xhci_hci_protocol = {
@@ -176,7 +175,6 @@ static int xhci_irq_thread(void* arg) {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "usb-xhci",
         .ctx = xhci,
-        .driver = &_driver_usb_xhci,
         .ops = &xhci_device_proto,
         .proto_id = MX_PROTOCOL_USB_HCI,
         .proto_ops = &xhci_hci_protocol,
@@ -207,7 +205,7 @@ static int xhci_irq_thread(void* arg) {
     return 0;
 }
 
-static mx_status_t usb_xhci_bind(mx_driver_t* driver, mx_device_t* dev, void** cookie) {
+static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
     mx_handle_t irq_handle = MX_HANDLE_INVALID;
     mx_handle_t mmio_handle = MX_HANDLE_INVALID;
     mx_handle_t cfg_handle = MX_HANDLE_INVALID;

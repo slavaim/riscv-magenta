@@ -6,7 +6,6 @@
 
 #include <err.h>
 #include <inttypes.h>
-#include <new.h>
 #include <string.h>
 
 #include <magenta/exception.h>
@@ -16,6 +15,8 @@
 #include <magenta/process_dispatcher.h>
 #include <magenta/thread_dispatcher.h>
 #include <magenta/user_thread.h>
+
+#include <mxalloc/new.h>
 
 #include <trace.h>
 
@@ -239,7 +240,7 @@ void ExceptionPort::BuildSuspendResumeReport(mx_exception_report_t* report,
                                              UserThread* thread) {
     mx_koid_t pid = thread->process()->get_koid();
     mx_koid_t tid = thread->get_koid();
-    BuildReport(report, MX_EXCP_THREAD_SUSPENDING, pid, tid);
+    BuildReport(report, type, pid, tid);
     // TODO(dje): IWBN to fill in pc
     arch_fill_in_suspension_context(report);
 }
@@ -273,8 +274,14 @@ void ExceptionPort::OnThreadSuspending(UserThread* thread) {
     mx_koid_t tid = thread->get_koid();
     LTRACEF("thread %" PRIu64 ".%" PRIu64 " suspending\n", pid, tid);
 
+    // A note on the tense of the words used here: suspending vs suspended.
+    // "suspending" is used in the internal context because we're still
+    // in the process of suspending the thread. "suspended" is used in the
+    // external context because once the debugger receives the "suspended"
+    // report it can assume the thread is, for its purposes, suspended.
+
     mx_exception_report_t report;
-    BuildSuspendResumeReport(&report, MX_EXCP_THREAD_SUSPENDING, thread);
+    BuildSuspendResumeReport(&report, MX_EXCP_THREAD_SUSPENDED, thread);
     // The result is ignored, not much else we can do.
     SendReport(&report);
 }
@@ -286,8 +293,11 @@ void ExceptionPort::OnThreadResuming(UserThread* thread) {
     mx_koid_t tid = thread->get_koid();
     LTRACEF("thread %" PRIu64 ".%" PRIu64 " resuming\n", pid, tid);
 
+    // See OnThreadSuspending for a note on the tense of the words uses here:
+    // suspending vs suspended.
+
     mx_exception_report_t report;
-    BuildSuspendResumeReport(&report, MX_EXCP_THREAD_RESUMING, thread);
+    BuildSuspendResumeReport(&report, MX_EXCP_THREAD_RESUMED, thread);
     // The result is ignored, not much else we can do.
     SendReport(&report);
 }

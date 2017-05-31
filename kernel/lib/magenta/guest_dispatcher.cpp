@@ -8,18 +8,18 @@
 #include <magenta/fifo_dispatcher.h>
 #include <magenta/guest_dispatcher.h>
 #include <magenta/hypervisor_dispatcher.h>
-#include <new.h>
+#include <mxalloc/new.h>
 
-constexpr mx_rights_t kDefaultGuestRights = MX_RIGHT_EXECUTE;
+constexpr mx_rights_t kDefaultGuestRights = MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_EXECUTE;
 
 // static
 mx_status_t GuestDispatcher::Create(mxtl::RefPtr<HypervisorDispatcher> hypervisor,
-                                    mxtl::RefPtr<VmObject> guest_phys_mem,
-                                    mxtl::RefPtr<FifoDispatcher> serial_fifo,
+                                    mxtl::RefPtr<VmObject> phys_mem,
+                                    mxtl::RefPtr<FifoDispatcher> ctl_fifo,
                                     mxtl::RefPtr<Dispatcher>* dispatcher,
                                     mx_rights_t* rights) {
     mxtl::unique_ptr<GuestContext> context;
-    mx_status_t status = arch_guest_create(guest_phys_mem, serial_fifo, &context);
+    mx_status_t status = arch_guest_create(phys_mem, ctl_fifo, &context);
     if (status != NO_ERROR)
         return status;
 
@@ -45,10 +45,36 @@ mx_status_t GuestDispatcher::Enter() {
     return arch_guest_enter(context_);
 }
 
-mx_status_t GuestDispatcher::set_entry(uintptr_t guest_entry) {
+mx_status_t GuestDispatcher::MemTrap(mx_vaddr_t guest_paddr, size_t size) {
     canary_.Assert();
 
-    return arch_guest_set_entry(context_, guest_entry);
+    return arch_guest_mem_trap(context_, guest_paddr, size);
+}
+
+mx_status_t GuestDispatcher::SetGpr(const mx_guest_gpr_t& guest_gpr) {
+    canary_.Assert();
+
+    return arch_guest_set_gpr(context_, guest_gpr);
+}
+
+mx_status_t GuestDispatcher::GetGpr(mx_guest_gpr_t* guest_gpr) const {
+    canary_.Assert();
+
+    return arch_guest_get_gpr(context_, guest_gpr);
+}
+
+#if ARCH_X86_64
+mx_status_t GuestDispatcher::SetApicMem(mxtl::RefPtr<VmObject> apic_mem) {
+    canary_.Assert();
+
+    return x86_guest_set_apic_mem(context_, apic_mem);
+}
+#endif // ARCH_X86_64
+
+mx_status_t GuestDispatcher::set_ip(uintptr_t guest_ip) {
+    canary_.Assert();
+
+    return arch_guest_set_ip(context_, guest_ip);
 }
 
 #if ARCH_X86_64
@@ -56,11 +82,5 @@ mx_status_t GuestDispatcher::set_cr3(uintptr_t guest_cr3) {
     canary_.Assert();
 
     return x86_guest_set_cr3(context_, guest_cr3);
-}
-
-mx_status_t GuestDispatcher::set_esi(uint32_t guest_esi) {
-    canary_.Assert();
-
-    return x86_guest_set_esi(context_, guest_esi);
 }
 #endif // ARCH_X86_64

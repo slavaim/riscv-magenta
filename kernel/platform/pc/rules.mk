@@ -32,7 +32,6 @@ MODULE_SRCS += \
 
 MODULE_DEPS += \
     third_party/lib/acpica \
-    kernel/lib/capsule \
     kernel/lib/gfxconsole \
     kernel/lib/fixed_point \
     kernel/lib/memory_limit \
@@ -46,8 +45,6 @@ KERNEL_DEFINES += \
 
 WITH_SMP ?= 1
 SMP_MAX_CPUS ?= 8
-
-LK_HEAP_IMPLEMENTATION ?= cmpctmalloc
 
 include make/module.mk
 

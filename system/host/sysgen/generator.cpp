@@ -12,7 +12,7 @@ using std::string;
 
 static constexpr char kAuthors[] = "The Fuchsia Authors";
 
-bool Generator::header(ofstream& os) const {
+bool Generator::header(ofstream& os) {
     auto t = std::time(nullptr);
     auto ltime = std::localtime(&t);
 
@@ -24,7 +24,7 @@ bool Generator::header(ofstream& os) const {
     return os.good();
 }
 
-bool Generator::footer(ofstream& os) const {
+bool Generator::footer(ofstream& os) {
     os << "\n";
     return os.good();
 }
@@ -38,7 +38,7 @@ static int alias_arg(const Syscall& sc, const std::vector<CallWrapper*> wrappers
     return 1;
 }
 
-bool X86AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) const {
+bool X86AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) {
     if (sc.is_vdso())
         return true;
 
@@ -49,7 +49,7 @@ bool X86AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) const {
     return os.good();
 }
 
-bool Arm64AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) const {
+bool Arm64AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) {
     if (sc.is_vdso())
         return true;
 
@@ -59,15 +59,34 @@ bool Arm64AssemblyGenerator::syscall(ofstream& os, const Syscall& sc) const {
     return os.good();
 }
 
-bool SyscallNumbersGenerator::syscall(ofstream& os, const Syscall& sc) const {
+bool KernelBranchGenerator::header(ofstream& os) {
+    os << "start_syscall_dispatch\n";
+    return os.good();
+}
+
+bool KernelBranchGenerator::syscall(ofstream& os, const Syscall& sc) {
+    if (sc.is_vdso()) {
+        return os.good();
+    }
+    os << "syscall_dispatch " << sc.num_kernel_args() << " " << sc.name << "\n";
+    return os.good();
+}
+
+bool SyscallNumbersGenerator::syscall(ofstream& os, const Syscall& sc) {
     if (sc.is_vdso())
         return true;
 
+    num_calls_++;
     os << define_prefix_ << sc.name << " " << sc.index << "\n";
     return os.good();
 }
 
-bool TraceInfoGenerator::syscall(ofstream& os, const Syscall& sc) const {
+bool SyscallNumbersGenerator::footer(ofstream& os) {
+    os << define_prefix_ << "COUNT " << num_calls_ << "\n";
+    return os.good();
+}
+
+bool TraceInfoGenerator::syscall(ofstream& os, const Syscall& sc) {
     if (sc.is_vdso())
         return true;
 
@@ -75,6 +94,27 @@ bool TraceInfoGenerator::syscall(ofstream& os, const Syscall& sc) const {
     os << "{" << sc.index << ", " << sc.num_kernel_args() << ", "
        << '"' << sc.name << "\"},\n";
 
+    return os.good();
+}
+
+bool CategoryGenerator::syscall(ofstream& os, const Syscall& sc) {
+    for (const auto& attr : sc.attributes) {
+        if (attr != "*")
+            category_map_[attr].push_back(&sc.name);
+    }
+    return true;
+}
+
+bool CategoryGenerator::footer(ofstream& os) {
+    for (const auto& category : category_map_) {
+        os << "\n#define HAVE_SYSCALL_CATEGORY_" << category.first << " 1\n";
+        os << "SYSCALL_CATEGORY_BEGIN(" << category.first << ")\n";
+
+        for (auto sc : category.second)
+            os << "    SYSCALL_IN_CATEGORY(" << *sc << ")\n";
+
+        os << "SYSCALL_CATEGORY_END(" << category.first << ")\n";
+    }
     return os.good();
 }
 
@@ -89,7 +129,7 @@ void write_syscall_signature_line(ofstream& os, const Syscall& sc, string name_p
     // Writes all arguments.
     os << before_args;
     bool first = true;
-    sc.for_each_kernel_arg([&] (const TypeSpec& arg) {
+    sc.for_each_kernel_arg([&](const TypeSpec& arg) {
         if (!first) {
             os << inter_arg;
         }

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "devcoordinator.h"
 #include "devmgr.h"
 #include "memfs-private.h"
 
@@ -96,6 +97,11 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
     mx_handle_t h = vfs_create_global_root_handle();
     launchpad_add_handle(lp, h, PA_MXIO_ROOT);
 
+    //TODO: constrain to /svc/debug, or other as appropriate
+    if (strcmp(name, "init") && ((h = get_service_root()) != MX_HANDLE_INVALID)) {
+        launchpad_add_handle(lp, h, PA_SERVICE_ROOT);
+    }
+
     if (stdiofd < 0) {
         mx_status_t r;
         if ((r = mx_log_create(0, &h) < 0)) {
@@ -152,6 +158,65 @@ static ssize_t setup_bootfs_vmo(uint32_t n, uint32_t type, mx_handle_t vmo) {
     printf("devmgr: bootfs #%u contains %u file%s\n",
            n, cd.file_count, (cd.file_count == 1) ? "" : "s");
     return cd.file_count;
+}
+
+static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_handle_t* out_dest) {
+    mx_handle_t dest;
+    mx_status_t status = mx_vmo_create(length, 0, &dest);
+    if (status != NO_ERROR) {
+        return status;
+    }
+
+    char buffer[PAGE_SIZE];
+    mx_off_t src_offset = offset;
+    mx_off_t dest_offset = 0;
+
+    while (length > 0) {
+        size_t copy = (length > sizeof(buffer) ? sizeof(buffer) : length);
+        size_t actual;
+        if ((status = mx_vmo_read(src, buffer, src_offset, copy, &actual)) != NO_ERROR) {
+            goto fail;
+        }
+        if ((status = mx_vmo_write(dest, buffer, dest_offset, actual, &actual)) != NO_ERROR) {
+            goto fail;
+        }
+        src_offset += actual;
+        dest_offset += actual;
+        length -= actual;
+    }
+
+    *out_dest = dest;
+    return NO_ERROR;
+
+fail:
+    mx_handle_close(dest);
+    return status;
+}
+
+static void setup_last_crashlog(mx_handle_t vmo_in, uint64_t off_in, size_t sz) {
+    printf("devmgr: last crashlog is %zu bytes\n", sz);
+    mx_handle_t vmo;
+    if (copy_vmo(vmo_in, off_in, sz, &vmo) != NO_ERROR) {
+        return;
+    }
+    bootfs_add_file("log/last-panic.txt", vmo, 0, sz);
+}
+
+static mx_status_t devmgr_read_mdi(mx_handle_t vmo, mx_off_t offset, size_t length) {
+    mx_handle_t mdi_handle;
+    mx_status_t status = copy_vmo(vmo, offset, length, &mdi_handle);
+    if (status != NO_ERROR) {
+        printf("devmgr_read_mdi failed to copy MDI data: %d\n", status);
+        return status;
+    }
+
+    devmgr_set_mdi(mdi_handle);
+    return NO_ERROR;
+
+fail:
+    printf("devmgr_read_mdi failed %d\n", status);
+    mx_handle_close(mdi_handle);
+    return status;
 }
 
 #define HND_BOOTFS(n) PA_HND(PA_VMO_BOOTFS, n)
@@ -214,7 +279,12 @@ static void setup_bootfs(void) {
                 }
                 break;
             }
+            case BOOTDATA_LAST_CRASHLOG:
+                setup_last_crashlog(vmo, off + sizeof(bootdata), bootdata.length);
+                break;
             case BOOTDATA_MDI:
+                devmgr_read_mdi(vmo, off, len);
+                break;
             case BOOTDATA_CMDLINE:
             case BOOTDATA_ACPI_RSDP:
             case BOOTDATA_FRAMEBUFFER:

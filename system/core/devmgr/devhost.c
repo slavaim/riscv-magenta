@@ -45,24 +45,7 @@ static iostate_t root_ios = {
     },
 };
 
-typedef struct {
-    mx_driver_t* drv;
-    const char* libname;
-    list_node_t node;
-    mx_status_t status;
-} driver_rec_t;
-
 static list_node_t dh_drivers = LIST_INITIAL_VALUE(dh_drivers);
-
-static const char* drv_to_libname(mx_driver_t* drv) {
-    driver_rec_t* rec;
-    list_for_every_entry(&dh_drivers, rec, driver_rec_t, node) {
-        if (rec->drv == drv) {
-            return rec->libname;
-        }
-    }
-    return "unknown";
-}
 
 static const char* mkdevpath(mx_device_t* dev, char* path, size_t max) {
     if (dev == NULL) {
@@ -89,10 +72,10 @@ static const char* mkdevpath(mx_device_t* dev, char* path, size_t max) {
     return end;
 }
 
-static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, driver_rec_t** out) {
+static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, mx_driver_rec_t** out) {
     // check for already-loaded driver first
-    driver_rec_t* rec;
-    list_for_every_entry(&dh_drivers, rec, driver_rec_t, node) {
+    mx_driver_rec_t* rec;
+    list_for_every_entry(&dh_drivers, rec, mx_driver_rec_t, node) {
         if (!strcmp(libname, rec->libname)) {
             *out = rec;
             mx_handle_close(vmo);
@@ -101,7 +84,7 @@ static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, driver_r
     }
 
     int len = strlen(libname) + 1;
-    rec = calloc(1, sizeof(driver_rec_t) + len);
+    rec = calloc(1, sizeof(mx_driver_rec_t) + len);
     if (rec == NULL) {
         mx_handle_close(vmo);
         return ERR_NO_MEMORY;
@@ -118,7 +101,7 @@ static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, driver_r
         goto done;
     }
 
-    magenta_driver_info_t* di = dlsym(dl, "__magenta_driver__");
+    const magenta_driver_info_t* di = dlsym(dl, "__magenta_driver__");
     if (di == NULL) {
         log(ERROR, "devhost: driver '%s' missing __magenta_driver__ symbol\n", libname);
         rec->status = ERR_IO;
@@ -137,10 +120,11 @@ static mx_status_t dh_find_driver(const char* libname, mx_handle_t vmo, driver_r
         goto done;
     }
 
-    rec->drv = di->driver;
+    rec->name = di->driver->name;
+    rec->ops = di->driver->ops;
 
-    if (rec->drv->ops->init) {
-        rec->status = rec->drv->ops->init(rec->drv);
+    if (rec->ops->init) {
+        rec->status = rec->ops->init(&rec->ctx);
         if (rec->status < 0) {
             log(ERROR, "devhost: driver '%s' failed in init: %d\n",
                 libname, rec->status);
@@ -207,7 +191,7 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
     switch (msg.op) {
     case DC_OP_CREATE_DEVICE_STUB:
         log(RPC_IN, "devhost[%s] create device stub drv='%s'\n", path, name);
-        if (hcount != 1) {
+        if (hcount < 1 || hcount > 2) {
             printf("HCOUNT %d\n", hcount);
             r = ERR_INVALID_ARGS;
             goto fail;
@@ -228,16 +212,19 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         mx_device_t* dev = newios->dev;
         memcpy(dev->name, "shadow", 7);
         dev->protocol_id = msg.protocol_id;
+        dev->ops = &device_default_ops;
         dev->rpc = hin[0];
+        dev->resource = (hcount == 2 ? hin[1] : MX_HANDLE_INVALID);
         dev->refcount = 1;
         list_initialize(&dev->children);
+        list_initialize(&dev->instances);
 
         newios->ph.handle = hin[0];
         newios->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
         newios->ph.func = dh_handle_dc_rpc;
         if ((r = port_watch(&dh_port, &newios->ph)) < 0) {
-            free(newios);
             free(newios->dev);
+            free(newios);
             break;
         }
         log(RPC_IN, "devhost[%s] created '%s' ios=%p\n", path, name, newios);
@@ -264,17 +251,20 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         }
 
         // named driver -- ask it to create the device
-        driver_rec_t* rec;
+        mx_driver_rec_t* rec;
         if ((r = dh_find_driver(name, hin[1], &rec)) < 0) {
             free(newios);
             log(ERROR, "devhost[%s] driver load failed: %d\n", path, r);
             break;
         }
-        if (rec->drv->ops->create) {
+        if (rec->ops->create) {
             // magic cookie for device create handshake
-            mx_device_t* parent = (void*) (uintptr_t) 0xa7a7a7a7;
-            device_create_setup(parent);
-            if ((r = rec->drv->ops->create(rec->drv, parent, "shadow", args, hin[2])) < 0) {
+            mx_device_t parent = {
+                .name = "device_create dummy",
+                .owner = rec,
+            };
+            device_create_setup(&parent);
+            if ((r = rec->ops->create(rec->ctx, &parent, "shadow", args, hin[2])) < 0) {
                 log(ERROR, "devhost[%s] driver create() failed: %d\n", path, r);
                 device_create_setup(NULL);
                 break;
@@ -310,17 +300,20 @@ static mx_status_t dh_handle_rpc_read(mx_handle_t h, iostate_t* ios) {
         }
         //TODO: api lock integration
         log(RPC_IN, "devhost[%s] bind driver '%s'\n", path, name);
-        driver_rec_t* rec;
+        mx_driver_rec_t* rec;
         if ((r = dh_find_driver(name, hin[0], &rec)) < 0) {
             log(ERROR, "devhost[%s] driver load failed: %d\n", path, r);
         } else {
-            if (rec->drv->ops->bind) {
-                r = rec->drv->ops->bind(rec->drv, ios->dev, &ios->dev->owner_cookie);
+            if (rec->ops->bind) {
+                // set owner first so device_add() will be able to find the driver
+                ios->dev->owner = rec;
+                r = rec->ops->bind(rec->ctx, ios->dev, &ios->dev->owner_cookie);
             } else {
                 r = ERR_NOT_SUPPORTED;
             }
             if (r < 0) {
                 log(ERROR, "devhost[%s] bind driver '%s' failed: %d\n", path, name, r);
+                ios->dev->owner = NULL;
             }
         }
         dc_msg_t reply = {
@@ -399,6 +392,7 @@ static mx_status_t dh_handle_rio_rpc(port_handler_t* ph, mx_signals_t signals, u
     // out from under us (ERR_STOP).  In all cases, the ios's reference to
     // the device was released, and will no longer be used, so we will free
     // it before returning.
+    mx_handle_close(ios->ph.handle);
     free(ios);
     return r;
 }
@@ -421,12 +415,13 @@ static void devhost_io_init(void) {
 // Send message to devcoordinator asking to add child device to
 // parent device.  Called under devhost api lock.
 mx_status_t devhost_add(mx_device_t* parent, mx_device_t* child,
-                        const char* businfo, mx_handle_t resource) {
+                        const char* businfo, mx_handle_t resource,
+                        const mx_device_prop_t* props, uint32_t prop_count) {
     char buffer[512];
     const char* path = mkdevpath(parent, buffer, sizeof(buffer));
     log(RPC_OUT, "devhost[%s] add '%s'\n", path, child->name);
 
-    const char* libname = drv_to_libname(child->driver);
+    const char* libname = child->driver->libname;
     size_t namelen = strlen(libname) + strlen(child->name) + 2;
     char name[namelen];
     snprintf(name, namelen, "%s,%s", libname, child->name);
@@ -441,7 +436,7 @@ mx_status_t devhost_add(mx_device_t* parent, mx_device_t* child,
     dc_msg_t msg;
     uint32_t msglen;
     if ((r = dc_msg_pack(&msg, &msglen,
-                         child->props, child->prop_count * sizeof(mx_device_prop_t),
+                         props, prop_count * sizeof(mx_device_prop_t),
                          name, businfo)) < 0) {
         goto fail;
     }
@@ -538,8 +533,8 @@ mx_status_t devhost_remove(mx_device_t* dev) {
     return NO_ERROR;
 }
 
-mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_name) {
-    return devhost_simple_rpc(dev, DC_OP_BIND_DEVICE, drv_name, "bind-device");
+mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_libname) {
+    return devhost_simple_rpc(dev, DC_OP_BIND_DEVICE, drv_libname, "bind-device");
 }
 
 extern driver_api_t devhost_api;

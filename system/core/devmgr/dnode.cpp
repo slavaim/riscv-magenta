@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include <fs/vfs.h>
-#include <magenta/new.h>
+#include <mxalloc/new.h>
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
@@ -36,7 +36,6 @@ mxtl::RefPtr<Dnode> Dnode::Create(const char* name, size_t len, mxtl::RefPtr<Vno
         return nullptr;
     }
 
-    vn->devices_.push_back(dn);
     return dn;
 }
 

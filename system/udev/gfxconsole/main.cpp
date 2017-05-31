@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <ddk/binding.h>
-#include <ddk/device.h>
-#include <ddk/protocol/display.h>
-#include <ddk/protocol/input.h>
-
 #include <assert.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <gfx/gfx.h>
 #include <hid/usages.h>
 #include <magenta/device/console.h>
+#include <magenta/device/display.h>
 #include <magenta/listnode.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,9 +23,14 @@
 #include <mxtl/auto_lock.h>
 
 #include <magenta/atomic.h>
+#include <magenta/process.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/log.h>
 #include <magenta/syscalls/object.h>
+
+#if !BUILD_FOR_TEST
+#include <launchpad/launchpad.h>
+#endif
 
 #define VCDEBUG 1
 
@@ -38,48 +39,24 @@
 #include "vc.h"
 #include "vcdebug.h"
 
-#define VC_DEVNAME "vc"
-
-// framebuffer
-static gfx_surface g_hw_gfx;
-static mx_device_t* g_fb_device;
-static mx_device_t* g_root_device;
-static mx_display_protocol_t* g_fb_display_protocol;
-
-static thrd_t g_input_poll_thread;
-
-// single driver instance
-static bool g_vc_initialized = false;
+thrd_t g_input_poll_thread;
 
 // remember whether the virtual console controls the display
 static int g_vc_owns_display = 1;
-
-static mx_handle_t g_vc_owner_event = MX_HANDLE_INVALID;
 
 mtx_t g_vc_lock = MTX_INIT;
 
 static struct list_node g_vc_list TA_GUARDED(g_vc_lock)
     = LIST_INITIAL_VALUE(g_vc_list);
 static unsigned g_vc_count TA_GUARDED(g_vc_lock) = 0;
-static vc_device_t* g_active_vc TA_GUARDED(g_vc_lock);
+static vc_t* g_active_vc TA_GUARDED(g_vc_lock);
 static unsigned g_active_vc_index TA_GUARDED(g_vc_lock);
 static vc_battery_info_t g_battery_info TA_GUARDED(g_vc_lock);
 
 static mx_status_t vc_set_active_console(unsigned console) TA_REQ(g_vc_lock);
 
-static void vc_device_toggle_framebuffer() {
-    if (g_fb_display_protocol->acquire_or_release_display)
-        g_fb_display_protocol->acquire_or_release_display(g_fb_device);
-}
+static void vc_toggle_framebuffer();
 
-static void vc_display_ownership_callback(bool acquired) {
-    atomic_store(&g_vc_owns_display, acquired ? 1 : 0);
-    if (acquired) {
-        mx_object_signal(g_vc_owner_event, MX_USER_SIGNAL_1, MX_USER_SIGNAL_0);
-    } else {
-        mx_object_signal(g_vc_owner_event, MX_USER_SIGNAL_0, MX_USER_SIGNAL_1);
-    }
-}
 
 // Process key sequences that affect the console (scrolling, switching
 // console, etc.) without sending input to the current console.  This
@@ -96,7 +73,7 @@ static bool vc_handle_control_keys(uint8_t keycode,
 
     case HID_USAGE_KEY_F11:
         if (g_active_vc && (modifiers & MOD_ALT)) {
-            vc_device_set_fullscreen(g_active_vc, !(g_active_vc->flags & VC_FLAG_FULLSCREEN));
+            vc_set_fullscreen(g_active_vc, !(g_active_vc->flags & VC_FLAG_FULLSCREEN));
             return true;
         }
         break;
@@ -114,37 +91,37 @@ static bool vc_handle_control_keys(uint8_t keycode,
 
     case HID_USAGE_KEY_UP:
         if (modifiers & MOD_ALT) {
-            vc_device_scroll_viewport(g_active_vc, -1);
+            vc_scroll_viewport(g_active_vc, -1);
             return true;
         }
         break;
     case HID_USAGE_KEY_DOWN:
         if (modifiers & MOD_ALT) {
-            vc_device_scroll_viewport(g_active_vc, 1);
+            vc_scroll_viewport(g_active_vc, 1);
             return true;
         }
         break;
     case HID_USAGE_KEY_PAGEUP:
         if (modifiers & MOD_SHIFT) {
-            vc_device_scroll_viewport(g_active_vc, -(vc_device_rows(g_active_vc) / 2));
+            vc_scroll_viewport(g_active_vc, -(vc_rows(g_active_vc) / 2));
             return true;
         }
         break;
     case HID_USAGE_KEY_PAGEDOWN:
         if (modifiers & MOD_SHIFT) {
-            vc_device_scroll_viewport(g_active_vc, vc_device_rows(g_active_vc) / 2);
+            vc_scroll_viewport(g_active_vc, vc_rows(g_active_vc) / 2);
             return true;
         }
         break;
     case HID_USAGE_KEY_HOME:
         if (modifiers & MOD_SHIFT) {
-            vc_device_scroll_viewport_top(g_active_vc);
+            vc_scroll_viewport_top(g_active_vc);
             return true;
         }
         break;
     case HID_USAGE_KEY_END:
         if (modifiers & MOD_SHIFT) {
-            vc_device_scroll_viewport_bottom(g_active_vc);
+            vc_scroll_viewport_bottom(g_active_vc);
             return true;
         }
         break;
@@ -173,7 +150,7 @@ static bool vc_handle_device_control_keys(uint8_t keycode,
 
     case HID_USAGE_KEY_ESC:
         if (modifiers & MOD_ALT) {
-            vc_device_toggle_framebuffer();
+            vc_toggle_framebuffer();
             return true;
         }
         break;
@@ -184,7 +161,7 @@ static bool vc_handle_device_control_keys(uint8_t keycode,
 static void vc_handle_key_press(uint8_t keycode, int modifiers) {
     mxtl::AutoLock lock(&g_vc_lock);
 
-    // Handle device-level control keys
+    // Handle vc-level control keys
     if (vc_handle_device_control_keys(keycode, modifiers))
         return;
 
@@ -196,22 +173,15 @@ static void vc_handle_key_press(uint8_t keycode, int modifiers) {
     if (vc_handle_control_keys(keycode, modifiers))
         return;
 
-    vc_device_t* dev = g_active_vc;
+    vc_t* vc = g_active_vc;
     char output[4];
     uint32_t length = hid_key_to_vt100_code(
-        keycode, modifiers, dev->keymap, output, sizeof(output));
+        keycode, modifiers, vc->keymap, output, sizeof(output));
     if (length > 0) {
-        // This writes multi-byte sequences atomically, so that if space
-        // isn't available for the full sequence -- if the program running
-        // on the console is currently not reading input -- then nothing is
-        // written.  This has the nice property that we won't get partial
-        // key code sequences in that case.
-        mx_hid_fifo_write(&dev->fifo, output, length);
-
-        if (dev->mxdev) {
-            device_state_set(dev->mxdev, DEV_STATE_READABLE);
+        if (vc->client_fd >= 0) {
+            write(vc->client_fd, output, length);
         }
-        vc_device_scroll_viewport_bottom(dev);
+        vc_scroll_viewport_bottom(vc);
     }
 }
 
@@ -220,32 +190,32 @@ static int vc_watch_for_keyboard_devices_thread(void* arg) {
     return -1;
 }
 
-static void __vc_set_active(vc_device_t* dev, unsigned index) TA_REQ(g_vc_lock) {
+static void __vc_set_active(vc_t* vc, unsigned index) TA_REQ(g_vc_lock) {
     if (g_active_vc)
         g_active_vc->active = false;
-    dev->active = true;
-    g_active_vc = dev;
+    vc->active = true;
+    g_active_vc = vc;
     g_active_vc->flags &= ~VC_FLAG_HASOUTPUT;
     g_active_vc_index = index;
 }
 
-static mx_status_t vc_set_console_to_active(vc_device_t* dev) TA_REQ(g_vc_lock) {
-    if (dev == NULL)
+static mx_status_t vc_set_console_to_active(vc_t* to_vc) TA_REQ(g_vc_lock) {
+    if (to_vc == NULL)
         return ERR_INVALID_ARGS;
 
     unsigned i = 0;
-    vc_device_t* device = NULL;
+    vc_t* vc = NULL;
 
-    list_for_every_entry (&g_vc_list, device, vc_device_t, node) {
-        if (device == dev)
+    list_for_every_entry (&g_vc_list, vc, vc_t, node) {
+        if (to_vc == vc)
             break;
         i++;
     }
     if (i == g_vc_count) {
         return ERR_INVALID_ARGS;
     }
-    __vc_set_active(dev, i);
-    vc_device_render(g_active_vc);
+    __vc_set_active(to_vc, i);
+    vc_render(g_active_vc);
     return NO_ERROR;
 }
 
@@ -254,38 +224,38 @@ static mx_status_t vc_set_active_console(unsigned console) {
         return ERR_INVALID_ARGS;
 
     unsigned i = 0;
-    vc_device_t* device = NULL;
-    list_for_every_entry (&g_vc_list, device, vc_device_t, node) {
+    vc_t* vc = NULL;
+    list_for_every_entry (&g_vc_list, vc, vc_t, node) {
         if (i == console)
             break;
         i++;
     }
-    if (device == g_active_vc) {
+    if (vc == g_active_vc) {
         return NO_ERROR;
     }
-    __vc_set_active(device, console);
-    vc_device_render(g_active_vc);
+    __vc_set_active(vc, console);
+    vc_render(g_active_vc);
     return NO_ERROR;
 }
 
 void vc_get_status_line(char* str, int n) {
-    vc_device_t* device = NULL;
+    vc_t* vc = NULL;
     char* ptr = str;
     unsigned i = 0;
     // TODO add process name, etc.
-    list_for_every_entry (&g_vc_list, device, vc_device_t, node) {
+    list_for_every_entry (&g_vc_list, vc, vc_t, node) {
         if (n <= 0) {
             break;
         }
 
-        int lines = vc_device_get_scrollback_lines(device);
+        int lines = vc_get_scrollback_lines(vc);
         int chars = snprintf(ptr, n, "%s[%u] %s%c    %c%c \033[m",
-                             device->active ? "\033[33m\033[1m" : "",
+                             vc->active ? "\033[33m\033[1m" : "",
                              i,
-                             device->title,
-                             device->flags & VC_FLAG_HASOUTPUT ? '*' : ' ',
-                             lines > 0 && -device->viewport_y < lines ? '<' : ' ',
-                             device->viewport_y < 0 ? '>' : ' ');
+                             vc->title,
+                             vc->flags & VC_FLAG_HASOUTPUT ? '*' : ' ',
+                             lines > 0 && -vc->viewport_y < lines ? '<' : ' ',
+                             vc->viewport_y < 0 ? '>' : ' ');
         ptr += chars;
         n -= chars;
         i++;
@@ -296,11 +266,7 @@ void vc_get_battery_info(vc_battery_info_t* info) {
     memcpy(info, &g_battery_info, sizeof(vc_battery_info_t));
 }
 
-// implement device protocol:
-
-static void vc_device_release(void* ctx) {
-    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
-
+static void vc_destroy(vc_t* vc) {
     mxtl::AutoLock lock(&g_vc_lock);
 
     list_delete(&vc->node);
@@ -314,9 +280,9 @@ static void vc_device_release(void* ctx) {
     }
 
     // need to fixup g_active_vc and g_active_vc_index after deletion
-    vc_device_t* d = NULL;
+    vc_t* d = NULL;
     unsigned i = 0;
-    list_for_every_entry (&g_vc_list, d, vc_device_t, node) {
+    list_for_every_entry (&g_vc_list, d, vc_t, node) {
         if (g_active_vc) {
             if (d == g_active_vc) {
                 g_active_vc_index = i;
@@ -331,55 +297,26 @@ static void vc_device_release(void* ctx) {
         i++;
     }
 
-    vc_device_free(vc);
+    vc_free(vc);
 
     // redraw the status line, or the full screen
     if (g_active_vc) {
-        vc_device_render(g_active_vc);
+        vc_render(g_active_vc);
     }
 }
 
-static mx_status_t vc_device_read(void* ctx, void* buf, size_t count, mx_off_t off, size_t* actual) {
-    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
-
+//TODO wire output from vc proc to here
+ssize_t vc_write(vc_t* vc, const void* buf, size_t count, mx_off_t off) {
     mxtl::AutoLock lock(&g_vc_lock);
 
-    ssize_t result = mx_hid_fifo_read(&vc->fifo, buf, count);
-    if (mx_hid_fifo_size(&vc->fifo) == 0) {
-        device_state_clr(vc->mxdev, DEV_STATE_READABLE);
-    }
-
-    if (result == 0) {
-        result = ERR_SHOULD_WAIT;
-    } else {
-        *actual = result;
-        result = NO_ERROR;
-    }
-    return (mx_status_t)result;
-}
-
-static mx_status_t vc_device_op_write(void* ctx, const void* buf, size_t count, mx_off_t off,
-                                      size_t* actual) {
-    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
-    ssize_t result = vc_device_write(vc, buf, count, off);
-    if (result >= 0) {
-        *actual = result;
-        result = NO_ERROR;
-    }
-    return (mx_status_t)result;
-}
-
-ssize_t vc_device_write(vc_device_t* vc, const void* buf, size_t count, mx_off_t off) {
-    mxtl::AutoLock lock(&g_vc_lock);
-
-    vc->invy0 = vc_device_rows(vc) + 1;
+    vc->invy0 = vc_rows(vc) + 1;
     vc->invy1 = -1;
     const uint8_t* str = (const uint8_t*)buf;
     for (size_t i = 0; i < count; i++) {
         vc->textcon.putc(&vc->textcon, str[i]);
     }
     if (vc->invy1 >= 0) {
-        int rows = vc_device_rows(vc);
+        int rows = vc_rows(vc);
         // Adjust for the current viewport position.  Convert
         // console-relative row numbers to screen-relative row numbers.
         int invalidate_y0 = MIN(vc->invy0 - vc->viewport_y, rows);
@@ -389,152 +326,49 @@ ssize_t vc_device_write(vc_device_t* vc, const void* buf, size_t count, mx_off_t
     }
     if (!vc->active && !(vc->flags & VC_FLAG_HASOUTPUT)) {
         vc->flags |= VC_FLAG_HASOUTPUT;
-        vc_device_write_status(vc);
+        vc_write_status(vc);
         vc_gfx_invalidate_status(vc);
     }
     return count;
 }
 
-static mx_status_t vc_device_ioctl(void* ctx, uint32_t op, const void* cmd, size_t cmdlen,
-                                   void* reply, size_t max, size_t* out_actual) {
-    vc_device_t* vc = static_cast<vc_device_t*>(ctx);
+int g_fb_fd = -1;
 
-    mxtl::AutoLock lock(&g_vc_lock);
-
-    switch (op) {
-    case IOCTL_CONSOLE_GET_DIMENSIONS: {
-        auto* dims = reinterpret_cast<ioctl_console_dimensions_t*>(reply);
-        if (max < sizeof(*dims)) {
-            return ERR_BUFFER_TOO_SMALL;
-        }
-        dims->width = vc->columns;
-        dims->height = vc_device_rows(vc);
-        *out_actual = sizeof(*dims);
-        return NO_ERROR;
-    }
-    case IOCTL_CONSOLE_SET_ACTIVE_VC:
-        return vc_set_console_to_active(vc);
-    case IOCTL_DISPLAY_GET_FB: {
-        if (max < sizeof(ioctl_display_get_fb_t)) {
-            return ERR_BUFFER_TOO_SMALL;
-        }
-        auto* fb = reinterpret_cast<ioctl_display_get_fb_t*>(reply);
-        fb->info.format = vc->gfx->format;
-        fb->info.width = vc->gfx->width;
-        fb->info.height = vc->gfx->height;
-        fb->info.stride = vc->gfx->stride;
-        fb->info.pixelsize = vc->gfx->pixelsize;
-        fb->info.flags = 0;
-        //TODO: take away access to the vmo when the client closes the device
-        mx_status_t status = mx_handle_duplicate(vc->gfx_vmo, MX_RIGHT_SAME_RIGHTS, &fb->vmo);
-        if (status < 0) {
-            return status;
-        } else {
-            *out_actual = sizeof(ioctl_display_get_fb_t);
-            return NO_ERROR;
-        }
-    }
-    case IOCTL_DISPLAY_FLUSH_FB:
-        vc_gfx_invalidate_all(vc);
-        return NO_ERROR;
-    case IOCTL_DISPLAY_FLUSH_FB_REGION: {
-        auto* rect = reinterpret_cast<const ioctl_display_region_t*>(cmd);
-        if (cmdlen < sizeof(*rect)) {
-            return ERR_INVALID_ARGS;
-        }
-        vc_gfx_invalidate_region(vc, rect->x, rect->y, rect->width, rect->height);
-        return NO_ERROR;
-    }
-    case IOCTL_DISPLAY_SET_FULLSCREEN: {
-        if (cmdlen < sizeof(uint32_t) || !cmd) {
-            return ERR_INVALID_ARGS;
-        }
-        vc_device_set_fullscreen(vc, !!*(uint32_t*)cmd);
-        return NO_ERROR;
-    }
-    case IOCTL_DISPLAY_GET_OWNERSHIP_CHANGE_EVENT: {
-        if (max < sizeof(mx_handle_t)) {
-            return ERR_BUFFER_TOO_SMALL;
-        }
-        auto* evt = reinterpret_cast<mx_handle_t*>(reply);
-        mx_rights_t client_rights = MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ;
-        mx_status_t status = mx_handle_duplicate(g_vc_owner_event, client_rights, evt);
-        if (status < 0) {
-            return status;
-        } else {
-            *out_actual = sizeof(mx_handle_t);
-            return NO_ERROR;
-        }
-    }
-    default:
-        return ERR_NOT_SUPPORTED;
-    }
-}
-
-static mx_protocol_device_t vc_device_proto;
-
-extern mx_driver_t _driver_vc_root;
-
-// Create a new vc_device_t and add it to the console list.
-static mx_status_t vc_device_create(vc_device_t** vc_out) {
+// Create a new vc_t and add it to the console list.
+static mx_status_t vc_create(vc_t** vc_out) {
     mxtl::AutoLock lock(&g_vc_lock);
 
     mx_status_t status;
-    vc_device_t* device;
-    if ((status = vc_device_alloc(&g_hw_gfx, &device)) < 0) {
+    vc_t* vc;
+    if ((status = vc_alloc(NULL, g_fb_fd, &vc)) < 0) {
         return status;
     }
 
     // add to the vc list
-    list_add_tail(&g_vc_list, &device->node);
+    list_add_tail(&g_vc_list, &vc->node);
     g_vc_count++;
 
     // make this the active vc if it's the first one
     if (!g_active_vc) {
         vc_set_active_console(0);
     } else {
-        vc_device_render(g_active_vc);
+        vc_render(g_active_vc);
     }
 
-    *vc_out = device;
-    return NO_ERROR;
-}
-
-static mx_status_t vc_root_open(void* ctx, mx_device_t** dev_out, uint32_t flags) {
-    vc_device_t* vc;
-    mx_status_t status = vc_device_create(&vc);
-    if (status != NO_ERROR) {
-        return status;
-    }
-
-    mxtl::AutoLock lock(&g_vc_lock);
-
-    // Create an mx_device_t for the vc_device_t.
-    char name[8];
-    snprintf(name, sizeof(name), "vc%u", g_vc_count);
-
-    device_add_args_t args = {};
-    args.version = DEVICE_ADD_ARGS_VERSION;
-    args.name = name;
-    args.ctx = vc;
-    args.driver = &_driver_vc_root;
-    args.ops = &vc_device_proto;
-    args.proto_id = MX_PROTOCOL_CONSOLE;
-    args.flags = DEVICE_ADD_INSTANCE;
-
-    status = device_add(g_root_device, &args, &vc->mxdev);
-    if (status != NO_ERROR) {
-        vc_device_free(vc);
-        return status;
-    }
-
-    *dev_out = vc->mxdev;
+    *vc_out = vc;
     return NO_ERROR;
 }
 
 static int vc_log_reader_thread(void* arg) {
-    auto dev = reinterpret_cast<vc_device_t*>(arg);
+    auto vc = reinterpret_cast<vc_t*>(arg);
     mx_handle_t h;
+
+    mx_koid_t koid = 0;
+    mx_info_handle_basic_t info;
+    if (mx_object_get_info(mx_process_self(), MX_INFO_HANDLE_BASIC, &info,
+                           sizeof(info), NULL, NULL) == NO_ERROR) {
+        koid = info.koid;
+    }
 
     if (mx_log_create(MX_LOG_FLAG_READABLE, &h) < 0) {
         printf("vc log listener: cannot open log\n");
@@ -552,20 +386,24 @@ static int vc_log_reader_thread(void* arg) {
             }
             break;
         }
+        // don't print log messages from ourself
+        if (rec->pid == koid) {
+            continue;
+        }
         char tmp[64];
         snprintf(tmp, 64, "\033[32m%05d.%03d\033[39m] \033[31m%05" PRIu64 ".\033[36m%05" PRIu64 "\033[39m> ",
                  (int)(rec->timestamp / 1000000000ULL),
                  (int)((rec->timestamp / 1000000ULL) % 1000ULL),
                  rec->pid, rec->tid);
-        vc_device_write(dev, tmp, strlen(tmp), 0);
-        vc_device_write(dev, rec->data, rec->datalen, 0);
+        vc_write(vc, tmp, strlen(tmp), 0);
+        vc_write(vc, rec->data, rec->datalen, 0);
         if ((rec->datalen == 0) || (rec->data[rec->datalen - 1] != '\n')) {
-            vc_device_write(dev, "\n", 1, 0);
+            vc_write(vc, "\n", 1, 0);
         }
     }
 
     const char* oops = "<<LOG ERROR>>\n";
-    vc_device_write(dev, oops, strlen(oops), 0);
+    vc_write(vc, oops, strlen(oops), 0);
 
     return 0;
 }
@@ -591,13 +429,13 @@ static int vc_battery_poll_thread(void* arg) {
                 }
             }
             if (g_active_vc) {
-                vc_device_write_status(g_active_vc);
+                vc_write_status(g_active_vc);
                 vc_gfx_invalidate_status(g_active_vc);
             }
         }
 
         if (length <= 0) {
-            printf("vc: read() on battery device returned %d\n",
+            printf("vc: read() on battery vc returned %d\n",
                    static_cast<int>(length));
             break;
         }
@@ -614,7 +452,7 @@ static mx_status_t vc_battery_device_added(int dirfd, int event, const char* fn,
 
     int battery_fd = openat(dirfd, fn, O_RDONLY);
     if (battery_fd < 0) {
-        printf("vc: failed to open battery device \"%s\"\n", fn);
+        printf("vc: failed to open battery vc \"%s\"\n", fn);
         return NO_ERROR;
     }
 
@@ -642,115 +480,145 @@ static int vc_battery_dir_poll_thread(void* arg) {
     return 0;
 }
 
-static mx_protocol_device_t vc_root_proto;
+#if !BUILD_FOR_TEST
+#include <magenta/device/pty.h>
 
-static void display_flush(uint starty, uint endy) {
-    g_fb_display_protocol->flush(g_fb_device);
+int mkpty(vc_t* vc, int fd[2]) {
+    fd[0] = open("/dev/misc/ptmx", O_RDWR);
+    if (fd[0] < 0) {
+        return -1;
+    }
+    fd[1] = openat(fd[0], "0", O_RDWR);
+    if (fd[1] < 0) {
+        close(fd[0]);
+        return -1;
+    }
+    pty_window_size_t wsz = {
+        .width = vc->columns,
+        .height = vc->rows,
+    };
+    ioctl_pty_set_window_size(fd[0], &wsz);
+
+    return 0;
 }
 
-static mx_status_t vc_root_bind(mx_driver_t* drv, mx_device_t* dev, void** cookie) {
-    if (g_vc_initialized) {
-        // disallow multiple instances
-        return ERR_NOT_SUPPORTED;
+static int vc_shell_thread(void* arg) {
+    vc_t* vc;
+    if (vc_create(&vc)) {
+        return 0;
     }
 
-    mx_display_protocol_t* disp;
-    mx_status_t status;
-    if ((status = device_op_get_protocol(dev, MX_PROTOCOL_DISPLAY, (void**)&disp)) < 0) {
-        return status;
+    if ((vc->client_fd = open("/dev/misc/ptmx", O_RDWR)) < 0) {
+        goto done;
     }
 
-    // get display info
-    mx_display_info_t info;
-    if ((status = disp->get_mode(dev, &info)) < 0) {
-        return status;
+    for (;;) {
+        int fd[2];
+        if (mkpty(vc, fd) < 0) {
+            vc_destroy(vc);
+            return 0;
+        }
+
+        const char* args[] = { "/boot/bin/sh" };
+
+        launchpad_t* lp;
+        launchpad_create(mx_job_default(), "vc:sh", &lp);
+        launchpad_load_from_file(lp, args[0]);
+        launchpad_set_args(lp, 1, args);
+        launchpad_transfer_fd(lp, fd[1], MXIO_FLAG_USE_FOR_STDIO | 0);
+        launchpad_clone(lp, LP_CLONE_MXIO_ROOT | LP_CLONE_ENVIRON | LP_CLONE_DEFAULT_JOB);
+
+        const char* errmsg;
+        mx_handle_t proc;
+        mx_status_t r;
+        if ((r = launchpad_go(lp, &proc, &errmsg)) < 0) {
+            printf("vc: cannot spawn shell: %s: %d\n", errmsg, r);
+            close(fd[0]);
+            goto done;
+        }
+
+        vc->client_fd = fd[0];
+
+        for (;;) {
+            char data[8192];
+            ssize_t r = read(vc->client_fd, data, sizeof(data));
+            if (r <= 0) {
+                printf("< %zd >\n", r);
+                break;
+            }
+            vc_write(vc, data, r, 0);
+        }
+
+        vc->client_fd = -1;
+        close(fd[0]);
+
+        mx_task_kill(proc);
     }
 
-    // get framebuffer
-    void* framebuffer;
-    if ((status = disp->get_framebuffer(dev, &framebuffer)) < 0) {
-        return status;
+done:
+    vc_destroy(vc);
+    return 0;
+}
+
+static void vc_owns_display(bool acquired) {
+    printf("vc: %s display\n", acquired ? "gained" : "lost");
+    atomic_store(&g_vc_owns_display, acquired ? 1 : 0);
+}
+
+static void vc_toggle_framebuffer() {
+    uint32_t n = g_vc_owns_display ? 1 : 0;
+    printf("vc: set owner %d\n", n);
+    ioctl_display_set_owner(g_fb_fd, &n);
+}
+
+int main(int argc, char** argv) {
+    int fd;
+    for (;;) {
+        if ((fd = open("/dev/class/framebuffer/000/virtcon", O_RDWR)) >= 0) {
+            break;
+        }
+        usleep(100000);
     }
 
-    // initialize the hw surface
-    if ((status = gfx_init_surface(&g_hw_gfx, framebuffer, info.width, info.height, info.stride, info.format, 0)) < 0) {
-        return status;
-    }
-
-    // save some state
-    g_fb_device = dev;
-    g_fb_display_protocol = disp;
-
-    // Create display event
-    if ((status = mx_event_create(0, &g_vc_owner_event)) < 0) {
-        return status;
-    }
-
-    // Request notification of display ownership changes
-    if (disp->set_ownership_change_callback) {
-        disp->set_ownership_change_callback(dev, &vc_display_ownership_callback);
-    }
-
-    // if the underlying device requires flushes, set the pointer to a flush op
-    if (disp->flush) {
-        g_hw_gfx.flush = display_flush;
-    }
-
-    // publish the root vc device. opening this device will create a new vc
-    device_add_args_t args = {};
-    args.version = DEVICE_ADD_ARGS_VERSION;
-    args.name = VC_DEVNAME;
-    args.driver = &_driver_vc_root;
-    args.ops = &vc_root_proto;
-    args.proto_id = MX_PROTOCOL_CONSOLE;
-
-    status = device_add(dev, &args, &g_root_device);
-    if (status != NO_ERROR) {
-        return status;
-    }
+    g_fb_fd = fd;
 
     // start a thread to listen for new input devices
-    int ret = thrd_create_with_name(
-        &g_input_poll_thread, vc_watch_for_keyboard_devices_thread, NULL,
-        "vc-inputdev-poll");
+    int ret = thrd_create_with_name(&g_input_poll_thread,
+                                    vc_watch_for_keyboard_devices_thread, NULL,
+                                    "vc-inputdev-poll");
     if (ret != thrd_success) {
         xprintf("vc: input polling thread did not start (return value=%d)\n", ret);
-    }
-
-    g_vc_initialized = true;
-    xprintf("initialized vc on display %s, width=%u height=%u stride=%u format=%u\n",
-            device_get_name(dev), info.width, info.height, info.stride, info.format);
-
-    vc_device_t* vc;
-    if (vc_device_create(&vc) == NO_ERROR) {
-        thrd_t t;
-        thrd_create_with_name(&t, vc_log_reader_thread, vc, "vc-log-reader");
     }
 
     thrd_t u;
     thrd_create_with_name(&u, vc_battery_dir_poll_thread, NULL,
                           "vc-battery-dir-poll");
 
+    vc_t* vc;
+    if (vc_create(&vc) == NO_ERROR) {
+        thrd_t t;
+        thrd_create_with_name(&t, vc_log_reader_thread, vc, "vc-log-reader");
+    }
+
+    setenv("TERM", "xterm", 1);
+
+    thrd_t t;
+    thrd_create_with_name(&t, vc_shell_thread, vc, "vc-shell-reader");
+    thrd_create_with_name(&t, vc_shell_thread, vc, "vc-shell-reader");
+    thrd_create_with_name(&t, vc_shell_thread, vc, "vc-shell-reader");
+
+    mx_handle_t e;
+    ioctl_display_get_ownership_change_event(fd, &e);
+
+    for (;;) {
+        if (g_vc_owns_display) {
+            mx_object_wait_one(e, MX_USER_SIGNAL_1, MX_TIME_INFINITE, NULL);
+            vc_owns_display(false);
+        } else {
+            mx_object_wait_one(e, MX_USER_SIGNAL_0, MX_TIME_INFINITE, NULL);
+            vc_owns_display(true);
+        }
+    }
     return NO_ERROR;
 }
-
-static mx_driver_ops_t vc_root_driver_ops;
-
-__attribute__((constructor)) static void initialize() {
-    vc_device_proto.version = DEVICE_OPS_VERSION;
-    vc_device_proto.release = vc_device_release;
-    vc_device_proto.read = vc_device_read;
-    vc_device_proto.write = vc_device_op_write;
-    vc_device_proto.ioctl = vc_device_ioctl;
-
-    vc_root_proto.version = DEVICE_OPS_VERSION;
-    vc_root_proto.open = vc_root_open;
-
-    vc_root_driver_ops.version = DRIVER_OPS_VERSION,
-    vc_root_driver_ops.bind = vc_root_bind;
-    _driver_vc_root.ops = &vc_root_driver_ops;
-}
-
-MAGENTA_DRIVER_BEGIN(vc_root, vc_root_driver_ops, "magenta", "0.1", 1)
-    BI_MATCH_IF(EQ, BIND_PROTOCOL, MX_PROTOCOL_DISPLAY),
-MAGENTA_DRIVER_END(vc_root)
+#endif

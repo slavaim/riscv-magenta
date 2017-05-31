@@ -27,6 +27,7 @@ typedef enum {
     MX_INFO_THREAD_EXCEPTION_REPORT    = 11, // mx_exception_report_t[1]
     MX_INFO_TASK_STATS                 = 12, // mx_info_task_stats_t[1]
     MX_INFO_PROCESS_MAPS               = 13, // mx_info_maps_t[n]
+    MX_INFO_THREAD_STATS               = 14, // mx_info_thread_stats_t[1]
     MX_INFO_LAST
 } mx_object_info_topic_t;
 
@@ -52,6 +53,7 @@ typedef enum {
     MX_OBJ_TYPE_IOPORT2             = 20,
     MX_OBJ_TYPE_HYPERVISOR          = 21,
     MX_OBJ_TYPE_GUEST               = 22,
+    MX_OBJ_TYPE_TIMER               = 23,
     MX_OBJ_TYPE_LAST
 } mx_obj_type_t;
 
@@ -108,6 +110,11 @@ typedef struct mx_info_thread {
     uint32_t wait_exception_port_type;
 } mx_info_thread_t;
 
+typedef struct mx_info_thread_stats {
+    // Total accumulated running time of the thread.
+    mx_time_t total_runtime;
+} mx_info_thread_stats_t;
+
 // Statistics about resources (e.g., memory) used by a task. Can be relatively
 // expensive to gather.
 typedef struct mx_info_task_stats {
@@ -119,7 +126,29 @@ typedef struct mx_info_task_stats {
     // Will be no larger than mem_mapped_bytes.
     // Some of the pages may be double-mapped (and thus double-counted),
     // or may be shared with other tasks.
+    // TODO(dbort): Remove mem_committed_bytes, which is equal to
+    // mem_private_bytes + mem_shared_bytes.
     size_t mem_committed_bytes;
+
+    // For the fields below, a byte is considered committed if it's backed by
+    // physical memory. Some of the memory may be double-mapped, and thus
+    // double-counted.
+
+    // Committed memory that is only mapped into this task.
+    size_t mem_private_bytes;
+
+    // Committed memory that is mapped into this and at least one other task.
+    size_t mem_shared_bytes;
+
+    // A number that estimates the fraction of mem_shared_bytes that this
+    // task is responsible for keeping alive.
+    //
+    // An estimate of:
+    //   For each shared, committed byte:
+    //   mem_scaled_shared_bytes += 1 / (number of tasks mapping this byte)
+    //
+    // This number is strictly smaller than mem_shared_bytes.
+    size_t mem_scaled_shared_bytes;
 } mx_info_task_stats_t;
 
 typedef struct mx_info_vmar {
@@ -193,6 +222,17 @@ typedef struct mx_info_maps {
 
 // Argument is the base address of the vDSO mapping (or zero), a uintptr_t.
 #define MX_PROP_PROCESS_VDSO_BASE_ADDRESS   6u
+
+// Argument is the number of descendant generations that a job is allowed to
+// have, as a uint32_t.
+//
+// A job has a MAX_HEIGHT value equal to one less than its parent's MAX_HEIGHT
+// value.
+//
+// A job with MAX_HEIGHT equal to zero may not have any child jobs, and calling
+// mx_job_create() on such a job will fail with ERR_OUT_OF_RANGE. MAX_HEIGHT
+// does not affect the creation of processes.
+#define MX_PROP_JOB_MAX_HEIGHT              7u
 
 // Values for mx_info_thread_t.state.
 #define MX_THREAD_STATE_NEW                 0u

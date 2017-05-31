@@ -200,6 +200,25 @@ mx_status_t sys_vmo_op_range(mx_handle_t handle, uint32_t op, uint64_t offset, u
     return vmo->RangeOp(op, offset, size, _buffer, buffer_size);
 }
 
+mx_status_t sys_vmo_set_cache_policy(mx_handle_t handle, uint32_t cache_policy) {
+    mxtl::RefPtr<VmObjectDispatcher> vmo;
+    mx_status_t status = NO_ERROR;
+    auto up = ProcessDispatcher::GetCurrent();
+
+    // Sanity check the cache policy.
+    if (cache_policy & ~MX_CACHE_POLICY_MASK) {
+        return ERR_INVALID_ARGS;
+    }
+
+    // lookup the dispatcher from handle.
+    status = up->GetDispatcherWithRights(handle, MX_RIGHT_MAP, &vmo);
+    if (status != NO_ERROR) {
+        return status;
+    }
+
+    return vmo->SetMappingCachePolicy(cache_policy);
+}
+
 mx_status_t sys_vmo_clone(mx_handle_t handle, uint32_t options, uint64_t offset, uint64_t size,
         user_ptr<mx_handle_t>(_out_handle)) {
     LTRACEF("handle %d options %#x offset %#" PRIx64 " size %#" PRIx64 "\n",
@@ -233,17 +252,13 @@ mx_status_t sys_vmo_clone(mx_handle_t handle, uint32_t options, uint64_t offset,
     if (result != NO_ERROR)
         return result;
 
-    // set the rights to the new handle to no greater than the input handle + WRITE
-    mx_rights_t rights = in_rights;
-    if (options & MX_VMO_CLONE_COPY_ON_WRITE) {
+    // Set the rights to the new handle to no greater than the input
+    // handle, plus WRITE if making a COW clone, and always allow
+    // GET/SET_PROPERTY so the user can set MX_PROP_NAME on the new clone.
+    mx_rights_t rights =
+        in_rights | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
+    if (options & MX_VMO_CLONE_COPY_ON_WRITE)
         rights |= MX_RIGHT_WRITE;
-
-        // HACK: set X and MAP bits to keep the user loader working
-        // will want to trim these so that the new clone doesn't have more permissions than
-        // the original.
-        rights |= MX_RIGHT_EXECUTE;
-        rights |= MX_RIGHT_MAP;
-    }
 
     // make sure we're somehow not elevating rights beyond what a new vmo should have
     DEBUG_ASSERT((default_rights & rights) == rights);

@@ -13,9 +13,9 @@
 // Interface for syscall generators.
 class Generator {
 public:
-    virtual bool header(std::ofstream& os) const;
-    virtual bool syscall(std::ofstream& os, const Syscall& sc) const = 0;
-    virtual bool footer(std::ofstream& os) const;
+    virtual bool header(std::ofstream& os);
+    virtual bool syscall(std::ofstream& os, const Syscall& sc) = 0;
+    virtual bool footer(std::ofstream& os);
 
 protected:
     virtual ~Generator() {}
@@ -41,7 +41,7 @@ public:
           name_prefix_(name_prefix),
           wrappers_(call_wrappers) {}
 
-    bool syscall(std::ofstream& os, const Syscall& sc) const override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
 
 private:
     const std::string syscall_macro_;
@@ -58,7 +58,7 @@ public:
           name_prefix_(name_prefix),
           wrappers_(call_wrappers) {}
 
-    bool syscall(std::ofstream& os, const Syscall& sc) const override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
 
 private:
     const std::string syscall_macro_;
@@ -72,16 +72,61 @@ public:
     SyscallNumbersGenerator(const std::string& define_prefix)
         : define_prefix_(define_prefix) {}
 
-    bool syscall(std::ofstream& os, const Syscall& sc) const override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
+    bool footer(std::ofstream& os) override;
 
 private:
     const std::string define_prefix_;
+    int num_calls_ = 0;
 };
 
 // Generate debug trace info.
 class TraceInfoGenerator : public Generator {
 public:
-    bool syscall(std::ofstream& os, const Syscall& sc) const override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
+};
+
+// Generate category list.
+class CategoryGenerator : public Generator {
+public:
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
+    bool footer(std::ofstream& os) override;
+
+private:
+    std::map<const std::string, std::vector<const std::string*>> category_map_;
+};
+
+/* Generates the kernel syscall jump table and accoutrements. */
+class KernelBranchGenerator : public Generator {
+public:
+    bool header(std::ofstream& os) override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
+};
+
+/* Generates the kernel syscall wrappers. */
+class KernelWrapperGenerator : public Generator {
+public:
+    KernelWrapperGenerator(const std::string& syscall_prefix, const std::string& wrapper_prefix,
+                           const std::string& define_prefix)
+        : syscall_prefix_(syscall_prefix), wrapper_prefix_(wrapper_prefix),
+          define_prefix_(define_prefix) {}
+
+    bool header(std::ofstream& os) override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
+    bool footer(std::ofstream& os) override;
+
+private:
+    const std::string syscall_prefix_;
+    const std::string wrapper_prefix_;
+    const std::string define_prefix_;
+};
+
+/* Generates the Rust bindings. */
+class RustBindingGenerator : public Generator {
+public:
+    bool header(std::ofstream& os) override;
+    bool footer(std::ofstream& os) override;
+    bool syscall(std::ofstream& os, const Syscall& sc) override;
 };
 
 // Writes the signature of a syscall, up to the end of the args list.

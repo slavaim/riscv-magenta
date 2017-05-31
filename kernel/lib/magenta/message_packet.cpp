@@ -4,15 +4,13 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+#include <magenta/message_packet.h>
+
 #include <err.h>
-#include <new.h>
 
 #include <magenta/handle_reaper.h>
 #include <magenta/magenta.h>
-#include <magenta/message_packet.h>
-
-constexpr uint32_t kMaxMessageSize = 65536u;
-constexpr uint32_t kMaxMessageHandles = 1024u;
+#include <mxcpp/new.h>
 
 // static
 mx_status_t MessagePacket::Create(uint32_t data_size, uint32_t num_handles,

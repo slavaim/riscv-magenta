@@ -65,13 +65,11 @@ FUNCTION(arm_reset)
     /* set up the mmu according to mmu_initial_mappings */
 
     /* load the base of the translation table and clear the table */
-    adrp    page_table1, arm64_kernel_translation_table
-    add     page_table1, page_table1, #:lo12:arm64_kernel_translation_table
+    adr_global page_table1, arm64_kernel_translation_table
 
     /* Prepare tt_trampoline page table */
     /* Calculate pagetable physical addresses */
-    adrp    page_table0, tt_trampoline
-    add     page_table0, page_table0, #:lo12:tt_trampoline
+    adr_global page_table0, tt_trampoline
 
 #if WITH_SMP
     mrs     cpuid, mpidr_el1
@@ -89,8 +87,7 @@ FUNCTION(arm_reset)
     bne     .Lclear_top_page_table_loop
 
     /* load the address of the mmu_initial_mappings table and start processing */
-    adrp    mmu_initial_mapping, mmu_initial_mappings
-    add     mmu_initial_mapping, mmu_initial_mapping, #:lo12:mmu_initial_mappings
+    adr_global mmu_initial_mapping, mmu_initial_mappings
 
 .Linitial_mapping_loop:
 /* Read entry of mmu_initial_mappings (likely defined in platform.c) */
@@ -110,13 +107,13 @@ FUNCTION(arm_reset)
 
     /* set up the flags */
     tbzmask tmp, MMU_INITIAL_MAPPING_FLAG_UNCACHED, .Lnot_uncached
-    ldr     attr, =MMU_INITIAL_MAP_STRONGLY_ORDERED
+    movlit  attr, MMU_INITIAL_MAP_STRONGLY_ORDERED
     b       .Lmem_type_done
 
 .Lnot_uncached:
     /* is this memory mapped to device/peripherals? */
     tbzmask tmp, MMU_INITIAL_MAPPING_FLAG_DEVICE, .Lnot_device
-    ldr     attr, =MMU_INITIAL_MAP_DEVICE
+    movlit  attr, MMU_INITIAL_MAP_DEVICE
     b       .Lmem_type_done
 .Lnot_device:
 
@@ -136,22 +133,22 @@ FUNCTION(arm_reset)
  *         extended with additional flag types
  */
 .Lmapping_size_loop:
-    ldr     attr, =MMU_PTE_KERNEL_DATA_FLAGS
-    ldr     tmp, =__code_start
+    movlit  attr, MMU_PTE_KERNEL_DATA_FLAGS
+    movabs  tmp, __code_start
     subs    size, tmp, vaddr
     /* If page is below  the entry point (_start) mark as kernel data */
     b.hi    .Lmem_type_done
 
-    ldr     attr, =MMU_PTE_KERNEL_RO_FLAGS
-    ldr     tmp, =__rodata_start
+    movlit  attr, MMU_PTE_KERNEL_RO_FLAGS
+    movabs  tmp, __rodata_start
     subs    size, tmp, vaddr
     b.hi    .Lmem_type_done
     orr     attr, attr, #MMU_PTE_ATTR_PXN
-    ldr     tmp, =__data_start
+    movabs  tmp, __data_start
     subs    size, tmp, vaddr
     b.hi    .Lmem_type_done
-    ldr     attr, =MMU_PTE_KERNEL_DATA_FLAGS
-    ldr     tmp, =_end
+    movlit  attr, MMU_PTE_KERNEL_DATA_FLAGS
+    movabs  tmp, _end
     subs    size, tmp, vaddr
     b.lo    . /* Error: _end < vaddr */
     cmp     mapping_size, size
@@ -239,7 +236,7 @@ FUNCTION(arm_reset)
     /* Calculate phys offset (needed for memory allocation) */
 .Lphys_offset:
     adr     phys_offset, .Lphys_offset /* phys */
-    ldr     tmp, =.Lphys_offset /* virt */
+    movabs  tmp, .Lphys_offset /* virt */
     sub     phys_offset, tmp, phys_offset
 
     /* Allocate new page table */
@@ -280,20 +277,18 @@ FUNCTION(arm_reset)
     /* Setup mapping at phys -> phys */
     adr     tmp, .Lmmu_on_pc
     lsr     tmp, tmp, #MMU_IDENT_TOP_SHIFT    /* tmp = paddr index */
-    ldr     tmp2, =MMU_PTE_IDENT_FLAGS
+    movlit  tmp2, MMU_PTE_IDENT_FLAGS
     add     tmp2, tmp2, tmp, lsl #MMU_IDENT_TOP_SHIFT  /* tmp2 = pt entry */
 
     str     tmp2, [page_table0, tmp, lsl #3]     /* tt_trampoline[paddr index] = pt entry */
 
 #if WITH_SMP
-    adrp    tmp, page_tables_not_ready
-    add     tmp, tmp, #:lo12:page_tables_not_ready
+    adr_global tmp, page_tables_not_ready
     str     wzr, [tmp]
     b       .Lpage_tables_ready
 
 .Lmmu_enable_secondary:
-    adrp    tmp, page_tables_not_ready
-    add     tmp, tmp, #:lo12:page_tables_not_ready
+    adr_global tmp, page_tables_not_ready
 .Lpage_tables_not_ready:
     ldr     wtmp2, [tmp]
     cbnz    wtmp2, .Lpage_tables_not_ready
@@ -308,13 +303,13 @@ FUNCTION(arm_reset)
     dsb     sy
 
     /* Initialize Memory Attribute Indirection Register */
-    ldr     tmp, =MMU_MAIR_VAL
+    movlit  tmp, MMU_MAIR_VAL
     msr     mair_el1, tmp
 
     /* Initialize TCR_EL1 */
     /* set cacheable attributes on translation walk */
     /* (SMP extensions) non-shareable, inner write-back write-allocate */
-    ldr     tmp, =MMU_TCR_FLAGS_IDENT
+    movlit  tmp, MMU_TCR_FLAGS_IDENT
     msr     tcr_el1, tmp
 
     isb
@@ -336,13 +331,13 @@ FUNCTION(arm_reset)
     isb
 
     /* Jump to virtual code address */
-    ldr     tmp, =.Lmmu_on_vaddr
+    movabs  tmp, .Lmmu_on_vaddr
     br      tmp
 
 .Lmmu_on_vaddr:
 
     /* Disable trampoline page-table in ttbr0 */
-    ldr     tmp, =MMU_TCR_FLAGS_KERNEL
+    movlit  tmp, MMU_TCR_FLAGS_KERNEL
     msr     tcr_el1, tmp
     isb
 
@@ -359,8 +354,8 @@ FUNCTION(arm_reset)
     // NOTE: Relies on __post_prebss_bss_start and __bss_end
     // being 16 byte aligned.
 .L__do_bss:
-    ldr     tmp, =__post_prebss_bss_start
-    ldr     tmp2, =__bss_end
+    adr_global tmp, __post_prebss_bss_start
+    adr_global tmp2, __bss_end
     sub     tmp2, tmp2, tmp
     cbz     tmp2, .L__bss_loop_done
 .L__bss_loop:
@@ -369,7 +364,7 @@ FUNCTION(arm_reset)
     cbnz    tmp2, .L__bss_loop
 .L__bss_loop_done:
 
-    ldr     tmp, =boot_cpu_kstack_end
+    adr_global tmp, boot_cpu_kstack_end
     mov     sp, tmp
 
     // Set the thread pointer early so compiler-generated references
@@ -379,7 +374,7 @@ FUNCTION(arm_reset)
     // having to compile-time disable safe-stack and stack-protector
     // code generation features for all the C code in the bootstrap
     // path, which (unlike on x86, e.g.) is enough to get annoying.
-    ldr     tmp, =boot_cpu_fake_thread_pointer_location
+    adr_global tmp, boot_cpu_fake_thread_pointer_location
     msr     tpidr_el1, tmp
 
     // Choose a good (ideally random) stack-guard value as early as possible.

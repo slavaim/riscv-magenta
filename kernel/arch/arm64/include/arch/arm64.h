@@ -95,12 +95,14 @@ typedef struct arm64_iframe_short iframe;
 enum handler_return platform_irq(iframe* frame);
 enum handler_return platform_fiq(iframe* frame);
 
+void arm64_thread_process_pending_signals(struct arm64_iframe_long *frame);
+
 /* fpu routines */
 void arm64_fpu_exception(struct arm64_iframe_long *iframe, uint exception_flags);
 void arm64_fpu_context_switch(struct thread *oldthread, struct thread *newthread);
 
 /* overridable syscall handler */
-void arm64_syscall(struct arm64_iframe_long *iframe, bool is_64bit, uint32_t syscall_imm, uint64_t pc);
+void arm64_syscall(struct arm64_iframe_long *iframe, bool is_64bit, uint64_t pc);
 uint64_t arm64_get_boot_el(void);
 void arm64_get_cache_info(arm64_cache_info_t* info);
 void arm64_dump_cache_info(uint32_t cpu);

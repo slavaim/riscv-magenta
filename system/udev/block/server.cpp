@@ -9,8 +9,8 @@
 
 #include <magenta/compiler.h>
 #include <magenta/device/block.h>
-#include <magenta/new.h>
 #include <magenta/syscalls.h>
+#include <mxalloc/new.h>
 #include <mxtl/auto_lock.h>
 #include <mxtl/limits.h>
 #include <mxtl/ref_ptr.h>
@@ -70,9 +70,8 @@ mx_status_t BlockTransaction::Enqueue(bool do_respond, block_msg_t** msg_out) {
         // clear the current block transaction.
         do_respond = true;
     }
-    *msg_out = &msgs_[goal_];
-    goal_++;
-    assert(goal_ <= MAX_TXN_MESSAGES);
+    MX_DEBUG_ASSERT(goal_ < MAX_TXN_MESSAGES); // Avoid overflowing msgs
+    *msg_out = &msgs_[goal_++];
     flags_ |= do_respond ? kTxnFlagRespond : 0;
     return NO_ERROR;
 fail:
@@ -82,9 +81,10 @@ fail:
     return ERR_IO;
 }
 
-void BlockTransaction::Complete(mx_status_t status) {
+void BlockTransaction::Complete(block_msg_t* msg, mx_status_t status) {
     mxtl::AutoLock lock(&lock_);
     response_.count++;
+    MX_DEBUG_ASSERT(goal_ != 0);
     MX_DEBUG_ASSERT(response_.count <= goal_);
 
     if ((status != NO_ERROR) && (response_.status == NO_ERROR)) {
@@ -92,38 +92,31 @@ void BlockTransaction::Complete(mx_status_t status) {
     }
 
     if ((flags_ & kTxnFlagRespond) && (response_.count == goal_)) {
-        RespondLocked();
+        // Don't block the block device. Respond if we can (and in the absence
+        // of an I/O error or closed remote, this should just work).
+        uint32_t actual;
+        mx_status_t status = mx_fifo_write(fifo_, &response_,
+                                           sizeof(block_fifo_response_t), &actual);
+        if (status != NO_ERROR) {
+            fprintf(stderr, "Block Server I/O error: Could not write response\n");
+        }
+        response_.count = 0;
+        response_.status = NO_ERROR;
+        goal_ = 0;
+        flags_ &= ~kTxnFlagRespond;
     }
+    msg->txn.reset();
+    msg->iobuf.reset();
 }
 
-txnid_t BlockTransaction::GetTxnid() const {
-    return response_.txnid;
-}
+IoBuffer::IoBuffer(mx::vmo vmo, vmoid_t id) : io_vmo_(mxtl::move(vmo)), vmoid_(id) {}
 
-void BlockTransaction::RespondLocked() {
-    // Don't block the block device. Respond if we can (and in the absence
-    // of an I/O error or closed remote, this should just work).
-    uint32_t actual;
-    mx_status_t status = mx_fifo_write(fifo_, &response_, sizeof(block_fifo_response_t), &actual);
-    if (status != NO_ERROR) {
-        fprintf(stderr, "Block Server I/O error: Could not write response\n");
-    }
-    response_.count = 0;
-    response_.status = NO_ERROR;
-    goal_ = 0;
-    flags_ &= ~kTxnFlagRespond;
-}
-
-IoBuffer::IoBuffer(mx_handle_t vmo, vmoid_t id) : io_vmo_(vmo), vmoid_(id) {}
-
-IoBuffer::~IoBuffer() {
-    mx_handle_close(io_vmo_);
-}
+IoBuffer::~IoBuffer() {}
 
 mx_status_t IoBuffer::ValidateVmoHack(uint64_t length, uint64_t vmo_offset) {
     uint64_t vmo_size;
     mx_status_t status;
-    if ((status = mx_vmo_get_size(io_vmo_, &vmo_size)) != NO_ERROR) {
+    if ((status = io_vmo_.get_size(&vmo_size)) != NO_ERROR) {
         return status;
     } else if (length + vmo_offset > vmo_size) {
         return ERR_INVALID_ARGS;
@@ -149,7 +142,7 @@ mx_status_t BlockServer::FindVmoIDLocked(vmoid_t* out) {
     return ERR_NO_RESOURCES;
 }
 
-mx_status_t BlockServer::AttachVmo(mx_handle_t vmo, vmoid_t* out) {
+mx_status_t BlockServer::AttachVmo(mx::vmo vmo, vmoid_t* out) {
     mx_status_t status;
     vmoid_t id;
     mxtl::AutoLock server_lock(&server_lock_);
@@ -158,7 +151,7 @@ mx_status_t BlockServer::AttachVmo(mx_handle_t vmo, vmoid_t* out) {
     }
 
     AllocChecker ac;
-    mxtl::RefPtr<IoBuffer> ibuf = mxtl::AdoptRef(new (&ac) IoBuffer(vmo, id));
+    mxtl::RefPtr<IoBuffer> ibuf = mxtl::AdoptRef(new (&ac) IoBuffer(mxtl::move(vmo), id));
     if (!ac.check()) {
         return ERR_NO_MEMORY;
     }
@@ -173,7 +166,7 @@ mx_status_t BlockServer::AllocateTxn(txnid_t* out) {
         if (txns_[i] == nullptr) {
             txnid_t txnid = static_cast<txnid_t>(i);
             AllocChecker ac;
-            txns_[i] = mxtl::AdoptRef(new (&ac) BlockTransaction(fifo_, txnid));
+            txns_[i] = mxtl::AdoptRef(new (&ac) BlockTransaction(fifo_.get(), txnid));
             if (!ac.check()) {
                 return ERR_NO_MEMORY;
             }
@@ -189,10 +182,11 @@ void BlockServer::FreeTxn(txnid_t txnid) {
     if (txnid >= countof(txns_)) {
         return;
     }
+    MX_DEBUG_ASSERT(txns_[txnid] != nullptr);
     txns_[txnid] = nullptr;
 }
 
-mx_status_t BlockServer::Create(mx_handle_t* fifo_out, BlockServer** out) {
+mx_status_t BlockServer::Create(mx::fifo* fifo_out, BlockServer** out) {
     AllocChecker ac;
     BlockServer* bs = new (&ac) BlockServer();
     if (!ac.check()) {
@@ -200,8 +194,8 @@ mx_status_t BlockServer::Create(mx_handle_t* fifo_out, BlockServer** out) {
     }
 
     mx_status_t status;
-    if ((status = mx_fifo_create(BLOCK_FIFO_MAX_DEPTH, BLOCK_FIFO_ESIZE, 0,
-                                 fifo_out, &bs->fifo_)) != NO_ERROR) {
+    if ((status = mx::fifo::create(BLOCK_FIFO_MAX_DEPTH, BLOCK_FIFO_ESIZE, 0,
+                                   fifo_out, &bs->fifo_)) != NO_ERROR) {
         delete bs;
         return status;
     }
@@ -214,9 +208,15 @@ void blockserver_fifo_complete(void* cookie, mx_status_t status) {
     block_msg_t* msg = static_cast<block_msg_t*>(cookie);
     // Since iobuf is a RefPtr, it lives at least as long as the txn,
     // and is not discarded underneath the block device driver.
-    msg->iobuf = nullptr;
-    msg->txn->Complete(status);
-    msg->txn = nullptr;
+    MX_DEBUG_ASSERT(msg->iobuf != nullptr);
+    MX_DEBUG_ASSERT(msg->txn != nullptr);
+    // Hold an extra copy of the 'txn' refptr; if we don't, and 'msg->txn' is
+    // the last copy, then when we nullify 'msg->txn' in Complete we end up
+    // trying to unlock a lock in a deleted BlockTxn.
+    auto txn = msg->txn;
+    // Pass msg to complete so 'msg->txn' can be nullified while protected
+    // by the BlockTransaction's lock.
+    txn->Complete(msg, status);
 }
 
 static block_callbacks_t cb = {
@@ -233,7 +233,7 @@ mx_status_t BlockServer::Serve(mx_device_t* dev, block_ops_t* ops) {
     mx_handle_t fifo;
     {
         mxtl::AutoLock server_lock(&server_lock_);
-        fifo = fifo_;
+        fifo = fifo_.get();
     }
     while (true) {
         if ((status = do_read(fifo, &requests[0], &count)) != NO_ERROR) {
@@ -270,7 +270,9 @@ mx_status_t BlockServer::Serve(mx_device_t* dev, block_ops_t* ops) {
                 if (status != NO_ERROR) {
                     break;
                 }
+                MX_DEBUG_ASSERT(msg->txn == nullptr);
                 msg->txn = txns_[txnid];
+                MX_DEBUG_ASSERT(msg->iobuf == nullptr);
                 msg->iobuf = iobuf.CopyPointer();
 
                 // Hack to ensure that the vmo is valid.
@@ -283,10 +285,10 @@ mx_status_t BlockServer::Serve(mx_device_t* dev, block_ops_t* ops) {
                 }
 
                 if ((requests[i].opcode & BLOCKIO_OP_MASK) == BLOCKIO_READ) {
-                    ops->read(dev, iobuf->io_vmo_, requests[i].length,
+                    ops->read(dev, iobuf->io_vmo_.get(), requests[i].length,
                               requests[i].vmo_offset, requests[i].dev_offset, msg);
                 } else {
-                    ops->write(dev, iobuf->io_vmo_, requests[i].length,
+                    ops->write(dev, iobuf->io_vmo_.get(), requests[i].length,
                                requests[i].vmo_offset, requests[i].dev_offset, msg);
                 }
                 break;
@@ -312,22 +314,21 @@ mx_status_t BlockServer::Serve(mx_device_t* dev, block_ops_t* ops) {
     }
 }
 
-BlockServer::BlockServer() : fifo_(MX_HANDLE_INVALID), last_id(0) {}
+BlockServer::BlockServer() : last_id(0) {}
 BlockServer::~BlockServer() {
     ShutDown();
 }
 
 void BlockServer::ShutDown() {
     mxtl::AutoLock server_lock(&server_lock_);
-    if (fifo_ != MX_HANDLE_INVALID) {
-        mx_handle_close(fifo_);
-    }
-    fifo_ = MX_HANDLE_INVALID;
 }
 
 // C declarations
 mx_status_t blockserver_create(mx_handle_t* fifo_out, BlockServer** out) {
-    return BlockServer::Create(fifo_out, out);
+    mx::fifo fifo;
+    mx_status_t status = BlockServer::Create(&fifo, out);
+    *fifo_out = fifo.release();
+    return status;
 }
 void blockserver_shutdown(BlockServer* bs) {
     bs->ShutDown();
@@ -338,8 +339,9 @@ void blockserver_free(BlockServer* bs) {
 mx_status_t blockserver_serve(BlockServer* bs, mx_device_t* dev, block_ops_t* ops) {
     return bs->Serve(dev, ops);
 }
-mx_status_t blockserver_attach_vmo(BlockServer* bs, mx_handle_t vmo, vmoid_t* out) {
-    return bs->AttachVmo(vmo, out);
+mx_status_t blockserver_attach_vmo(BlockServer* bs, mx_handle_t raw_vmo, vmoid_t* out) {
+    mx::vmo vmo(raw_vmo);
+    return bs->AttachVmo(mxtl::move(vmo), out);
 }
 mx_status_t blockserver_allocate_txn(BlockServer* bs, txnid_t* out) {
     return bs->AllocateTxn(out);

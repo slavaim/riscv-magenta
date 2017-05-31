@@ -12,6 +12,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/common/hid-fifo.c \
     $(LOCAL_DIR)/common/usb.c \
     $(LOCAL_DIR)/protocol/input.c \
+    $(LOCAL_DIR)/protocol/platform-device.c \
     $(LOCAL_DIR)/io-buffer.c \
     $(LOCAL_DIR)/iotxn.c \
 
@@ -31,7 +32,7 @@ MODULE := $(LOCAL_DIR).iotxn-test
 
 MODULE_NAME := iotxn-test
 
-MODULE_TYPE := driver
+MODULE_TYPE := drivertest
 
 TEST_DIR := $(LOCAL_DIR)/test
 
@@ -56,7 +57,7 @@ MODULE := $(LOCAL_DIR).ddktl-test
 
 MODULE_NAME := ddktl-test
 
-MODULE_TYPE := driver
+MODULE_TYPE := drivertest
 
 TEST_DIR := $(LOCAL_DIR)/test/ddktl
 
@@ -70,6 +71,7 @@ MODULE_SRCS := \
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
     system/ulib/mx \
+    system/ulib/mxalloc \
     system/ulib/mxcpp \
     system/ulib/mxtl \
 

@@ -26,8 +26,12 @@ USE_CLANG ?= false
 USE_LLD ?= $(USE_CLANG)
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
 USE_GOLD := false
+USE_LTO ?= false
+USE_THINLTO ?= false
 else
 USE_GOLD ?= true
+USE_LTO := false
+USE_THINLTO := false
 endif
 LKNAME ?= magenta
 CLANG_TARGET_FUCHSIA ?= false
@@ -95,6 +99,7 @@ OUTLKELF := $(BUILDDIR)/$(LKNAME).elf
 GLOBAL_CONFIG_HEADER := $(BUILDDIR)/config-global.h
 KERNEL_CONFIG_HEADER := $(BUILDDIR)/config-kernel.h
 USER_CONFIG_HEADER := $(BUILDDIR)/config-user.h
+HOST_CONFIG_HEADER := $(BUILDDIR)/config-host.h
 GLOBAL_INCLUDES := system/public system/private $(GENERATED_INCLUDES)
 GLOBAL_OPTFLAGS ?= $(ARCH_OPTFLAGS)
 GLOBAL_DEBUGFLAGS ?= -g
@@ -155,9 +160,21 @@ USER_ASMFLAGS :=
 
 # Additional flags for dynamic linking, both for dynamically-linked
 # executables and for shared libraries.
-USER_DYNAMIC_LDFLAGS := \
+USER_LDFLAGS := \
     -z combreloc -z relro -z now -z text \
     --hash-style=gnu --eh-frame-hdr
+
+ifeq ($(call TOBOOL,$(USE_CLANG)),true)
+ifeq ($(call TOBOOL,$(USE_LTO)),true)
+ifeq ($(call TOBOOL,$(USE_THINLTO)),true)
+USER_COMPILEFLAGS += -flto=thin
+USER_LDFLAGS += --thinlto-jobs=8 --thinlto-cache-dir=$(BUILDDIR)/thinlto-cache
+else
+USER_COMPILEFLAGS += -flto -fwhole-program-vtables
+# Full LTO doesn't require any special ld flags.
+endif
+endif
+endif
 
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
 SAFESTACK := -fsanitize=safe-stack -fstack-protector-strong
@@ -172,7 +189,7 @@ USER_COMPILEFLAGS += $(SAFESTACK)
 USER_CRT1_OBJ := $(BUILDDIR)/system/ulib/crt1.o
 
 # Additional flags for building shared libraries (ld -shared).
-USERLIB_SO_LDFLAGS := $(USER_DYNAMIC_LDFLAGS) -z defs
+USERLIB_SO_LDFLAGS := $(USER_LDFLAGS) -z defs
 
 # This is the string embedded into dynamically-linked executables
 # as PT_INTERP.  The launchpad library looks this up via the
@@ -182,7 +199,7 @@ USER_SHARED_INTERP := ld.so.1
 
 # Additional flags for building dynamically-linked executables.
 USERAPP_LDFLAGS := \
-    $(USER_DYNAMIC_LDFLAGS) -pie -dynamic-linker $(USER_SHARED_INTERP)
+    $(USER_LDFLAGS) -pie -dynamic-linker $(USER_SHARED_INTERP)
 
 ifeq ($(call TOBOOL,$(USE_GOLD)),false)
 # BFD ld stupidly insists on resolving dependency DSO's symbols when
@@ -202,12 +219,6 @@ ARCH_COMPILEFLAGS :=
 ARCH_CFLAGS :=
 ARCH_CPPFLAGS :=
 ARCH_ASMFLAGS :=
-
-# Host compile flags
-HOST_COMPILEFLAGS := -Wall -g -O2 -Isystem/public -Isystem/private -I$(GENERATED_INCLUDES)
-HOST_CFLAGS := -std=c11
-HOST_CPPFLAGS := -std=c++11 -fno-exceptions -fno-rtti
-HOST_ASMFLAGS :=
 
 # top level rule
 all:: $(OUTLKBIN) $(OUTLKELF)-gdb.py
@@ -242,6 +253,9 @@ KERNEL_DEFINES := LK=1 _KERNEL=1
 
 # anything added to USER_DEFINES will be put into $(BUILDDIR)/config-user.h
 USER_DEFINES :=
+
+# anything added to HOST_DEFINES will be put into $(BUILDDIR)/config-host.h
+HOST_DEFINES :=
 
 # Anything added to GLOBAL_SRCDEPS will become a dependency of every source file in the system.
 # Useful for header files that may be included by one or more source files.
@@ -491,12 +505,9 @@ endif
 GLOBAL_INCLUDES := $(addprefix -I,$(GLOBAL_INCLUDES))
 KERNEL_INCLUDES := $(addprefix -I,$(KERNEL_INCLUDES))
 
-# default to no ccache
-CCACHE ?=
-
 # set up paths to various tools
 ifeq ($(call TOBOOL,$(USE_CLANG)),true)
-CC := $(CCACHE) $(CLANG_TOOLCHAIN_PREFIX)clang
+CC := $(CLANG_TOOLCHAIN_PREFIX)clang
 AR := $(CLANG_TOOLCHAIN_PREFIX)llvm-ar
 OBJDUMP := $(CLANG_TOOLCHAIN_PREFIX)llvm-objdump
 READELF := $(CLANG_TOOLCHAIN_PREFIX)llvm-readobj -elf-output-style=GNU
@@ -504,7 +515,7 @@ CPPFILT := $(CLANG_TOOLCHAIN_PREFIX)llvm-cxxfilt
 SIZE := $(CLANG_TOOLCHAIN_PREFIX)llvm-size
 NM := $(CLANG_TOOLCHAIN_PREFIX)llvm-nm
 else
-CC := $(CCACHE) $(TOOLCHAIN_PREFIX)gcc
+CC := $(TOOLCHAIN_PREFIX)gcc
 AR := $(TOOLCHAIN_PREFIX)ar
 OBJDUMP := $(TOOLCHAIN_PREFIX)objdump
 READELF := $(TOOLCHAIN_PREFIX)readelf
@@ -538,8 +549,8 @@ FOUND_HOST_GCC ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)gcc)
 HOST_TOOLCHAIN_PREFIX ?= $(CLANG_TOOLCHAIN_PREFIX)
 HOST_USE_CLANG ?= $(shell which $(HOST_TOOLCHAIN_PREFIX)clang)
 ifneq ($(HOST_USE_CLANG),)
-HOST_CC      := $(CCACHE) $(HOST_TOOLCHAIN_PREFIX)clang
-HOST_CXX     := $(CCACHE) $(HOST_TOOLCHAIN_PREFIX)clang++
+HOST_CC      := $(HOST_TOOLCHAIN_PREFIX)clang
+HOST_CXX     := $(HOST_TOOLCHAIN_PREFIX)clang++
 HOST_AR      := $(HOST_TOOLCHAIN_PREFIX)llvm-ar
 HOST_OBJDUMP := $(HOST_TOOLCHAIN_PREFIX)llvm-objdump
 HOST_READELF := $(HOST_TOOLCHAIN_PREFIX)llvm-readobj
@@ -551,8 +562,8 @@ else
 ifeq ($(FOUND_HOST_GCC),)
 $(error cannot find toolchain, please set HOST_TOOLCHAIN_PREFIX or add it to your path)
 endif
-HOST_CC      := $(CCACHE) $(HOST_TOOLCHAIN_PREFIX)gcc
-HOST_CXX     := $(CCACHE) $(HOST_TOOLCHAIN_PREFIX)g++
+HOST_CC      := $(HOST_TOOLCHAIN_PREFIX)gcc
+HOST_CXX     := $(HOST_TOOLCHAIN_PREFIX)g++
 HOST_AR      := $(HOST_TOOLCHAIN_PREFIX)ar
 HOST_OBJDUMP := $(HOST_TOOLCHAIN_PREFIX)objdump
 HOST_READELF := $(HOST_TOOLCHAIN_PREFIX)readelf
@@ -563,6 +574,25 @@ HOST_LD      := $(HOST_TOOLCHAIN_PREFIX)ld
 endif
 HOST_OBJCOPY := $(HOST_TOOLCHAIN_PREFIX)objcopy
 HOST_STRIP   := $(HOST_TOOLCHAIN_PREFIX)strip
+
+# Host compile flags
+HOST_COMPILEFLAGS := -Wall -g -O2 -Isystem/public -Isystem/private -I$(GENERATED_INCLUDES)
+HOST_CFLAGS := -std=c11
+HOST_CPPFLAGS := -std=c++14 -fno-exceptions -fno-rtti
+HOST_LDFLAGS :=
+ifneq ($(HOST_USE_CLANG),)
+# We need to use our provided libc++ and libc++abi (and their pthread
+# dependency) rather than the host library. For host tools without
+# C++, ignore the unused arguments.
+HOST_CPPFLAGS += -stdlib=libc++
+HOST_LDFLAGS += -stdlib=libc++ -static-libstdc++
+# We don't need to link libc++abi.a on OS X.
+ifneq ($(HOST_PLATFORM),darwin)
+HOST_LDFLAGS += -Lprebuilt/downloads/clang+llvm-$(HOST_ARCH)-$(HOST_PLATFORM)/lib -Wl,-Bstatic -lc++abi -Wl,-Bdynamic -lpthread
+endif
+HOST_LDFLAGS += -Wno-unused-command-line-argument
+endif
+HOST_ASMFLAGS :=
 
 ifneq ($(HOST_USE_CLANG),)
 ifeq ($(HOST_PLATFORM),darwin)
@@ -596,15 +626,24 @@ GLOBAL_DEFINES += ARCH_COMPILEFLAGS=\"$(subst $(SPACE),_,$(ARCH_COMPILEFLAGS))\"
 GLOBAL_DEFINES += ARCH_CFLAGS=\"$(subst $(SPACE),_,$(ARCH_CFLAGS))\"
 GLOBAL_DEFINES += ARCH_CPPFLAGS=\"$(subst $(SPACE),_,$(ARCH_CPPFLAGS))\"
 GLOBAL_DEFINES += ARCH_ASMFLAGS=\"$(subst $(SPACE),_,$(ARCH_ASMFLAGS))\"
+
 KERNEL_DEFINES += KERNEL_INCLUDES=\"$(subst $(SPACE),_,$(KERNEL_INCLUDES))\"
 KERNEL_DEFINES += KERNEL_COMPILEFLAGS=\"$(subst $(SPACE),_,$(KERNEL_COMPILEFLAGS))\"
 KERNEL_DEFINES += KERNEL_CFLAGS=\"$(subst $(SPACE),_,$(KERNEL_CFLAGS))\"
 KERNEL_DEFINES += KERNEL_CPPFLAGS=\"$(subst $(SPACE),_,$(KERNEL_CPPFLAGS))\"
 KERNEL_DEFINES += KERNEL_ASMFLAGS=\"$(subst $(SPACE),_,$(KERNEL_ASMFLAGS))\"
+
 USER_DEFINES += USER_COMPILEFLAGS=\"$(subst $(SPACE),_,$(USER_COMPILEFLAGS))\"
 USER_DEFINES += USER_CFLAGS=\"$(subst $(SPACE),_,$(USER_CFLAGS))\"
 USER_DEFINES += USER_CPPFLAGS=\"$(subst $(SPACE),_,$(USER_CPPFLAGS))\"
 USER_DEFINES += USER_ASMFLAGS=\"$(subst $(SPACE),_,$(USER_ASMFLAGS))\"
+USER_DEFINES += USER_LDFLAGS=\"$(subst $(SPACE),_,$(USER_LDFLAGS))\"
+
+HOST_DEFINES += HOST_COMPILEFLAGS=\"$(subst $(SPACE),_,$(HOST_COMPILEFLAGS))\"
+HOST_DEFINES += HOST_CFLAGS=\"$(subst $(SPACE),_,$(HOST_CFLAGS))\"
+HOST_DEFINES += HOST_CPPFLAGS=\"$(subst $(SPACE),_,$(HOST_CPPFLAGS))\"
+HOST_DEFINES += HOST_ASMFLAGS=\"$(subst $(SPACE),_,$(HOST_ASMFLAGS))\"
+HOST_DEFINES += HOST_LDFLAGS=\"$(subst $(SPACE),_,$(HOST_LDFLAGS))\"
 
 #$(info LIBGCC = $(LIBGCC))
 #$(info GLOBAL_COMPILEFLAGS = $(GLOBAL_COMPILEFLAGS))
@@ -647,7 +686,10 @@ $(KERNEL_CONFIG_HEADER): FORCE
 $(USER_CONFIG_HEADER): FORCE
 	@$(call MAKECONFIGHEADER,$@,USER_DEFINES,"#define __Fuchsia__ 1")
 
-GENERATED += $(GLOBAL_CONFIG_HEADER) $(KERNEL_CONFIG_HEADER) $(USER_CONFIG_HEADER)
+$(HOST_CONFIG_HEADER): FORCE
+	@$(call MAKECONFIGHEADER,$@,HOST_DEFINES,"")
+
+GENERATED += $(GLOBAL_CONFIG_HEADER) $(KERNEL_CONFIG_HEADER) $(USER_CONFIG_HEADER) $(HOST_CONFIG_HEADER)
 
 # Empty rule for the .d files. The above rules will build .d files as a side
 # effect. Only works on gcc 3.x and above, however.

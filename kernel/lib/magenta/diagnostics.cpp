@@ -54,7 +54,7 @@ static void DumpProcessListKeyMap() {
     printf("#vm : number of virtual memory address region handles\n");
     printf("#ch : number of channel handles\n");
     printf("#ev : number of event and event pair handles\n");
-    printf("#ip : number of io port handles\n");
+    printf("#po : number of port handles\n");
 }
 
 static char StateChar(const ProcessDispatcher& pd) {
@@ -72,7 +72,7 @@ static char StateChar(const ProcessDispatcher& pd) {
 }
 
 static const char* ObjectTypeToString(mx_obj_type_t type) {
-    static_assert(MX_OBJ_TYPE_LAST == 23, "need to update switch below");
+    static_assert(MX_OBJ_TYPE_LAST == 24, "need to update switch below");
 
     switch (type) {
         case MX_OBJ_TYPE_PROCESS: return "process";
@@ -95,6 +95,7 @@ static const char* ObjectTypeToString(mx_obj_type_t type) {
         case MX_OBJ_TYPE_IOPORT2: return "portv2";
         case MX_OBJ_TYPE_HYPERVISOR: return "hypervisor";
         case MX_OBJ_TYPE_GUEST: return "guest";
+        case MX_OBJ_TYPE_TIMER: return "timer";
         default: return "???";
     }
 }
@@ -138,7 +139,7 @@ static char* DumpHandleTypeCountLocked(const ProcessDispatcher& pd) {
              types[MX_OBJ_TYPE_CHANNEL],
              // Events and event pairs:
              types[MX_OBJ_TYPE_EVENT] + types[MX_OBJ_TYPE_EVENT_PAIR],
-             types[MX_OBJ_TYPE_IOPORT]
+             types[MX_OBJ_TYPE_IOPORT2]
              );
     return buf;
 }
@@ -198,6 +199,96 @@ static const char* VmoRightsToString(uint32_t rights, char str[kRightsStrLen]) {
     return str;
 }
 
+// Prints a header for the columns printed by DumpVmObject.
+// If |handles| is true, the dumped objects are expected to have handle info.
+static void PrintVmoDumpHeader(bool handles) {
+    printf(
+        "%s koid parent #chld #map #shr    size   alloc name\n",
+        handles ? "      handle rights " : "           -      - ");
+}
+
+static void DumpVmObject(
+    const VmObject& vmo, mx_handle_t handle, uint32_t rights, mx_koid_t koid) {
+
+    char handle_str[11];
+    if (handle != MX_HANDLE_INVALID) {
+        snprintf(handle_str, sizeof(handle_str),
+                 "%u", static_cast<uint32_t>(handle));
+    } else {
+        handle_str[0] = '-';
+        handle_str[1] = '\0';
+    }
+
+    char rights_str[kRightsStrLen];
+    if (rights != 0) {
+        VmoRightsToString(rights, rights_str);
+    } else {
+        rights_str[0] = '-';
+        rights_str[1] = '\0';
+    }
+
+    char size_str[MAX_FORMAT_SIZE_LEN];
+    format_size(size_str, sizeof(size_str), vmo.size());
+
+    char alloc_str[MAX_FORMAT_SIZE_LEN];
+    format_size(alloc_str, sizeof(alloc_str), vmo.AllocatedPages() * PAGE_SIZE);
+
+    char clone_str[21];
+    if (vmo.is_cow_clone()) {
+        snprintf(clone_str, sizeof(clone_str),
+                 "%" PRIu64, vmo.parent_user_id());
+    } else {
+        clone_str[0] = '-';
+        clone_str[1] = '\0';
+    }
+
+    char name[MX_MAX_NAME_LEN];
+    vmo.get_name(name, sizeof(name));
+    if (name[0] == '\0') {
+        name[0] = '-';
+        name[1] = '\0';
+    }
+
+    printf("  %10s "       // handle
+           "%6s "          // rights
+           "%5" PRIu64 " " // koid
+           "%6s "          // clone parent koid
+           "%5" PRIu32 " " // number of children
+           "%4" PRIu32 " " // map count
+           "%4" PRIu32 " " // share count
+           "%7s "          // size in bytes
+           "%7s "          // allocated bytes
+           "%s\n",         // name
+           handle_str,
+           rights_str,
+           koid,
+           clone_str,
+           vmo.num_children(),
+           vmo.num_mappings(),
+           vmo.share_count(),
+           size_str,
+           alloc_str,
+           name);
+}
+
+namespace {
+// Dumps VMOs under a VmAspace.
+class AspaceVmoDumper final : public VmEnumerator {
+public:
+    bool OnVmMapping(const VmMapping* map, const VmAddressRegion* vmar,
+                     uint depth) final {
+        auto vmo = map->vmo();
+        DumpVmObject(
+            *vmo,
+            MX_HANDLE_INVALID,
+            /* rights */ 0u,
+            /* koid */ vmo->user_id());
+        return true;
+    }
+};
+} // namespace
+
+// Dumps all VMOs associated with a process.
 // Non-static so this can be a friend of ProcessDispatcher.
 void DumpProcessVmObjects(mx_koid_t id) {
     auto pd = ProcessDispatcher::LookupProcessById(id);
@@ -206,14 +297,12 @@ void DumpProcessVmObjects(mx_koid_t id) {
         return;
     }
 
-    printf("process [%" PRIu64 "] VMOs:\n", id);
-    printf("    handle rights  koid #map clone #chld    size   alloc\n");
+    printf("process [%" PRIu64 "]:\n", id);
+    printf("Handles to VMOs:\n");
+    PrintVmoDumpHeader(/* handles */ true);
     int count = 0;
     uint64_t total_size = 0;
     uint64_t total_alloc = 0;
-    char buf[kRightsStrLen];
-    char size_str[MAX_FORMAT_SIZE_LEN];
-    char alloc_str[MAX_FORMAT_SIZE_LEN];
     AutoLock lock(&pd->handle_table_lock_);
     for (const auto& handle : pd->handles_) {
         auto d = handle.dispatcher();
@@ -222,33 +311,34 @@ void DumpProcessVmObjects(mx_koid_t id) {
             continue;
         }
         auto vmo = vmod->vmo();
-        auto size = vmo->size();
-        auto alloc = vmo->AllocatedPages() * PAGE_SIZE;
-        printf("%10u "         // handle
-               "%s "           // rights
-               "%5" PRIu64 " " // koid
-               "%4" PRIu32 " " // number of mappings
-               "%5s "          // clone type
-               "%5" PRIu32 " " // number of children
-               "%7s "          // size in bytes
-               "%7s\n",        // allocated bytes
-               (uint32_t)pd->MapHandleToValue(&handle),
-               VmoRightsToString(handle.rights(), buf),
-               handle.dispatcher()->get_koid(),
-               vmo->num_mappings(),
-               // TODO: Print the parent koid
-               vmo->is_cow_clone() ? "cow" : "-",
-               vmo->num_children(),
-               format_size(size_str, sizeof(size_str), size),
-               format_size(alloc_str, sizeof(alloc_str), alloc));
+
+        DumpVmObject(
+            *vmo,
+            pd->MapHandleToValue(&handle),
+            handle.rights(),
+            handle.dispatcher()->get_koid());
+
+        // TODO: Doesn't handle the case where a process has multiple
+        // handles to the same VMO; will double-count all of these totals.
         count++;
-        total_size += size;
-        total_alloc += alloc;
+        total_size += vmo->size();
+        // TODO: Doing this twice (here and in DumpVmObject) is a waste of
+        // work, and can get out of sync.
+        total_alloc += vmo->AllocatedPages() * PAGE_SIZE;
     }
-    printf("total: %d VMOs, size %s, alloc %s\n",
+    char size_str[MAX_FORMAT_SIZE_LEN];
+    char alloc_str[MAX_FORMAT_SIZE_LEN];
+    printf("  total: %d VMOs, size %s, alloc %s\n",
            count,
            format_size(size_str, sizeof(size_str), total_size),
            format_size(alloc_str, sizeof(alloc_str), total_alloc));
+
+    // Call DumpVmObject() on all VMOs under the process's VmAspace.
+    printf("Mapped VMOs:\n");
+    PrintVmoDumpHeader(/* handles */ false);
+    AspaceVmoDumper avd;
+    pd->aspace()->EnumerateChildren(&avd);
+    PrintVmoDumpHeader(/* handles */ false);
 }
 
 class JobDumper final : public JobEnumerator {
@@ -339,8 +429,17 @@ public:
     bool OnVmMapping(const VmMapping* map, const VmAddressRegion* vmar,
                      uint depth) override {
         usage.mapped_pages += map->size() / PAGE_SIZE;
-        usage.committed_pages += map->vmo()->AllocatedPagesInRange(
+
+        size_t committed_pages = map->vmo()->AllocatedPagesInRange(
             map->object_offset(), map->size());
+        uint32_t share_count = map->vmo()->share_count();
+        if (share_count == 1) {
+            usage.private_pages += committed_pages;
+        } else {
+            usage.shared_pages += committed_pages;
+            usage.scaled_shared_bytes +=
+                committed_pages * PAGE_SIZE / share_count;
+        }
         return true;
     }
 
@@ -388,7 +487,7 @@ public:
         available_++;
         if (nelem_ < max_) {
             mx_info_maps_t entry = {};
-            strncpy(entry.name, vmar->name(), sizeof(entry.name));
+            strlcpy(entry.name, vmar->name(), sizeof(entry.name));
             entry.base = vmar->base();
             entry.size = vmar->size();
             entry.depth = depth + 1; // The root aspace is depth 0.
@@ -406,7 +505,7 @@ public:
         available_++;
         if (nelem_ < max_) {
             mx_info_maps_t entry = {};
-            strncpy(entry.name, map->name(), sizeof(entry.name));
+            map->vmo()->get_name(entry.name, sizeof(entry.name));
             entry.base = map->base();
             entry.size = map->size();
             entry.depth = depth + 1; // The root aspace is depth 0.
@@ -449,7 +548,7 @@ status_t GetVmAspaceMaps(mxtl::RefPtr<VmAspace> aspace,
     }
     if (max > 0) {
         mx_info_maps_t entry = {};
-        strncpy(entry.name, aspace->name(), sizeof(entry.name));
+        strlcpy(entry.name, aspace->name(), sizeof(entry.name));
         entry.base = aspace->base();
         entry.size = aspace->size();
         entry.depth = 0;
@@ -490,8 +589,37 @@ static void DumpAddressSpace(const cmd_args* arg) {
     }
 }
 
+static void DumpHandleTable() {
+    printf("outstanding handles: %zu\n", internal::OutstandingHandles());
+    internal::DumpHandleTableInfo();
+}
+
 static size_t mwd_limit = 32 * 256;
 static bool mwd_running;
+
+static size_t hwd_limit = 1024;
+static bool hwd_running;
+
+static int hwd_thread(void* arg) {
+    static size_t previous_handle_count = 0u;
+
+    for (;;) {
+        auto handle_count = internal::OutstandingHandles();
+        if (handle_count != previous_handle_count) {
+            if (handle_count > hwd_limit) {
+                printf("HandleWatchdog! %zu handles outstanding (greater than limit %zu)\n",
+                       handle_count, hwd_limit);
+            } else if (previous_handle_count > hwd_limit) {
+                printf("HandleWatchdog! %zu handles outstanding (dropping below limit %zu)\n",
+                       handle_count, hwd_limit);
+            }
+        }
+
+        previous_handle_count = handle_count;
+
+        thread_sleep_relative(LK_SEC(1));
+    }
+}
 
 void DumpProcessMemoryUsage(const char* prefix, size_t limit) {
     auto walker = MakeProcessWalker([&](ProcessDispatcher* process) {
@@ -522,6 +650,7 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
         printf("%s ps                : list processes\n", argv[0].str);
         printf("%s mwd  <mb>         : memory watchdog\n", argv[0].str);
         printf("%s ht   <pid>        : dump process handles\n", argv[0].str);
+        printf("%s hwd  <count>      : handle watchdog\n", argv[0].str);
         printf("%s vmos <pid>        : dump process VMOs\n", argv[0].str);
         printf("%s jb   <pid>        : list job tree\n", argv[0].str);
         printf("%s kill <pid>        : kill process\n", argv[0].str);
@@ -548,6 +677,17 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
         } else {
             DumpProcessList();
         }
+    } else if (strcmp(argv[1].str, "hwd") == 0) {
+        if (argc == 3) {
+            hwd_limit = argv[2].u;
+        }
+        if (!hwd_running) {
+            thread_t* t = thread_create("hwd", hwd_thread, nullptr, DEFAULT_PRIORITY, DEFAULT_STACK_SIZE);
+            if (t) {
+                hwd_running = true;
+                thread_resume(t);
+            }
+        }
     } else if (strcmp(argv[1].str, "ht") == 0) {
         if (argc < 3)
             goto usage;
@@ -571,7 +711,7 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
     } else if (strcmp(argv[1].str, "htinfo") == 0) {
         if (argc != 2)
             goto usage;
-        internal::DumpHandleTableInfo();
+        DumpHandleTable();
     } else {
         printf("unrecognized subcommand '%s'\n", argv[1].str);
         goto usage;

@@ -11,6 +11,7 @@
 #include <mxtl/macros.h>
 #include <mxtl/ref_counted.h>
 #include <mxtl/ref_ptr.h>
+#include <mxtl/type_support.h>
 #include <mxtl/unique_free_ptr.h>
 
 #include <magenta/types.h>
@@ -23,6 +24,7 @@
 #include "misc.h"
 
 #ifdef __Fuchsia__
+#include <block-client/client.h>
 using RawBitmap = bitmap::RawBitmapGeneric<bitmap::VmoStorage>;
 #else
 using RawBitmap = bitmap::RawBitmapGeneric<bitmap::DefaultStorage>;
@@ -157,85 +159,15 @@ static_assert(kMinfsMaxDirectorySize <= kMinfsReclenMask,
 //  4GB ->  512K blocks ->  64K bitmap (8K qword)
 // 32GB -> 4096K blocks -> 512K bitmap (64K qwords)
 
-
-
 // Block Cache (bcache.c)
-class Bcache;
-
-// Flag denoting if a block is dirty or not
-constexpr uint32_t kBlockDirty = 0x01;
-// Flag identifying block list on which a block exists.
-constexpr uint32_t kBlockBusy  = 0x02;
-constexpr uint32_t kBlockLRU   = 0x04;
-constexpr uint32_t kBlockFree  = 0x08;
-
-constexpr uint32_t kBlockLLFlags = (kBlockBusy | kBlockLRU | kBlockFree);
-
 constexpr uint32_t kMinfsHashBits = (8);
-constexpr uint32_t kMinfsBuckets = (1 << kMinfsHashBits);
-
-class BlockNode : public mxtl::DoublyLinkedListable<mxtl::RefPtr<BlockNode>>,
-                  public mxtl::RefCounted<BlockNode> {
-public:
-    using NodeState = mxtl::DoublyLinkedListNodeState<mxtl::RefPtr<BlockNode>>;
-    struct TypeListTraits {
-        static NodeState& node_state(BlockNode& bn) { return bn.type_list_state_; }
-    };
-    struct TypeHashTraits {
-        static NodeState& node_state(BlockNode& bn) { return bn.type_hash_state_; }
-    };
-
-    // Create a single Block within a Block Cache
-    static mx_status_t Create(Bcache* bc);
-
-    void* data() const { return data_.get(); }
-
-    // Allow BlockNode to be placed in an mxtl::HashTable
-    uint32_t GetKey() const { return bno_; }
-    static size_t GetHash(uint32_t key) { return fnv1a32(&key, sizeof(key)); }
-
-    ~BlockNode();
-private:
-    friend class Bcache;
-    friend class BcacheLists;
-    friend struct TypeListTraits;
-    friend struct TypeHashTraits;
-
-    DISALLOW_COPY_ASSIGN_AND_MOVE(BlockNode);
-    BlockNode();
-
-    NodeState type_list_state_;
-    NodeState type_hash_state_;
-    uint32_t flags_;
-    uint32_t bno_;
-    mxtl::unique_free_ptr<char> data_;
-};
-
-// Contains operations that act on Bcache's linked lists, updating their flags as they move from
-// one list to another.
-class BcacheLists {
-public:
-    void PushBack(mxtl::RefPtr<BlockNode> blk, uint32_t block_type);
-    mxtl::RefPtr<BlockNode> PopFront(uint32_t block_type);
-    mxtl::RefPtr<BlockNode> Erase(mxtl::RefPtr<BlockNode> blk, uint32_t block_type);
-
-private:
-    using LinkedList = mxtl::DoublyLinkedList<mxtl::RefPtr<BlockNode>, BlockNode::TypeListTraits>;
-    LinkedList* GetList(uint32_t block_type);
-    size_t SizeAllSlow() const; // Used for debugging
-
-    LinkedList list_busy_;  // Between Get() and Put(). In hash.
-    LinkedList list_lru_;   // Available for re-use. In hash.
-    LinkedList list_free_;  // Never been used. Not in hash.
-};
 
 class Bcache {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Bcache);
     friend class BlockNode;
 
-    static mx_status_t Create(Bcache** out, int fd, uint32_t blockmax, uint32_t blocksize,
-                              uint32_t num);
+    static mx_status_t Create(mxtl::unique_ptr<Bcache>* out, int fd, uint32_t blockmax);
 
     // Raw block read functions.
     // These do not track blocks (or attempt to access the block cache)
@@ -244,48 +176,58 @@ public:
 
     uint32_t Maxblk() const { return blockmax_; };
 
-    // acquire a block, reading from disk if necessary,
-    // returning a handle and a pointer to the data
-    mxtl::RefPtr<BlockNode> Get(uint32_t bno);
-    // acquire a block, not reading from disk, marking dirty,
-    // and clearing to all 0s
-    mxtl::RefPtr<BlockNode> GetZero(uint32_t bno);
-
-    // release a block back to the cache
-    // flags *must* contain kBlockDirty if it was modified
-    void Put(mxtl::RefPtr<BlockNode> blk, uint32_t flags);
-
-    // Helper functions which combine 'Get' and 'Put'.
-    mx_status_t Read(uint32_t bno, void* data, uint32_t off, uint32_t len);
-    mx_status_t Write(uint32_t bno, const void* data, uint32_t off, uint32_t len);
-
-    // drop all non-busy, non-dirty blocks
-    void Invalidate();
+#ifdef __Fuchsia__
+    mx_status_t AttachVmo(mx_handle_t vmo, vmoid_t* out);
+    mx_status_t Txn(block_fifo_request_t* requests, size_t count) {
+        return block_fifo_txn(fifo_client_, requests, count);
+    }
+    txnid_t TxnId() const { return txnid_; }
+#endif
 
     int Sync();
-    int Close();
 
     ~Bcache();
 
 private:
-    Bcache(int fd, uint32_t blockmax, uint32_t blocksize);
+    Bcache(int fd, uint32_t blockmax);
 
-    mxtl::RefPtr<BlockNode> Get(uint32_t bno, uint32_t mode);
-
-    using HashTableBucket = mxtl::DoublyLinkedList<mxtl::RefPtr<BlockNode>, BlockNode::TypeHashTraits>;
-    using HashTable = mxtl::HashTable<uint32_t, mxtl::RefPtr<BlockNode>, HashTableBucket>;
-    HashTable hash_; // Map of all 'in use' blocks, accessible by bno
-    BcacheLists lists_;
+#ifdef __Fuchsia__
+    fifo_client_t* fifo_client_; // Fast path to interact with block device
+    txnid_t txnid_; // TODO(smklein): One per thread
+#endif
     int fd_;
     uint32_t blockmax_;
-    uint32_t blocksize_;
 };
 
-void* GetNthBlock(const void* data, uint32_t blkno);
-// Access the "blkno"-th block within the bitmap.
-// "blkno = 0" corresponds to the first block within the bitmap.
-void* GetBlock(const RawBitmap& bitmap, uint32_t blkno);
-// Same as GetBlock, but accessing by the "bitno"-th bit.
-void* GetBitBlock(const RawBitmap& bitmap, uint32_t* blkno_out, uint32_t bitno);
+
+namespace internal {
+
+template <typename T>
+struct GetBlockHelper;
+
+template <>
+struct GetBlockHelper <const void*> {
+    static void* get_block(const void* data, uint32_t blkno) {
+        assert(kMinfsBlockSize <= (blkno + 1) * kMinfsBlockSize); // Avoid overflow
+        return (void*)((uintptr_t)(data) + (uintptr_t)(kMinfsBlockSize * blkno));
+    }
+};
+
+template <>
+struct GetBlockHelper <const RawBitmap&> {
+    static void* get_block(const RawBitmap& bitmap, uint32_t blkno) {
+        assert(blkno * kMinfsBlockSize < bitmap.size()); // Accessing beyond end of bitmap
+        return GetBlockHelper<const void*>::get_block(bitmap.StorageUnsafe()->GetData(), blkno);
+    }
+};
+
+} // namespace internal
+
+// Access the "blkno"-th block within data.
+// "blkno = 0" corresponds to the first block within data.
+template <typename T>
+void* GetBlock(T data, uint32_t blkno) {
+    return internal::GetBlockHelper<T>::get_block(data, blkno);
+}
 
 } // namespace minfs

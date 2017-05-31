@@ -4,6 +4,11 @@
 
 #pragma once
 
+#ifdef __Fuchsia__
+#include <fs/dispatcher.h>
+#include <mx/vmo.h>
+#endif
+
 #include <mxtl/algorithm.h>
 #include <mxtl/intrusive_hash_table.h>
 #include <mxtl/intrusive_single_list.h>
@@ -12,22 +17,29 @@
 #include <mxtl/unique_ptr.h>
 
 #include <fs/mapped-vmo.h>
+
 #ifdef __Fuchsia__
 #include <fs/vfs-dispatcher.h>
 #endif
+
 #include <fs/vfs.h>
 
+#include "block-txn.h"
 #include "minfs.h"
 #include "misc.h"
 
-#define panic(fmt...) do { fprintf(stderr, fmt); __builtin_trap(); } while (0)
+#define panic(fmt...)         \
+    do {                      \
+        fprintf(stderr, fmt); \
+        __builtin_trap();     \
+    } while (0)
 
 namespace minfs {
 
 // minfs_sync_vnode flags
-constexpr uint32_t kMxFsSyncDefault = 0;     // default: no implicit time update
-constexpr uint32_t kMxFsSyncMtime   = (1<<0);
-constexpr uint32_t kMxFsSyncCtime   = (1<<1);
+constexpr uint32_t kMxFsSyncDefault = 0; // default: no implicit time update
+constexpr uint32_t kMxFsSyncMtime = (1 << 0);
+constexpr uint32_t kMxFsSyncCtime = (1 << 1);
 
 constexpr uint32_t kMinfsBlockCacheSize = 64;
 
@@ -40,7 +52,8 @@ class Minfs {
 public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Minfs);
 
-    static mx_status_t Create(Minfs** out, Bcache* bc, const minfs_info_t* info);
+    ~Minfs();
+    static mx_status_t Create(Minfs** out, mxtl::unique_ptr<Bcache> bc, const minfs_info_t* info);
 
     mx_status_t Unmount();
 
@@ -49,49 +62,60 @@ public:
     mx_status_t VnodeGet(mxtl::RefPtr<VnodeMinfs>* out, uint32_t ino);
 
     // instantiate a vnode with a new inode
-    mx_status_t VnodeNew(mxtl::RefPtr<VnodeMinfs>* out, uint32_t type);
+    mx_status_t VnodeNew(WriteTxn* txn, mxtl::RefPtr<VnodeMinfs>* out, uint32_t type);
 
     // remove a vnode from the hash map
     void VnodeRelease(VnodeMinfs* vn);
 
-    // Allocate a new data block and bcache_get_zero() it.
-    // Acquires the block if out_block is not null.
-    mx_status_t BlockNew(uint32_t hint, uint32_t* out_bno, mxtl::RefPtr<BlockNode>* out_block);
+    // Allocate a new data block.
+    mx_status_t BlockNew(WriteTxn* txn, uint32_t hint, uint32_t* out_bno);
 
     // free ino in inode bitmap, release all blocks held by inode
-    mx_status_t InoFree(const minfs_inode_t& inode, uint32_t ino);
+    mx_status_t InoFree(
+#ifdef __Fuchsia__
+        const MappedVmo* vmo_indirect,
+#endif
+        const minfs_inode_t& inode, uint32_t ino);
 
     // Writes back an inode into the inode table on persistent storage.
     // Does not modify inode bitmap.
-    mx_status_t InodeSync(uint32_t ino, const minfs_inode_t* inode);
+    mx_status_t InodeSync(WriteTxn* txn, uint32_t ino, const minfs_inode_t* inode);
 
-    mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie);
+#ifdef __Fuchsia__
+    fs::Dispatcher* GetDispatcher() {
+        return dispatcher_.get();
+    }
+#endif
 
     void ValidateBno(uint32_t bno) const {
         MX_DEBUG_ASSERT(info_.dat_block <= bno);
         MX_DEBUG_ASSERT(bno < info_.block_count);
     }
 
-    Bcache* bc_;
+    mxtl::unique_ptr<Bcache> bc_;
     RawBitmap block_map_;
+#ifdef __Fuchsia__
+    vmoid_t block_map_vmoid_;
+#endif
     minfs_info_t info_;
 
 private:
     // Fsck can introspect Minfs
     friend class MinfsChecker;
-    Minfs(Bcache* bc_, const minfs_info_t* info_);
+    Minfs(mxtl::unique_ptr<Bcache> bc_, const minfs_info_t* info_);
     // Find a free inode, allocate it in the inode bitmap, and write it back to disk
-    mx_status_t InoNew(const minfs_inode_t* inode, uint32_t* ino_out);
-    mx_status_t LoadBitmaps();
+    mx_status_t InoNew(WriteTxn* txn, const minfs_inode_t* inode, uint32_t* ino_out);
 
 #ifdef __Fuchsia__
-    mxtl::unique_ptr<fs::VfsDispatcher> dispatcher_;
+    mxtl::unique_ptr<fs::Dispatcher> dispatcher_;
 #endif
     uint32_t abmblks_;
     uint32_t ibmblks_;
     RawBitmap inode_map_;
 #ifdef __Fuchsia__
     mxtl::unique_ptr<MappedVmo> inode_table_;
+    vmoid_t inode_map_vmoid_;
+    vmoid_t inode_table_vmoid_;
 #endif
     // Vnodes exist in the hash table as long as one or more reference exists;
     // when the Vnode is deleted, it is immediately removed from the map.
@@ -105,6 +129,7 @@ struct DirArgs {
     uint32_t ino;
     uint32_t type;
     uint32_t reclen;
+    WriteTxn* txn;
 };
 
 struct DirectoryOffset {
@@ -114,8 +139,10 @@ struct DirectoryOffset {
 
 #define INO_HASH(ino) fnv1a_tiny(ino, kMinfsHashBits)
 
+// clang-format off
 constexpr uint32_t kMinfsFlagDeletedDirectory = 0x00010000;
 constexpr uint32_t kMinfsFlagReservedMask     = 0xFFFF0000;
+// clang-format on
 
 static_assert((kMinfsFlagReservedMask & V_FLAG_RESERVED_MASK) == 0,
               "MinFS should not be using any Vnode flags which are reserved");
@@ -134,15 +161,18 @@ public:
     uint32_t GetKey() const { return ino_; }
     static size_t GetHash(uint32_t key) { return INO_HASH(key); }
 
-    mx_status_t UnlinkChild(mxtl::RefPtr<VnodeMinfs> child, minfs_dirent_t* de, DirectoryOffset* offs);
+    mx_status_t UnlinkChild(WriteTxn* txn, mxtl::RefPtr<VnodeMinfs> child,
+                            minfs_dirent_t* de, DirectoryOffset* offs);
     // Remove the link to a vnode (referring to inodes exclusively).
     // Has no impact on direntries (or parent inode).
-    void RemoveInodeLink();
+    void RemoveInodeLink(WriteTxn* txn);
     mx_status_t ReadInternal(void* data, size_t len, size_t off, size_t* actual);
     mx_status_t ReadExactInternal(void* data, size_t len, size_t off);
-    mx_status_t WriteInternal(const void* data, size_t len, size_t off, size_t* actual);
-    mx_status_t WriteExactInternal(const void* data, size_t len, size_t off);
-    mx_status_t TruncateInternal(size_t len);
+    mx_status_t WriteInternal(WriteTxn* txn, const void* data, size_t len,
+                              size_t off, size_t* actual);
+    mx_status_t WriteExactInternal(WriteTxn* txn, const void* data, size_t len,
+                                   size_t off);
+    mx_status_t TruncateInternal(WriteTxn* txn, size_t len);
     ssize_t Ioctl(uint32_t op, const void* in_buf, size_t in_len, void* out_buf,
                   size_t out_len) final;
     mx_status_t Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) final;
@@ -156,6 +186,8 @@ public:
     ~VnodeMinfs();
 
 private:
+    // Fsck can introspect Minfs
+    friend class MinfsChecker;
     VnodeMinfs(Minfs* fs);
 
     // Implementing methods from the fs::Vnode, so MinFS vnodes may be utilized
@@ -177,38 +209,46 @@ private:
     mx_status_t Sync() final;
     mx_status_t AttachRemote(mx_handle_t) final;
 
+#ifdef __Fuchsia__
     mx_status_t InitVmo();
-
-    // Read data from disk at block 'bno', into the 'nth' logical block of the file.
-    mx_status_t FillBlock(uint32_t n, uint32_t bno);
+    mx_status_t InitIndirectVmo();
+#endif
 
     // Get the disk block 'bno' corresponding to the 'nth' logical block of the file.
-    // Allocate the block if reqeusted.
-    mx_status_t GetBno(uint32_t n, uint32_t* bno, bool alloc);
+    // Allocate the block if requested with a non-null "txn".
+    mx_status_t GetBno(WriteTxn* txn, uint32_t n, uint32_t* bno);
 
     // Deletes all blocks (relateive to a file) from "start" (inclusive) to the end
     // of the file. Does not update mtime/atime.
-    mx_status_t BlocksShrink(uint32_t start);
+    mx_status_t BlocksShrink(WriteTxn* txn, uint32_t start);
 
     // Update the vnode's inode and write it to disk
-    void InodeSync(uint32_t flags);
+    void InodeSync(WriteTxn* txn, uint32_t flags);
+
+    using DirentCallback = mx_status_t (*)(mxtl::RefPtr<VnodeMinfs>,
+                                           minfs_dirent_t*, DirArgs*,
+                                           DirectoryOffset*);
 
     // Directories only
-    mx_status_t ForEachDirent(DirArgs* args,
-                              mx_status_t (*func)(mxtl::RefPtr<VnodeMinfs>, minfs_dirent_t*, DirArgs*,
-                                                  DirectoryOffset*));
+    mx_status_t ForEachDirent(DirArgs* args, const DirentCallback func);
 
 #ifdef __Fuchsia__
-    mx_status_t AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) final;
+    fs::Dispatcher* GetDispatcher() final;
 
     // The following functionality interacts with handles directly, and are not applicable outside
     // Fuchsia (since there is no "handle-equivalent" in host-side tools).
+
+    mx_status_t VmoReadExact(void* data, uint64_t offset, size_t len);
+    mx_status_t VmoWriteExact(const void* data, uint64_t offset, size_t len);
 
     // TODO(smklein): When we have can register MinFS as a pager service, and
     // it can properly handle pages faults on a vnode's contents, then we can
     // avoid reading the entire file up-front. Until then, read the contents of
     // a VMO into memory when it is read/written.
-    mx_handle_t vmo_;
+    mx::vmo vmo_;
+    mxtl::unique_ptr<MappedVmo> vmo_indirect_;
+    vmoid_t vmoid_;
+    vmoid_t vmoid_indirect_;
 
 #endif
     // The vnode is acting as a mount point for a remote filesystem or device.
@@ -220,22 +260,35 @@ private:
     fs::RemoteContainer remoter_;
 };
 
+// write the inode data of this vnode to disk (default does not update time values)
+void minfs_sync_vnode(mxtl::RefPtr<VnodeMinfs> vn, uint32_t flags);
+
+mx_status_t minfs_check_info(const minfs_info_t* info, uint32_t max);
+void minfs_dump_info(const minfs_info_t* info);
+void minfs_dump_inode(const minfs_inode_t* inode, uint32_t ino);
+
+int minfs_mkfs(mxtl::unique_ptr<Bcache> bc);
+
+#ifdef __Fuchsia__
+
 class MinfsChecker {
 public:
     MinfsChecker();
-
-    mx_status_t Init(Bcache* bc, const minfs_info_t* info);
-    mx_status_t CheckInode(uint32_t ino, uint32_t parent);
+    mx_status_t Init(mxtl::unique_ptr<Bcache> bc, const minfs_info_t* info);
+    mx_status_t CheckInode(uint32_t ino, uint32_t parent, bool dot_or_dotdot);
     mx_status_t CheckForUnusedBlocks() const;
     mx_status_t CheckForUnusedInodes() const;
+    mx_status_t CheckLinkCounts() const;
+
+    // "Set once"-style flag to identify if anything nonconforming
+    // was found in the underlying filesystem -- even if it was fixed.
+    bool conforming_;
+
 private:
     DISALLOW_COPY_ASSIGN_AND_MOVE(MinfsChecker);
 
     mx_status_t GetInode(minfs_inode_t* inode, uint32_t ino);
     mx_status_t GetInodeNthBno(minfs_inode_t* inode, uint32_t n, uint32_t* bno_out);
-    mx_status_t FileRead(minfs_inode_t* inode, void* data, size_t len, size_t off);
-    mx_status_t FileWrite(minfs_inode_t* inode, const void* data, size_t len,
-                          size_t off);
     mx_status_t CheckDirectory(minfs_inode_t* inode, uint32_t ino,
                                uint32_t parent, uint32_t flags);
     const char* CheckDataBlock(uint32_t bno);
@@ -244,19 +297,14 @@ private:
     mxtl::unique_ptr<Minfs> fs_;
     RawBitmap checked_inodes_;
     RawBitmap checked_blocks_;
+
+    mxtl::Array<int32_t> links_;
 };
 
-// write the inode data of this vnode to disk (default does not update time values)
-void minfs_sync_vnode(mxtl::RefPtr<VnodeMinfs> vn, uint32_t flags);
+mx_status_t minfs_check(mxtl::unique_ptr<Bcache> bc);
+#endif
 
-mx_status_t minfs_check_info(const minfs_info_t* info, uint32_t max);
-void minfs_dump_info(minfs_info_t* info);
-
-int minfs_mkfs(Bcache* bc);
-
-mx_status_t minfs_check(Bcache* bc);
-
-mx_status_t minfs_mount(mxtl::RefPtr<VnodeMinfs>* root_out, Bcache* bc);
+mx_status_t minfs_mount(mxtl::RefPtr<VnodeMinfs>* root_out, mxtl::unique_ptr<Bcache> bc);
 
 void minfs_dir_init(void* bdata, uint32_t ino_self, uint32_t ino_parent);
 

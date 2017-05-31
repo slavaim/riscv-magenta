@@ -13,15 +13,15 @@
 #include <unistd.h>
 
 #include <magenta/compiler.h>
-#include <magenta/new.h>
 #include <magenta/syscalls.h>
+#include <mxalloc/new.h>
 #include <mxtl/array.h>
 #include <mxtl/unique_ptr.h>
 
 #include "filesystems.h"
 #include "misc.h"
 
-constexpr bool is_directory(const char* const path) {
+bool is_directory(const char* const path) {
     return path[strlen(path) - 1] == '/';
 }
 

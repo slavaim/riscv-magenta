@@ -36,8 +36,8 @@ mx_status_t sys_hypervisor_create(mx_handle_t opt_handle, uint32_t options, user
 }
 
 static mx_status_t guest_create(mx_handle_t hypervisor_handle,
-                                mx_handle_t guest_phys_mem_handle,
-                                mx_handle_t serial_fifo_handle,
+                                mx_handle_t phys_mem_handle,
+                                mx_handle_t ctl_fifo_handle,
                                 mx_handle_t* out) {
     auto up = ProcessDispatcher::GetCurrent();
 
@@ -47,22 +47,22 @@ static mx_status_t guest_create(mx_handle_t hypervisor_handle,
     if (status != NO_ERROR)
         return status;
 
-    mxtl::RefPtr<VmObjectDispatcher> guest_phys_mem;
+    mxtl::RefPtr<VmObjectDispatcher> phys_mem;
     status = up->GetDispatcherWithRights(
-        guest_phys_mem_handle, MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_EXECUTE, &guest_phys_mem);
+        phys_mem_handle, MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_EXECUTE, &phys_mem);
     if (status != NO_ERROR)
         return status;
 
-    mxtl::RefPtr<FifoDispatcher> serial_fifo;
+    mxtl::RefPtr<FifoDispatcher> ctl_fifo;
     status = up->GetDispatcherWithRights(
-        serial_fifo_handle, MX_RIGHT_READ | MX_RIGHT_WRITE, &serial_fifo);
+        ctl_fifo_handle, MX_RIGHT_READ | MX_RIGHT_WRITE, &ctl_fifo);
     if (status != NO_ERROR)
         return status;
 
     mxtl::RefPtr<Dispatcher> dispatcher;
     mx_rights_t rights;
     status = GuestDispatcher::Create(
-        hypervisor, guest_phys_mem->vmo(), serial_fifo, &dispatcher, &rights);
+        hypervisor, phys_mem->vmo(), ctl_fifo, &dispatcher, &rights);
     if (status != NO_ERROR)
         return status;
 
@@ -86,46 +86,90 @@ static mx_status_t guest_enter(mx_handle_t handle) {
     return guest->Enter();
 }
 
+static mx_status_t guest_mem_trap(mx_handle_t handle, mx_vaddr_t guest_paddr, size_t size) {
+    auto up = ProcessDispatcher::GetCurrent();
+
+    if (!IS_PAGE_ALIGNED(guest_paddr))
+        return ERR_INVALID_ARGS;
+    if (size % PAGE_SIZE != 0)
+        return ERR_INVALID_ARGS;
+
+    mxtl::RefPtr<GuestDispatcher> guest;
+    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &guest);
+    if (status != NO_ERROR)
+        return status;
+
+    return guest->MemTrap(guest_paddr, size);
+}
+
+static mx_status_t guest_set_gpr(mx_handle_t handle, const mx_guest_gpr_t& guest_gpr) {
+    auto up = ProcessDispatcher::GetCurrent();
+
+    mxtl::RefPtr<GuestDispatcher> guest;
+    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_WRITE, &guest);
+    if (status != NO_ERROR)
+        return status;
+
+    return guest->SetGpr(guest_gpr);
+}
+
+static mx_status_t guest_get_gpr(mx_handle_t handle, mx_guest_gpr_t* guest_gpr) {
+    auto up = ProcessDispatcher::GetCurrent();
+
+    mxtl::RefPtr<GuestDispatcher> guest;
+    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_READ, &guest);
+    if (status != NO_ERROR)
+        return status;
+
+    return guest->GetGpr(guest_gpr);
+}
+
+static mx_status_t guest_set_ip(mx_handle_t handle, uintptr_t guest_ip) {
+    auto up = ProcessDispatcher::GetCurrent();
+
+    mxtl::RefPtr<GuestDispatcher> guest;
+    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_WRITE, &guest);
+    if (status != NO_ERROR)
+        return status;
+
+    return guest->set_ip(guest_ip);
+}
+
 #if ARCH_X86_64
 static mx_status_t guest_set_cr3(mx_handle_t handle, uintptr_t guest_cr3) {
     auto up = ProcessDispatcher::GetCurrent();
 
     mxtl::RefPtr<GuestDispatcher> guest;
-    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &guest);
+    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_WRITE, &guest);
     if (status != NO_ERROR)
         return status;
 
     return guest->set_cr3(guest_cr3);
 }
 
-static mx_status_t guest_set_esi(mx_handle_t handle, uint32_t guest_esi) {
+static mx_status_t guest_set_apic_mem(mx_handle_t handle, mx_handle_t apic_mem_handle) {
     auto up = ProcessDispatcher::GetCurrent();
 
     mxtl::RefPtr<GuestDispatcher> guest;
-    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &guest);
+    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_WRITE, &guest);
     if (status != NO_ERROR)
         return status;
 
-    return guest->set_esi(guest_esi);
+    mxtl::RefPtr<VmObjectDispatcher> apic_mem;
+    status = up->GetDispatcherWithRights(
+        apic_mem_handle, MX_RIGHT_READ | MX_RIGHT_WRITE, &apic_mem);
+    if (status != NO_ERROR)
+        return status;
+
+    return guest->SetApicMem(apic_mem->vmo());
 }
 #endif
-
-static mx_status_t guest_set_entry(mx_handle_t handle, uintptr_t guest_entry) {
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mxtl::RefPtr<GuestDispatcher> guest;
-    mx_status_t status = up->GetDispatcherWithRights(handle, MX_RIGHT_EXECUTE, &guest);
-    if (status != NO_ERROR)
-        return status;
-
-    return guest->set_entry(guest_entry);
-}
 
  mx_status_t sys_hypervisor_op(mx_handle_t handle, uint32_t opcode, user_ptr<const void> args,
                                uint32_t args_len, user_ptr<void> result, uint32_t result_len) {
     switch (opcode) {
     case MX_HYPERVISOR_OP_GUEST_CREATE: {
-        mx_handle_t create_args[2] /* = { guest_phys_mem, serial_fifo } */;
+        mx_handle_t create_args[2] /* = { phys_mem, ctl_fifo } */;
         if (args_len != sizeof(create_args))
             return ERR_INVALID_ARGS;
         if (args.copy_array_from_user(create_args, sizeof(create_args)) != NO_ERROR)
@@ -142,16 +186,43 @@ static mx_status_t guest_set_entry(mx_handle_t handle, uintptr_t guest_entry) {
     }
     case MX_HYPERVISOR_OP_GUEST_ENTER:
         return guest_enter(handle);
-    case MX_HYPERVISOR_OP_GUEST_SET_ENTRY: {
-        uintptr_t guest_entry;
-        if (args_len != sizeof(guest_entry))
+    case MX_HYPERVISOR_OP_GUEST_MEM_TRAP: {
+        uint64_t mem_trap_args[2] /* = { mx_vaddr_t guest_paddr, size_t size } */;
+        if (args_len != sizeof(mem_trap_args))
             return ERR_INVALID_ARGS;
-        if (args.copy_array_from_user(&guest_entry, sizeof(guest_entry)) != NO_ERROR)
+        if (args.copy_array_from_user(mem_trap_args, sizeof(mem_trap_args)) != NO_ERROR)
             return ERR_INVALID_ARGS;
-        return guest_set_entry(handle, guest_entry);
+        return guest_mem_trap(handle, mem_trap_args[0], mem_trap_args[1]);
+    }
+    case MX_HYPERVISOR_OP_GUEST_SET_GPR: {
+        mx_guest_gpr_t guest_gpr;
+        if (args_len != sizeof(guest_gpr))
+            return ERR_INVALID_ARGS;
+        if (args.copy_array_from_user(&guest_gpr, sizeof(guest_gpr)) != NO_ERROR)
+            return ERR_INVALID_ARGS;
+        return guest_set_gpr(handle, guest_gpr);
+    }
+    case MX_HYPERVISOR_OP_GUEST_GET_GPR: {
+        mx_guest_gpr_t guest_gpr;
+        if (result_len != sizeof(guest_gpr))
+            return ERR_INVALID_ARGS;
+        mx_status_t status = guest_get_gpr(handle, &guest_gpr);
+        if (status != NO_ERROR)
+            return status;
+        if (result.copy_array_to_user(&guest_gpr, sizeof(guest_gpr)) != NO_ERROR)
+            return ERR_INVALID_ARGS;
+        return NO_ERROR;
+    }
+    case MX_HYPERVISOR_OP_GUEST_SET_ENTRY_IP: {
+        uintptr_t guest_ip;
+        if (args_len != sizeof(guest_ip))
+            return ERR_INVALID_ARGS;
+        if (args.copy_array_from_user(&guest_ip, sizeof(guest_ip)) != NO_ERROR)
+            return ERR_INVALID_ARGS;
+        return guest_set_ip(handle, guest_ip);
     }
 #if ARCH_X86_64
-    case MX_HYPERVISOR_OP_GUEST_SET_CR3: {
+    case MX_HYPERVISOR_OP_GUEST_SET_ENTRY_CR3: {
         uintptr_t guest_cr3;
         if (args_len != sizeof(guest_cr3))
             return ERR_INVALID_ARGS;
@@ -159,13 +230,13 @@ static mx_status_t guest_set_entry(mx_handle_t handle, uintptr_t guest_entry) {
             return ERR_INVALID_ARGS;
         return guest_set_cr3(handle, guest_cr3);
     }
-    case MX_HYPERVISOR_OP_GUEST_SET_ESI: {
-        uint32_t guest_esi;
-        if (args_len != sizeof(guest_esi))
+    case MX_HYPERVISOR_OP_GUEST_SET_APIC_MEM: {
+        mx_handle_t apic_mem;
+        if (args_len != sizeof(apic_mem))
             return ERR_INVALID_ARGS;
-        if (args.copy_array_from_user(&guest_esi, sizeof(guest_esi)) != NO_ERROR)
+        if (args.copy_array_from_user(&apic_mem, sizeof(apic_mem)) != NO_ERROR)
             return ERR_INVALID_ARGS;
-        return guest_set_esi(handle, guest_esi);
+        return guest_set_apic_mem(handle, apic_mem);
     }
 #endif // ARCH_X86_64
     default:

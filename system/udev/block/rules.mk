@@ -15,10 +15,11 @@ MODULE_SRCS := \
 MODULE_STATIC_LIBS := \
     system/ulib/ddk \
     system/ulib/sync \
+    system/ulib/mx \
+    system/ulib/mxalloc \
     system/ulib/mxcpp \
-    system/ulib/mxtl
+    system/ulib/mxtl \
 
 MODULE_LIBS := system/ulib/c system/ulib/driver system/ulib/magenta
 
 include make/module.mk
-

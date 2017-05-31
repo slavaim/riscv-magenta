@@ -24,7 +24,6 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/devmgr-mxio.c \
     $(LOCAL_DIR)/driver-info.c \
     $(LOCAL_DIR)/vfs-boot.cpp \
-    $(LOCAL_DIR)/vfs-device.cpp \
     $(LOCAL_DIR)/vfs-memory.cpp \
     $(LOCAL_DIR)/vfs-rpc.cpp \
 
@@ -41,6 +40,7 @@ MODULE_STATIC_LIBS := \
     system/ulib/fs \
     system/ulib/bootdata \
     third_party/ulib/lz4 \
+    system/ulib/mxalloc \
     system/ulib/mxcpp \
     system/ulib/mxtl \
     system/ulib/acpisvc-client \

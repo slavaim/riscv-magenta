@@ -21,41 +21,49 @@ Use the `ps` tool:
 
 ```
 magenta$ ps
-TASK        VIRT     RES NAME
-p:1041     16.2M   1716k bin/devmgr
-j:1068                   magenta-drivers
-  p:1208   13.1M   1676k devhost:root
-  p:1473  261.7M   1624k /boot/bin/acpisvc
-  p:1621   4216k   1260k devhost:acpi
-  p:1669   4172k   1240k devhost:pci#0:8086:29c0
-  p:1756   30.1M   4684k devhost:pci#1:1234:1111
-  p:1818   4172k   1240k devhost:pci#2:8086:2918
-  p:1993   6724k   1760k devhost:pci#3:8086:2922
-  p:2180   4172k   1240k devhost:pci#4:8086:2930
-j:1082                   magenta-services
-  p:1083   4716k   1332k crashlogger
-  p:1173   4032k   1176k netsvc
-  p:2988   4220k   1324k sh:console
-  p:3020   4136k   1296k sh:vc
-  p:3183   4044k   1108k /boot/bin/ps
-TASK        VIRT     RES NAME
+TASK           PSS PRIVATE  SHARED NAME
+j:1028                             root
+  p:1041   1390.7k   1388k     32k bin/devmgr
+  j:1080                           magenta-drivers
+    p:1260  774.7k    772k     32k /boot/bin/acpisvc
+    p:1554  242.7k    240k     32k devhost:root
+    p:1598  642.7k    640k     32k devhost:misc
+    p:1668  258.7k    256k     32k devhost:platform
+    p:1852 3914.7k   3912k     32k devhost:pci#1:1234:1111
+    p:1925   24.4M   24.4M     32k devhost:pci#3:8086:2922
+  j:1101                           magenta-services
+    p:1102  294.7k    292k     32k crashlogger
+    p:1207  234.7k    232k     32k netsvc
+    p:2210  362.7k    360k     32k sh:console
+    p:2327  258.7k    256k     32k sh:vc
+    p:2430  322.7k    320k     32k /boot/bin/ps
+TASK           PSS PRIVATE  SHARED NAME
 ```
 
-**RES** (resident memory) is the one to care about: it shows how many physical
-pages are mapped into the process, and physical pages are what the system runs
-out of.
+**PSS** (proportional shared state) is a number of bytes that estimates how much
+in-process mapped physical memory the process consumes. Its value is `PRIVATE +
+(SHARED / sharing-ratio)`, where `sharing-ratio` is based on the number of
+processes that share each of the pages in this process.
 
-**VIRT** is the amount of potentially-mappable virtual address space allocated
-to a process (via mappings on a VMAR). Apart from the metadata necessary to keep
-track of the ranges, high VIRT values don't necessarily mean high physical
-memory usage.
+The intent is that, e.g., if four processes share a single page, 1/4 of the
+bytes of that page is included in each of the four process's `PSS`. If two
+processes share a different page, then each gets 1/2 of that page's bytes.
+
+**PRIVATE** is the number of bytes that are mapped only by this process. I.e.,
+no other process maps this memory. Note that this does not account for private
+VMOs that are not mapped.
+
+**SHARED** is the number of bytes that are mapped by this process and at least
+one other process. Note that this does not account for shared VMOs that are not
+mapped. It also does not indicate how many processes share the memory: it could
+be 2, it could be 50.
 
 ### Dump a process's detailed memory maps
 
-If you want to see why a specific process is using so much memory, you can run
-the `vmaps` tool on its koid (koid is the ID that shows up when running ps) and
-peer into the tea leaves. (The memory ranges don't have good names yet, but if
-you squint you can see dynamic libraries, heap, stack etc.)
+If you want to see why a specific process uses so much memory, you can run the
+`vmaps` tool on its koid (koid is the ID that shows up when running ps) and peer
+into the tea leaves. (The memory ranges don't have good names yet, but if you
+squint you can see dynamic libraries, heap, stack etc.)
 
 ```
 magenta$ vmaps help
@@ -72,8 +80,13 @@ First column:
   Indentation indicates parent/child relationship.
 ```
 
-In the `vmaps` output, **:sz** (size) is the same as `ps`'s **VIRT**, and
-**:res** is the same as `ps`'s **RES**.
+Size columns, all in bytes:
+
+-   `:sz`: The virtual size of the entry. Not all pages are necessarily backed
+    by physical memory.
+-   `:res`: The amount of memory "resident" in the entry; i.e., the amount of
+    physical memory that backs the entry. This memory may be private (only
+    acceessable by this process) or shared by multiple processes.
 
 ```
 magenta$ vmaps 3020
@@ -110,16 +123,85 @@ M  ________012d9000-________012da000 rw-      4k:sz      4k:res  useralloc
 ...
 ```
 
+### Dump all VMOs associated with a process
+
+```
+k mx vmos <pid>
+```
+
+This will also show unmapped VMOs, which neither `ps` nor `vmaps` currently
+account for.
+
+It also shows whether a given VMO is a clone, along with its parent's koid.
+
+> NOTE: This is a kernel command, and will print to the kernel console.
+
+```
+magenta$ k mx vmos 1102
+process [1102]:
+Handles to VMOs:
+      handle rights  koid parent #chld #map #shr    size   alloc name
+   158288097 rwxmdt  1144      -     0    1    1    256k      4k -
+   151472261 r-xmdt  1031      -     0   22   11     28k     28k -
+  total: 2 VMOs, size 284k, alloc 32k
+Mapped VMOs:
+           -      -  koid parent #chld #map #shr    size   alloc name
+           -      -  1109   1038     1    1    1   25.6k      8k -
+           -      -  1146   1109     0    2    1      8k      8k -
+           -      -  1146   1109     0    2    1      8k      8k -
+...
+           -      -  1343      -     0    3    1    516k      8k -
+           -      -  1325      -     0    1    1     28k      4k -
+...
+           -      -  1129   1038     1    1    1  883.2k     12k -
+           -      -  1133   1129     0    1    1     16k     12k -
+           -      -  1134      -     0    1    1     12k     12k -
+           -      -  koid parent #chld #map #shr    size   alloc name
+```
+
+Columns:
+
+-   `handle`: The `mx_handle_t` value of this process's handle to the VMO.
+-   `rights`: The rights that the handle has, zero or more of:
+    -   `r`: `MX_RIGHT_READ`
+    -   `w`: `MX_RIGHT_WRITE`
+    -   `x`: `MX_RIGHT_EXECUTE`
+    -   `m`: `MX_RIGHT_MAP`
+    -   `d`: `MX_RIGHT_DUPLICATE`
+    -   `t`: `MX_RIGHT_TRANSFER`
+-   `koid`: The koid of the VMO, if it has one. Zero otherwise. A VMO
+    without a koid was created by the kernel, and has never had a userspace
+    handle.
+-   `parent`: The koid of the VMO's parent, if it's a clone.
+-   `#chld`: The number of active clones (children) of the VMO.
+-   `#map`: The number of times the VMO is currently mapped into VMARs.
+-   `#shr`: The number of processes that map (share) the VMO.
+-   `size`: The VMO's current size, in bytes.
+-   `alloc`: The amount of physical memory allocated to the VMO, in bytes.
+-   `name`: The name of the VMO, or `-` if its name is empty.
+
+To relate this back to `ps`: each VMO contributes, for its mapped portions
+(since not all or any of a VMO's pages may be mapped):
+
+```
+PRIVATE =  #shr == 1 ? alloc : 0
+SHARED  =  #shr  > 1 ? alloc : 0
+PSS     =  PRIVATE + (SHARED / #shr)
+```
+
 ### Limitations
 
 Neither `ps` nor `vmaps` currently account for:
 
 -   VMOs or VMO subranges that are not mapped. E.g., you could create a VMO,
     write 1G of data into it, and it won't show up here.
+
+None of the process-dumping tools account for:
+
 -   Multiply-mapped pages. If you create multiple mappings using the same range
-    of a VMO, any committed pages of the VMO will be counted (in RES) as many
-    times as those pages are mapped. This could be inside the same process, or
-    could be between processes if those processes share a VMO.
+    of a VMO, any committed pages of the VMO will be counted as many times as
+    those pages are mapped. This could be inside the same process, or could be
+    between processes if those processes share a VMO.
 
     Note that "multiply-mapped pages" includes copy-on-write.
 -   Underlying kernel memory overhead for resources allocated by a process.

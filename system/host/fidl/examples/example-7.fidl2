@@ -1,9 +1,9 @@
-module examples.many;
+module examples_7
 
-using "¡🇷🇸h";
+using pkg
 
 // ¡🇷🇸🇷
 
 interface Hello {
   0: Say(string req) -> (string response);
-};
+}

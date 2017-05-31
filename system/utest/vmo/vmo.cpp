@@ -240,6 +240,18 @@ static bool rights_test_map_helper(mx_handle_t vmo, size_t len, uint32_t flags, 
     return true;
 }
 
+// Returns zero on failure.
+static mx_rights_t get_handle_rights(mx_handle_t h) {
+    mx_info_handle_basic_t info;
+    mx_status_t s = mx_object_get_info(h, MX_INFO_HANDLE_BASIC, &info,
+                                       sizeof(info), nullptr, nullptr);
+    if (s != NO_ERROR) {
+        EXPECT_EQ(s, NO_ERROR, "");  // Poison the test
+        return 0;
+    }
+    return info.rights;
+}
+
 bool vmo_rights_test() {
     BEGIN_TEST;
 
@@ -253,6 +265,19 @@ bool vmo_rights_test() {
     // allocate an object
     status = mx_vmo_create(len, 0, &vmo);
     EXPECT_EQ(NO_ERROR, status, "vm_object_create");
+
+    // Check that the handle has at least the expected rights.
+    // This list should match the list in docs/syscalls/vmo_create.md.
+    static const mx_rights_t kExpectedRights =
+        MX_RIGHT_DUPLICATE |
+        MX_RIGHT_TRANSFER |
+        MX_RIGHT_READ |
+        MX_RIGHT_WRITE |
+        MX_RIGHT_EXECUTE |
+        MX_RIGHT_MAP |
+        MX_RIGHT_GET_PROPERTY |
+        MX_RIGHT_SET_PROPERTY;
+    EXPECT_EQ(kExpectedRights, kExpectedRights & get_handle_rights(vmo), "");
 
     // test that we can read/write it
     status = mx_vmo_read(vmo, buf, 0, 0, &r);
@@ -349,6 +374,15 @@ bool vmo_rights_test() {
     if (!rights_test_map_helper(vmo2, len, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE | MX_VM_FLAG_PERM_EXECUTE, true, ERR_ACCESS_DENIED, "map_readwriteexec")) return false;
     if (!rights_test_map_helper(vmo, len, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_EXECUTE, true, ERR_ACCESS_DENIED, "map_readexec")) return false;
     mx_handle_close(vmo2);
+
+    // test that we can get/set a property on it
+    const char *set_name = "test vmo";
+    status = mx_object_set_property(vmo, MX_PROP_NAME, set_name, sizeof(set_name));
+    EXPECT_EQ(NO_ERROR, status, "set_property");
+    char get_name[MX_MAX_NAME_LEN];
+    status = mx_object_get_property(vmo, MX_PROP_NAME, get_name, sizeof(get_name));
+    EXPECT_EQ(NO_ERROR, status, "get_property");
+    EXPECT_STR_EQ(set_name, get_name, sizeof(set_name), "vmo name");
 
     // close the handle
     status = mx_handle_close(vmo);
@@ -767,6 +801,21 @@ bool vmo_clone_test_3() {
     END_TEST;
 }
 
+bool vmo_cache_test() {
+    BEGIN_TEST;
+
+    mx_handle_t vmo;
+    const size_t size = PAGE_SIZE * 4;
+
+    // The objects returned by mx_vmo_create() are VmObjectPaged objects which
+    // should not support these syscalls.
+    EXPECT_EQ(NO_ERROR, mx_vmo_create(size, 0, &vmo), "creation for cache_policy");
+    EXPECT_EQ(ERR_NOT_SUPPORTED, mx_vmo_set_cache_policy(vmo, MX_CACHE_POLICY_UNCACHED),
+              "attempt set cache");
+    EXPECT_EQ(NO_ERROR, mx_handle_close(vmo), "close handle");
+    END_TEST;
+}
+
 // test set 4: deal with clones with nonzero offsets and offsets that extend beyond the original
 bool vmo_clone_test_4() {
     BEGIN_TEST;
@@ -866,6 +915,63 @@ bool vmo_clone_test_4() {
     END_TEST;
 }
 
+bool vmo_clone_rights_test() {
+    BEGIN_TEST;
+
+    static const char kOldVmoName[] = "original";
+    static const char kNewVmoName[] = "clone";
+
+    static const mx_rights_t kOldVmoRights =
+        MX_RIGHT_READ | MX_RIGHT_DUPLICATE;
+    static const mx_rights_t kNewVmoRights =
+        kOldVmoRights | MX_RIGHT_WRITE |
+        MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
+
+    mx_handle_t vmo;
+    ASSERT_EQ(mx_vmo_create(PAGE_SIZE, 0, &vmo),
+              NO_ERROR, "");
+    ASSERT_EQ(mx_object_set_property(vmo, MX_PROP_NAME,
+                                     kOldVmoName, sizeof(kOldVmoName)),
+              NO_ERROR, "");
+    ASSERT_EQ(get_handle_rights(vmo) & kOldVmoRights, kOldVmoRights, "");
+
+    mx_handle_t reduced_rights_vmo;
+    ASSERT_EQ(mx_handle_duplicate(vmo, kOldVmoRights, &reduced_rights_vmo),
+              NO_ERROR, "");
+    EXPECT_EQ(get_handle_rights(reduced_rights_vmo), kOldVmoRights, "");
+
+    mx_handle_t clone;
+    ASSERT_EQ(mx_vmo_clone(reduced_rights_vmo, MX_VMO_CLONE_COPY_ON_WRITE,
+                           0, PAGE_SIZE, &clone),
+              NO_ERROR, "");
+
+    EXPECT_EQ(mx_handle_close(reduced_rights_vmo), NO_ERROR, "");
+
+    ASSERT_EQ(mx_object_set_property(clone, MX_PROP_NAME,
+                                     kNewVmoName, sizeof(kNewVmoName)),
+              NO_ERROR, "");
+
+    char oldname[MX_MAX_NAME_LEN] = "bad";
+    EXPECT_EQ(mx_object_get_property(vmo, MX_PROP_NAME,
+                                     oldname, sizeof(oldname)),
+              NO_ERROR, "");
+    EXPECT_STR_EQ(oldname, kOldVmoName, sizeof(kOldVmoName),
+                  "original VMO name");
+
+    char newname[MX_MAX_NAME_LEN] = "bad";
+    EXPECT_EQ(mx_object_get_property(clone, MX_PROP_NAME,
+                                     newname, sizeof(newname)),
+              NO_ERROR, "");
+    EXPECT_STR_EQ(newname, kNewVmoName, sizeof(kNewVmoName),
+                  "clone VMO name");
+
+    EXPECT_EQ(mx_handle_close(vmo), NO_ERROR, "");
+    EXPECT_EQ(get_handle_rights(clone), kNewVmoRights, "");
+    EXPECT_EQ(mx_handle_close(clone), NO_ERROR, "");
+
+    END_TEST;
+}
+
 BEGIN_TEST_CASE(vmo_tests)
 RUN_TEST(vmo_create_test);
 RUN_TEST(vmo_read_write_test);
@@ -875,11 +981,13 @@ RUN_TEST(vmo_resize_test);
 RUN_TEST(vmo_rights_test);
 RUN_TEST(vmo_lookup_test);
 RUN_TEST(vmo_commit_test);
+RUN_TEST(vmo_cache_test);
 RUN_TEST(vmo_zero_page_test);
 RUN_TEST(vmo_clone_test_1);
 RUN_TEST(vmo_clone_test_2);
 RUN_TEST(vmo_clone_test_3);
 RUN_TEST(vmo_clone_test_4);
+RUN_TEST(vmo_clone_rights_test);
 END_TEST_CASE(vmo_tests)
 
 int main(int argc, char** argv) {

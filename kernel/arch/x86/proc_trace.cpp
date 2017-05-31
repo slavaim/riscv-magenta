@@ -34,7 +34,6 @@
 #include <magenta/thread_annotations.h>
 #include <mxtl/macros.h>
 #include <mxtl/unique_ptr.h>
-#include <new.h>
 #include <pow2.h>
 #include <string.h>
 #include <trace.h>
@@ -266,6 +265,12 @@ status_t x86_ipt_cpu_mode_start() {
     unsigned nom_freq = (platform_msr >> 8) & 0xff;
     ktrace(TAG_IPT_START, (uint32_t)nom_freq, 0,
            (uint32_t)kernel_cr3, (uint32_t)(kernel_cr3 >> 32));
+
+    // Emit other sideband info needed by the trace reader.
+    const struct x86_model_info* model_info = x86_get_model();
+    ktrace(TAG_IPT_CPU_INFO, model_info->processor_type,
+           model_info->display_family, model_info->display_model,
+           model_info->stepping);
 
     mp_sync_exec(MP_CPU_ALL, x86_ipt_start_cpu_task, ipt_cpu_state);
     return NO_ERROR;

@@ -6,18 +6,23 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
-#include <threads.h>
 #include <unistd.h>
 
+#include <hypervisor/decode.h>
 #include <hypervisor/guest.h>
 #include <magenta/assert.h>
 #include <magenta/boot/bootdata.h>
+#include <magenta/process.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls/hypervisor.h>
+
+#include "vcpu.h"
 
 static const size_t kVmoSize = 1u << 30;
 static const uintptr_t kKernelOffset = 0x100000;
 static const uintptr_t kBootdataOffset = 0x800000;
+
+static const uint32_t kMapFlags __UNUSED = MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE;
 
 static bool container_is_valid(const bootdata_t* container) {
     return container->type == BOOTDATA_CONTAINER &&
@@ -26,7 +31,7 @@ static bool container_is_valid(const bootdata_t* container) {
            container->flags == 0;
 }
 
-static mx_status_t load_magenta(int fd, uintptr_t addr, uintptr_t* guest_entry,
+static mx_status_t load_magenta(int fd, uintptr_t addr, uintptr_t* guest_ip,
                                 uintptr_t* end_off) {
     uintptr_t header_addr = addr + kKernelOffset;
     int ret = read(fd, (void*)header_addr, sizeof(magenta_kernel_t));
@@ -58,7 +63,7 @@ static mx_status_t load_magenta(int fd, uintptr_t addr, uintptr_t* guest_entry,
         return ERR_IO;
     }
 
-    *guest_entry = header->data_kernel.entry64;
+    *guest_ip = header->data_kernel.entry64;
     *end_off = header->hdr_file.length + sizeof(bootdata_t);
     return NO_ERROR;
 }
@@ -89,33 +94,9 @@ static mx_status_t load_bootfs(int fd, uintptr_t addr, uintptr_t bootdata_off) {
     return NO_ERROR;
 }
 
-int serial_fifo_thread(void* arg) {
-    uint8_t buffer[PAGE_SIZE];
-    uint32_t offset = 0;
-    mx_handle_t* fifo = arg;
-    while (true) {
-        mx_signals_t observed;
-        mx_status_t status = mx_object_wait_one(*fifo, MX_FIFO_READABLE | MX_FIFO_PEER_CLOSED,
-                                                MX_TIME_INFINITE, &observed);
-        if (status != NO_ERROR)
-            return thrd_error;
-        if (observed & MX_FIFO_PEER_CLOSED)
-            return thrd_success;
-        if (~observed & MX_FIFO_READABLE)
-            continue;
-
-        uint32_t bytes_read;
-        status = mx_fifo_read(*fifo, buffer + offset, PAGE_SIZE - offset, &bytes_read);
-        if (status != NO_ERROR)
-            return thrd_error;
-
-        uint8_t* linebreak = memchr(buffer + offset, '\r', bytes_read);
-        offset += bytes_read;
-        if (linebreak != NULL || offset == PAGE_SIZE) {
-            printf("%.*s", offset, buffer);
-            offset = 0;
-        }
-    }
+static int vcpu_thread(void* arg) {
+    // TODO(abdulla): Correctly terminate the VCPU prior to return.
+    return vcpu_loop((vcpu_context_t*)arg) != NO_ERROR ? thrd_error : thrd_success;
 }
 
 int main(int argc, char** argv) {
@@ -133,16 +114,26 @@ int main(int argc, char** argv) {
     }
 
     uintptr_t addr;
-    mx_handle_t guest_phys_mem;
-    status = guest_create_phys_mem(&addr, kVmoSize, &guest_phys_mem);
+    mx_handle_t phys_mem;
+    status = guest_create_phys_mem(&addr, kVmoSize, &phys_mem);
     if (status != NO_ERROR) {
         fprintf(stderr, "Failed to create guest physical memory\n");
         return status;
     }
 
-    mx_handle_t guest_serial_fifo;
-    mx_handle_t guest;
-    status = guest_create(hypervisor, guest_phys_mem, &guest_serial_fifo, &guest);
+    guest_state_t guest_state;
+    memset(&guest_state, 0, sizeof(guest_state));
+    int ret = mtx_init(&guest_state.mutex, mtx_plain);
+    if (ret != thrd_success) {
+        fprintf(stderr, "Failed to initialize guest state mutex\n");
+        return ERR_INTERNAL;
+    }
+
+    vcpu_context_t context;
+    memset(&context, 0, sizeof(context));
+    context.guest_state = &guest_state;
+
+    status = guest_create(hypervisor, phys_mem, &context.vcpu_fifo, &context.guest);
     if (status != NO_ERROR) {
         fprintf(stderr, "Failed to create guest\n");
         return status;
@@ -173,9 +164,9 @@ int main(int argc, char** argv) {
         return ERR_IO;
     }
 
-    uintptr_t guest_entry;
+    uintptr_t guest_ip;
     uintptr_t magenta_end_off;
-    status = load_magenta(fd, addr, &guest_entry, &magenta_end_off);
+    status = load_magenta(fd, addr, &guest_ip, &magenta_end_off);
     close(fd);
     if (status != NO_ERROR)
         return status;
@@ -195,44 +186,68 @@ int main(int argc, char** argv) {
             return status;
     }
 
+    mx_guest_gpr_t guest_gpr;
+    memset(&guest_gpr, 0, sizeof(guest_gpr));
 #if __x86_64__
-    uintptr_t guest_cr3 = 0;
-    status = mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_SET_CR3, &guest_cr3,
-                              sizeof(guest_cr3), NULL, 0);
-    if (status != NO_ERROR) {
-        fprintf(stderr, "Failed to set guest CR3\n");
-        return status;
-    }
-
-    uint32_t guest_esi = kBootdataOffset;
-    status = mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_SET_ESI, &guest_esi,
-                              sizeof(guest_esi), NULL, 0);
+    guest_gpr.rsi = kBootdataOffset;
+#endif // __x86_64__
+    status = mx_hypervisor_op(context.guest, MX_HYPERVISOR_OP_GUEST_SET_GPR,
+                              &guest_gpr, sizeof(guest_gpr), NULL, 0);
     if (status != NO_ERROR) {
         fprintf(stderr, "Failed to set guest ESI\n");
         return status;
     }
-#endif // __x86_64__
 
-    status = mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_SET_ENTRY,
-                              &guest_entry, sizeof(guest_entry), NULL, 0);
+    status = mx_hypervisor_op(context.guest, MX_HYPERVISOR_OP_GUEST_SET_ENTRY_IP,
+                              &guest_ip, sizeof(guest_ip), NULL, 0);
     if (status != NO_ERROR) {
         fprintf(stderr, "Failed to set guest RIP\n");
         return status;
     }
 
+#if __x86_64__
+    uintptr_t guest_cr3 = 0;
+    status = mx_hypervisor_op(context.guest, MX_HYPERVISOR_OP_GUEST_SET_ENTRY_CR3,
+                              &guest_cr3, sizeof(guest_cr3), NULL, 0);
+    if (status != NO_ERROR) {
+        fprintf(stderr, "Failed to set guest CR3\n");
+        return status;
+    }
+
+    status = mx_vmo_create(PAGE_SIZE, 0, &context.local_apic_state.apic_mem);
+    if (status != NO_ERROR) {
+        fprintf(stderr, "Failed to create guest local APIC memory\n");
+        return status;
+    }
+
+    status = mx_hypervisor_op(context.guest, MX_HYPERVISOR_OP_GUEST_SET_APIC_MEM,
+                              &context.local_apic_state.apic_mem, sizeof(mx_handle_t), NULL, 0);
+    if (status != NO_ERROR) {
+        fprintf(stderr, "Failed to set guest local APIC memory\n");
+        return status;
+    }
+
+    status = mx_vmar_map(mx_vmar_root_self(), 0, context.local_apic_state.apic_mem, 0, PAGE_SIZE,
+                         kMapFlags, (uintptr_t*)&context.local_apic_state.apic_addr);
+    if (status != NO_ERROR) {
+        fprintf(stderr, "Failed to map local APIC memory\n");
+        return status;
+    }
+#endif // __x86_64__
+
     thrd_t thread;
-    int ret = thrd_create(&thread, serial_fifo_thread, &guest_serial_fifo);
+    ret = thrd_create(&thread, vcpu_thread, &context);
     if (ret != thrd_success) {
-        fprintf(stderr, "Failed to create serial FIFO thread\n");
+        fprintf(stderr, "Failed to create control thread\n");
         return ERR_INTERNAL;
     }
     ret = thrd_detach(thread);
     if (ret != thrd_success) {
-        fprintf(stderr, "Failed to detach serial FIFO thread\n");
+        fprintf(stderr, "Failed to detach control thread\n");
         return ERR_INTERNAL;
     }
 
-    status = mx_hypervisor_op(guest, MX_HYPERVISOR_OP_GUEST_ENTER, NULL, 0, NULL, 0);
+    status = mx_hypervisor_op(context.guest, MX_HYPERVISOR_OP_GUEST_ENTER, NULL, 0, NULL, 0);
     if (status != NO_ERROR)
         fprintf(stderr, "Failed to enter guest %d\n", status);
     return status;

@@ -8,12 +8,15 @@
 
 #include <bitmap/raw-bitmap.h>
 #include <merkle/digest.h>
+#include <mx/event.h>
+#include <mx/vmo.h>
 #include <mxtl/algorithm.h>
 #include <mxtl/macros.h>
 #include <mxtl/ref_counted.h>
 #include <mxtl/ref_ptr.h>
 #include <mxtl/unique_ptr.h>
 
+#include <fs/mapped-vmo.h>
 #include <fs/vfs.h>
 
 namespace blobstore {
@@ -24,9 +27,8 @@ class VnodeBlob;
 typedef uint32_t BlobFlags;
 
 // After Open;
-constexpr BlobFlags kBlobStateEmpty       = 0x00000000; // Not yet allocated
+constexpr BlobFlags kBlobStateEmpty       = 0x00010000; // Not yet allocated
 // After Ioctl configuring size:
-constexpr BlobFlags kBlobStateMerkleWrite = 0x00010000; // Merkle tree is being written
 constexpr BlobFlags kBlobStateDataWrite   = 0x00020000; // Data is being written
 // After Writing:
 constexpr BlobFlags kBlobStateReadable    = 0x00040000; // Readable
@@ -108,7 +110,7 @@ private:
     void QueueUnlink();
 
     // If successful, allocates Blob Node and Blocks (in-memory)
-    // kBlobStateEmpty --> kBlobStateMerkleWrite
+    // kBlobStateEmpty --> kBlobStateDataWrite
     mx_status_t SpaceAllocate(uint64_t size_data);
 
     // Writes to either the Merkle Tree or the Data section,
@@ -123,6 +125,7 @@ private:
     mx_status_t GetHandles(uint32_t flags, mx_handle_t* hnds,
                            uint32_t* type, void* extra, uint32_t* esize) final;
     mx_status_t Open(uint32_t flags) final;
+    fs::Dispatcher* GetDispatcher() final;
     mx_status_t Readdir(void* cookie, void* dirents, size_t len) final;
     ssize_t Read(void* data, size_t len, size_t off) final;
     ssize_t Write(const void* data, size_t len, size_t off) final;
@@ -130,6 +133,7 @@ private:
     mx_status_t Getattr(vnattr_t* a) final;
     mx_status_t Create(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len,
                        uint32_t mode) final;
+    mx_status_t Truncate(size_t len) final;
     mx_status_t Unlink(const char* name, size_t len, bool must_be_dir) final;
     mx_status_t Mmap(int flags, size_t len, size_t* off, mx_handle_t* out) final;
     mx_status_t Sync() final;
@@ -142,9 +146,8 @@ private:
     // the contents of a VMO into memory when it is opened.
     mx_status_t InitVmos();
 
-    mx_status_t WriteShared(const void** data, size_t* len, size_t* actual,
-                            uint64_t maxlen, mx_handle_t vmo, uint64_t start_block);
-
+    mx_status_t WriteShared(size_t start, size_t len, uint64_t maxlen,
+                            mx_handle_t vmo, uint64_t start_block);
     // Called by Blob once the last write has completed, updating the
     // on-disk metadata.
     mx_status_t WriteMetadata();
@@ -152,12 +155,10 @@ private:
     WAVLTreeNodeState type_wavl_state_;
 
     const mxtl::RefPtr<Blobstore> blobstore_;
-    mx_handle_t vmo_merkle_tree_;
-    uintptr_t   vmo_merkle_tree_addr_;
-    mx_handle_t vmo_blob_;
-    uintptr_t   vmo_blob_addr_;
+    mxtl::unique_ptr<MappedVmo> merkle_tree_;
+    mxtl::unique_ptr<MappedVmo> blob_;
 
-    mx_handle_t readable_event_;
+    mx::event readable_event_;
     uint64_t bytes_written_;
 
     BlobFlags flags_;

@@ -4,9 +4,9 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include <new.h>
-
 #include <hypervisor/guest_physical_address_space.h>
+
+#include <mxalloc/new.h>
 
 static const uint kPfFlags = VMM_PF_FLAG_WRITE | VMM_PF_FLAG_SW_FAULT;
 static const uint kApicMmuFlags = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE;
@@ -56,20 +56,21 @@ status_t GuestPhysicalAddressSpace::MapApicPage(vaddr_t guest_paddr, paddr_t hos
     return map_page(&paspace_, guest_paddr, host_paddr, kApicMmuFlags);
 }
 
-status_t GuestPhysicalAddressSpace::MapRange(size_t offset, size_t len) {
+status_t GuestPhysicalAddressSpace::MapRange(vaddr_t guest_paddr, size_t size) {
     auto mmu_map = [](void* context, size_t offset, size_t index, paddr_t pa) -> status_t {
         guest_paspace_t* paspace = static_cast<guest_paspace_t*>(context);
         return map_page(paspace, offset, pa, kMmuFlags);
     };
-    return guest_phys_mem_->Lookup(offset, len, kPfFlags, mmu_map, &paspace_);
+    return guest_phys_mem_->Lookup(guest_paddr, size, kPfFlags, mmu_map, &paspace_);
 }
 
-status_t GuestPhysicalAddressSpace::UnmapPage(vaddr_t guest_paddr) {
+status_t GuestPhysicalAddressSpace::UnmapRange(vaddr_t guest_paddr, size_t size) {
+    size_t num_pages = size / PAGE_SIZE;
     size_t unmapped;
-    status_t status = guest_mmu_unmap(&paspace_, guest_paddr, 1, &unmapped);
+    status_t status = guest_mmu_unmap(&paspace_, guest_paddr, num_pages, &unmapped);
     if (status != NO_ERROR)
         return status;
-    return unmapped != 1 ? ERR_BAD_STATE : NO_ERROR;
+    return unmapped != num_pages ? ERR_BAD_STATE : NO_ERROR;
 }
 
 status_t GuestPhysicalAddressSpace::GetPage(vaddr_t guest_paddr, paddr_t* host_paddr) {

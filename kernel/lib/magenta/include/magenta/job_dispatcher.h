@@ -19,6 +19,7 @@
 #include <mxtl/array.h>
 #include <mxtl/canary.h>
 #include <mxtl/intrusive_double_list.h>
+#include <mxtl/name.h>
 #include <mxtl/ref_counted.h>
 
 class JobNode;
@@ -72,6 +73,7 @@ public:
     // Job methods.
     void get_name(char out_name[MX_MAX_NAME_LEN]) const final;
     status_t set_name(const char* name, size_t len) final;
+    uint32_t max_height() const { return max_height_; }
     uint32_t process_count() const TA_REQ(lock_) { return process_count_;}
     uint32_t job_count() const TA_REQ(lock_) { return job_count_; }
     bool AddChildProcess(ProcessDispatcher* process);
@@ -108,16 +110,14 @@ private:
     mxtl::Canary<mxtl::magic("JOBD")> canary_;
 
     const mxtl::RefPtr<JobDispatcher> parent_;
+    const uint32_t max_height_;
 
     mxtl::DoublyLinkedListNodeState<JobDispatcher*> dll_job_weak_;
     mxtl::SinglyLinkedListNodeState<mxtl::RefPtr<JobDispatcher>> dll_job_;
 
-    // Used to protect name read/writes
-    mutable SpinLock name_lock_;
-
-    // The user-friendly job name. For debug purposes only.
-    // This includes the trailing NUL.
-    char name_[MX_MAX_NAME_LEN] TA_GUARDED(name_lock_) = {};
+    // The user-friendly job name. For debug purposes only. That
+    // is, there is no mechanism to mint a handle to a job via this name.
+    mxtl::Name<MX_MAX_NAME_LEN> name_;
 
     // The |lock_| protects all members below.
     Mutex lock_;

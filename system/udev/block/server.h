@@ -10,10 +10,13 @@
 
 #include <ddk/protocol/block.h>
 #include <magenta/device/block.h>
+#include <magenta/thread_annotations.h>
 #include <magenta/types.h>
 
 #ifdef __cplusplus
 
+#include <mx/fifo.h>
+#include <mx/vmo.h>
 #include <mxtl/intrusive_wavl_tree.h>
 #include <mxtl/mutex.h>
 #include <mxtl/ref_counted.h>
@@ -31,7 +34,7 @@ public:
     // checking it and using it.  This will require a mechanism to "pin" VMO pages.
     mx_status_t ValidateVmoHack(uint64_t length, uint64_t vmo_offset);
 
-    IoBuffer(mx_handle_t vmo, vmoid_t vmoid);
+    IoBuffer(mx::vmo vmo, vmoid_t vmoid);
     ~IoBuffer();
 
 private:
@@ -39,7 +42,7 @@ private:
     friend struct TypeWAVLTraits;
     DISALLOW_COPY_ASSIGN_AND_MOVE(IoBuffer);
 
-    const mx_handle_t io_vmo_;
+    const mx::vmo io_vmo_;
     const vmoid_t vmoid_;
 };
 
@@ -64,31 +67,27 @@ public:
     mx_status_t Enqueue(bool do_respond, block_msg_t** msg_out);
 
     // Called once the transaction has completed successfully.
-    void Complete(mx_status_t status);
-
-    txnid_t GetTxnid() const;
+    void Complete(block_msg_t* msg, mx_status_t status);
 private:
     DISALLOW_COPY_ASSIGN_AND_MOVE(BlockTransaction);
+
     const mx_handle_t fifo_;
 
-    // Send a response to the txn which has been worked on.
-    void RespondLocked();
-
     mxtl::Mutex lock_;
-    block_msg_t msgs_[MAX_TXN_MESSAGES];
-    block_fifo_response_t response_; // The response to be sent back to the client
-    uint32_t flags_;
-    uint32_t goal_; // How many ops does the block device need to complete?
+    block_msg_t msgs_[MAX_TXN_MESSAGES] TA_GUARDED(lock_);
+    block_fifo_response_t response_ TA_GUARDED(lock_); // The response to be sent back to the client
+    uint32_t flags_ TA_GUARDED(lock_);
+    uint32_t goal_ TA_GUARDED(lock_); // How many ops does the block device need to complete?
 };
 
 class BlockServer {
 public:
     // Creates a new BlockServer
-    static mx_status_t Create(mx_handle_t* fifo_out, BlockServer** out);
+    static mx_status_t Create(mx::fifo* fifo_out, BlockServer** out);
 
     // Starts the BlockServer using the current thread
     mx_status_t Serve(mx_device_t* dev, block_ops_t* ops);
-    mx_status_t AttachVmo(mx_handle_t vmo, vmoid_t* out);
+    mx_status_t AttachVmo(mx::vmo vmo, vmoid_t* out);
     mx_status_t AllocateTxn(txnid_t* out);
     void FreeTxn(txnid_t txnid);
 
@@ -99,13 +98,13 @@ private:
     DISALLOW_COPY_ASSIGN_AND_MOVE(BlockServer);
     BlockServer();
 
-    mx_status_t FindVmoIDLocked(vmoid_t* out);
+    mx_status_t FindVmoIDLocked(vmoid_t* out) TA_REQ(server_lock_);
 
     mxtl::Mutex server_lock_;
-    mx_handle_t fifo_;
-    mxtl::WAVLTree<vmoid_t, mxtl::RefPtr<IoBuffer>> tree_;
-    mxtl::RefPtr<BlockTransaction> txns_[MAX_TXN_COUNT];
-    vmoid_t last_id;
+    mx::fifo fifo_ TA_GUARDED(server_lock_);
+    mxtl::WAVLTree<vmoid_t, mxtl::RefPtr<IoBuffer>> tree_ TA_GUARDED(server_lock_);
+    mxtl::RefPtr<BlockTransaction> txns_[MAX_TXN_COUNT] TA_GUARDED(server_lock_);
+    vmoid_t last_id TA_GUARDED(server_lock_);
 };
 
 #else

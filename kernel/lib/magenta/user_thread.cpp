@@ -9,7 +9,6 @@
 #include <assert.h>
 #include <err.h>
 #include <inttypes.h>
-#include <new.h>
 #include <platform.h>
 #include <string.h>
 #include <trace.h>
@@ -382,9 +381,24 @@ void UserThread::Exiting() {
         // all handles to its underling PortDispatcher.
     }
 
-    // remove ourselves from our parent process's view
-    process_->RemoveThread(this);
+    // Notify a debugger if attached. Do this before marking the thread as
+    // dead: the debugger expects to see the thread in the DYING state, it may
+    // try to read thread registers. The debugger still has to handle the case
+    // where the process is also dying (and thus the thread could transition
+    // DYING->DEAD from underneath it), but that's life (or death :-)).
+    // N.B. OnThreadExitForDebugger will block in ExceptionHandlerExchange, so
+    // don't hold the process's |exception_lock_| across the call.
+    {
+        mxtl::RefPtr<ExceptionPort> eport(process_->debugger_exception_port());
+        if (eport) {
+            eport->OnThreadExitForDebugger(this);
+        }
+    }
 
+    // Mark the thread as dead. Do this before removing the thread from the
+    // process because if this is the last thread then the process will be
+    // marked dead, and we don't want to have a state where the process is
+    // dead but one thread is not.
     {
         AutoLock lock(&state_lock_);
 
@@ -393,6 +407,9 @@ void UserThread::Exiting() {
         // put ourselves into the dead state
         SetState(State::DEAD);
     }
+
+    // remove ourselves from our parent process's view
+    process_->RemoveThread(this);
 
     // drop LK's reference
     if (Release()) {
@@ -420,18 +437,8 @@ void UserThread::Exiting() {
 void UserThread::Suspending() {
     LTRACE_ENTRY_OBJ;
 
-    // Notify debugger if attached.
-    // This is done by first obtaining our own reference to the port so the
-    // test can be done safely.
-    // TODO(dje): Allow debugger to say whether it wants these.
-    // TODO(dje): Is the locking sufficient here?
-    {
-        mxtl::RefPtr<ExceptionPort> debugger_port(process_->debugger_exception_port());
-        if (debugger_port) {
-            debugger_port->OnThreadSuspending(this);
-        }
-    }
-
+    // Update the state before sending any notifications out. We want the
+    // receiver to see the new state.
     {
         AutoLock lock(&state_lock_);
 
@@ -441,12 +448,25 @@ void UserThread::Suspending() {
         }
     }
 
+    // Notify debugger if attached.
+    // This is done by first obtaining our own reference to the port so the
+    // test can be done safely.
+    // TODO(dje): Allow debugger to say whether it wants these.
+    {
+        mxtl::RefPtr<ExceptionPort> debugger_port(process_->debugger_exception_port());
+        if (debugger_port) {
+            debugger_port->OnThreadSuspending(this);
+        }
+    }
+
     LTRACE_EXIT_OBJ;
 }
 
 void UserThread::Resuming() {
     LTRACE_ENTRY_OBJ;
 
+    // Update the state before sending any notifications out. We want the
+    // receiver to see the new state.
     {
         AutoLock lock(&state_lock_);
 
@@ -456,13 +476,10 @@ void UserThread::Resuming() {
         }
     }
 
-    // TODO(dje): Add support for modifying userspace regs from the debugger.
-
     // Notify debugger if attached.
     // This is done by first obtaining our own reference to the port so the
     // test can be done safely.
     // TODO(dje): Allow debugger to say whether it wants these.
-    // TODO(dje): Is the locking sufficient here?
     {
         mxtl::RefPtr<ExceptionPort> debugger_port(process_->debugger_exception_port());
         if (debugger_port) {
@@ -732,7 +749,8 @@ void UserThread::GetInfoForUserspace(mx_info_thread_t* info) {
     canary_.Assert();
 
     LTRACE_ENTRY_OBJ;
-    memset(info, 0, sizeof(*info));
+
+    *info = {};
 
     UserThread::State state;
     enum thread_state lk_state;
@@ -745,10 +763,16 @@ void UserThread::GetInfoForUserspace(mx_info_thread_t* info) {
         AutoLock lock(&exception_wait_lock_);
         state = state_;
         lk_state = thread_.state;
-        if (InExceptionLocked()) {
+        if (InExceptionLocked() &&
+                // A port type of !NONE here indicates to the caller that the
+                // thread is waiting for an exception response. So don't return
+                // !NONE if the thread just woke up but hasn't reacquired
+                // |exception_wait_lock_|.
+                exception_status_ == ExceptionStatus::UNPROCESSED) {
             DEBUG_ASSERT(exception_wait_port_ != nullptr);
             excp_port_type = exception_wait_port_->type();
         } else {
+            DEBUG_ASSERT(exception_wait_port_ == nullptr);
             excp_port_type = ExceptionPort::Type::NONE;
         }
     }
@@ -808,6 +832,16 @@ void UserThread::GetInfoForUserspace(mx_info_thread_t* info) {
     }
 }
 
+void UserThread::GetStatsForUserspace(mx_info_thread_stats_t* info) {
+    canary_.Assert();
+
+    LTRACE_ENTRY_OBJ;
+
+    *info = {};
+
+    info->total_runtime = runtime_ns();
+}
+
 status_t UserThread::GetExceptionReport(mx_exception_report_t* report) {
     canary_.Assert();
 
@@ -831,9 +865,16 @@ status_t UserThread::ReadState(uint32_t state_kind, void* buffer, uint32_t* buff
 
     LTRACE_ENTRY_OBJ;
 
-    AutoLock lock(&exception_wait_lock_);
+    // We can't be reading regs while the thread transitions from
+    // SUSPENDED to RUNNING.
+    // TODO(dje): Is it ok to use this lock here?
+    AutoLock state_lock(&state_lock_);
 
-    if (!InExceptionLocked())
+    // OTOH, the thread may be in an exception.
+    // TODO(dje): Can we reduce this to just one lock?
+    AutoLock exception_wait_lock(&exception_wait_lock_);
+
+    if (state_ != State::SUSPENDED && !InExceptionLocked())
         return ERR_BAD_STATE;
 
     switch (state_kind)
@@ -852,9 +893,16 @@ status_t UserThread::WriteState(uint32_t state_kind, const void* buffer, uint32_
 
     LTRACE_ENTRY_OBJ;
 
-    AutoLock lock(&exception_wait_lock_);
+    // We can't be reading regs while the thread transitions from
+    // SUSPENDED to RUNNING.
+    // TODO(dje): Is it ok to use this lock here?
+    AutoLock state_lock(&state_lock_);
 
-    if (!InExceptionLocked())
+    // OTOH, the thread may be in an exception.
+    // TODO(dje): Can we reduce this to just one lock?
+    AutoLock exception_wait_lock(&exception_wait_lock_);
+
+    if (state_ != State::SUSPENDED && !InExceptionLocked())
         return ERR_BAD_STATE;
 
     switch (state_kind)

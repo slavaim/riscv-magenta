@@ -91,10 +91,10 @@ __BEGIN_CDECLS;
 #define BIND_USB_SUBCLASS     0x0203
 #define BIND_USB_PROTOCOL     0x0204
 
-// System on Chip (SoC) binding variables at 0x03XX
-#define BIND_SOC_VID          0x0300
-#define BIND_SOC_PID          0x0301
-#define BIND_SOC_DID          0x0302
+// Platform device binding variables at 0x03XX
+#define BIND_PLATFORM_DEV_VID 0x0300
+#define BIND_PLATFORM_DEV_PID 0x0301
+#define BIND_PLATFORM_DEV_DID 0x0302
 
 // ACPI binding variables at 0x04XX
 // The _HID is a 7- or 8-byte string. Because a bind property is 32-bit, use 2
@@ -155,8 +155,14 @@ typedef struct __attribute__((packed)) {
     char version[16];
 } magenta_note_driver_t;
 
+typedef struct mx_driver {
+    const char* name;
+    mx_driver_ops_t* ops;
+    uint32_t flags;
+} mx_driver_t;
+
 typedef struct magenta_driver_info {
-    mx_driver_t* driver;
+    const mx_driver_t* driver;
     const magenta_note_driver_t* note;
 } magenta_driver_info_t;
 
@@ -215,8 +221,8 @@ const struct __attribute__((packed)) {\
     MAGENTA_DRIVER_BEGIN_ETC(Driver,Ops,0,VendorName,Version,BindCount) \
 
 #define MAGENTA_DRIVER_END(Driver) }};\
-extern magenta_driver_info_t MAGENTA_DRIVER_SYMBOL(Driver) MAGENTA_DRIVER_ATTR_DECL; \
-magenta_driver_info_t MAGENTA_DRIVER_SYMBOL(Driver) MAGENTA_DRIVER_ATTR_DEF = { \
+extern const magenta_driver_info_t MAGENTA_DRIVER_SYMBOL(Driver) MAGENTA_DRIVER_ATTR_DECL; \
+const magenta_driver_info_t MAGENTA_DRIVER_SYMBOL(Driver) MAGENTA_DRIVER_ATTR_DEF = { \
     /* .driver = */ &MAGENTA_DRIVER_PASTE(_driver_,Driver),\
     /* .note = */ &MAGENTA_DRIVER_PASTE(__magenta_driver_note__,Driver).driver,\
 };

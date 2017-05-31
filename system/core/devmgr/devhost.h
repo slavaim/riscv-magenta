@@ -33,23 +33,29 @@
 
 // Safe external APIs are in device.h and device_internal.h
 
-void driver_add(mx_driver_t* driver);
-void driver_remove(mx_driver_t* driver);
+typedef struct mx_driver_rec {
+    const char* name;
+    mx_driver_ops_t* ops;
+    void* ctx;
+    const char* libname;
+    list_node_t node;
+    mx_status_t status;
+} mx_driver_rec_t;
 
-mx_status_t devhost_driver_add(mx_driver_t* driver);
-mx_status_t devhost_driver_remove(mx_driver_t* driver);
-mx_status_t devhost_driver_unbind(mx_driver_t* driver, mx_device_t* dev);
+extern mx_protocol_device_t device_default_ops;
+
+mx_status_t devhost_device_unbind(mx_device_t* dev);
 
 mx_status_t devhost_device_add(mx_device_t* dev, mx_device_t* parent,
-                               mx_device_prop_t* props, uint32_t prop_count,
+                               const mx_device_prop_t* props, uint32_t prop_count,
                                const char* businfo, mx_handle_t resource);
 mx_status_t devhost_device_install(mx_device_t* dev);
 mx_status_t devhost_device_add_root(mx_device_t* dev);
 mx_status_t devhost_device_remove(mx_device_t* dev);
-mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_name);
+mx_status_t devhost_device_bind(mx_device_t* dev, const char* drv_libname);
 mx_status_t devhost_device_rebind(mx_device_t* dev);
-mx_status_t devhost_device_create(const char* name, void* ctx, mx_protocol_device_t* ops,
-                                  mx_driver_t* driver, mx_device_t** out);
+mx_status_t devhost_device_create(mx_device_t* parent, const char* name, void* ctx,
+                                  mx_protocol_device_t* ops, mx_device_t** out);
 void devhost_device_set_protocol(mx_device_t* dev, uint32_t proto_id, void* proto_ops);
 void devhost_device_set_bindable(mx_device_t* dev, bool bindable);
 mx_status_t devhost_device_open_at(mx_device_t* dev, mx_device_t** out,
@@ -57,11 +63,7 @@ mx_status_t devhost_device_open_at(mx_device_t* dev, mx_device_t** out,
 mx_status_t devhost_device_close(mx_device_t* dev, uint32_t flags);
 void devhost_device_destroy(mx_device_t* dev);
 
-bool devhost_is_bindable_drv(mx_driver_t* drv, mx_device_t* dev, bool autobind);
-
-mx_status_t devhost_load_driver(mx_driver_t* drv);
-
-mx_status_t devhost_load_firmware(mx_driver_t* drv, const char* path,
+mx_status_t devhost_load_firmware(mx_device_t* dev, const char* path,
                                   mx_handle_t* fw, size_t* size);
 
 // shared between devhost.c and rpc-device.c
@@ -80,7 +82,8 @@ mx_status_t devhost_start_iostate(devhost_iostate_t* ios, mx_handle_t h);
 
 // routines devhost uses to talk to dev coordinator
 mx_status_t devhost_add(mx_device_t* dev, mx_device_t* child,
-                        const char* businfo, mx_handle_t resource);
+                        const char* businfo, mx_handle_t resource,
+                        const mx_device_prop_t* props, uint32_t prop_count);
 mx_status_t devhost_remove(mx_device_t* dev);
 mx_status_t devhost_add_internal(mx_device_t* parent,
                                  const char* name, uint32_t protocol_id,

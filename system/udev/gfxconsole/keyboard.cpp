@@ -8,7 +8,7 @@
 #include <string.h>
 #include <threads.h>
 
-#include <ddk/protocol/input.h>
+#include <magenta/device/input.h>
 #include <hid/hid.h>
 #include <hid/usages.h>
 #include <magenta/syscalls.h>
@@ -59,6 +59,9 @@ static void vc_process_kb_report(uint8_t* report_buf, hid_keys_t* key_state,
     }
     hid_for_every_key(&key_delta, keycode) {
         *modifiers |= modifiers_from_keycode(keycode);
+        if (keycode == HID_USAGE_KEY_CAPSLOCK) {
+            *modifiers ^= MOD_CAPSLOCK;
+        }
         keypress_handler(keycode, *modifiers);
     }
 
@@ -75,12 +78,7 @@ static void vc_process_kb_report(uint8_t* report_buf, hid_keys_t* key_state,
     *prev_idx = 1 - *prev_idx;
 }
 
-struct vc_input_thread_args {
-    int fd;
-    keypress_handler_t keypress_handler;
-};
-
-static int vc_input_thread(void* arg) {
+int vc_input_thread(void* arg) {
     auto* args_ptr = reinterpret_cast<vc_input_thread_args*>(arg);
     vc_input_thread_args args = *args_ptr;
     delete args_ptr;
@@ -122,7 +120,7 @@ static int vc_input_thread(void* arg) {
 
         memcpy(previous_report_buf, report_buf, sizeof(report_buf));
         ssize_t r = read(args.fd, report_buf, sizeof(report_buf));
-        if (r < 0) {
+        if (r <= 0) {
             break; // will be restarted by poll thread if needed
         }
         if ((size_t)(r) != sizeof(report_buf)) {

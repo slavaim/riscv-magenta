@@ -6,8 +6,8 @@
 
 #include <string.h>
 
+#include <mxalloc/new.h>
 #include <mxtl/algorithm.h>
-#include <magenta/new.h>
 #include <magenta/syscalls.h>
 
 namespace vmofs {
@@ -26,7 +26,7 @@ static_assert(sizeof(dircookie_t) <= sizeof(vdircookie_t),
 
 // Vnode -----------------------------------------------------------------------
 
-Vnode::Vnode(mxio_dispatcher_cb_t dispatcher) : dispatcher_(dispatcher) {}
+Vnode::Vnode(fs::Dispatcher* dispatcher) : dispatcher_(dispatcher) {}
 
 Vnode::~Vnode() = default;
 
@@ -34,13 +34,13 @@ mx_status_t Vnode::Close() {
     return NO_ERROR;
 }
 
-mx_status_t Vnode::AddDispatcher(mx_handle_t h, vfs_iostate_t* cookie) {
-    return dispatcher_(h, (void*)vfs_handler, cookie);
+fs::Dispatcher* Vnode::GetDispatcher() {
+    return dispatcher_;
 }
 
 // VnodeFile --------------------------------------------------------------------
 
-VnodeFile::VnodeFile(mxio_dispatcher_cb_t dispatcher,
+VnodeFile::VnodeFile(fs::Dispatcher* dispatcher,
                      mx_handle_t vmo,
                      mx_off_t offset,
                      mx_off_t length)
@@ -55,6 +55,11 @@ uint32_t VnodeFile::GetVType() {
 mx_status_t VnodeFile::Open(uint32_t flags) {
     if (flags & O_DIRECTORY) {
         return ERR_NOT_DIR;
+    }
+    switch (flags & O_ACCMODE) {
+    case O_WRONLY:
+    case O_RDWR:
+        return ERR_ACCESS_DENIED;
     }
     return NO_ERROR;
 }
@@ -95,7 +100,11 @@ mx_status_t VnodeFile::GetHandles(uint32_t flags, mx_handle_t* hnds,
     mx_handle_t vmo;
     // TODO(abarth): We should clone a restricted range of the VMO to avoid
     // leaking the whole VMO to the client.
-    mx_status_t status = mx_handle_duplicate(vmo_, MX_RIGHT_READ | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER, &vmo);
+    mx_status_t status = mx_handle_duplicate(
+        vmo_,
+        MX_RIGHT_READ | MX_RIGHT_EXECUTE | MX_RIGHT_MAP |
+        MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_GET_PROPERTY,
+        &vmo);
     if (status < 0) {
         return status;
     }
@@ -110,7 +119,7 @@ mx_status_t VnodeFile::GetHandles(uint32_t flags, mx_handle_t* hnds,
 
 // VnodeDir --------------------------------------------------------------------
 
-VnodeDir::VnodeDir(mxio_dispatcher_cb_t dispatcher,
+VnodeDir::VnodeDir(fs::Dispatcher* dispatcher,
                    mxtl::Array<mxtl::StringPiece> names,
                    mxtl::Array<mxtl::RefPtr<Vnode>> children)
     : Vnode(dispatcher),

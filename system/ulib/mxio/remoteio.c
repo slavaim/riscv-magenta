@@ -22,6 +22,7 @@
 #include <mxio/debug.h>
 #include <mxio/dispatcher.h>
 #include <mxio/io.h>
+#include <mxio/namespace.h>
 #include <mxio/remoteio.h>
 #include <mxio/util.h>
 
@@ -29,6 +30,9 @@
 
 #define MXDEBUG 0
 
+// POLL_MASK and POLL_SHIFT intend to convert the lower five EPOLL events into
+// MX_USER_SIGNALs and vice-versa. Other events need to be manually converted to
+// an mx_signal_t, if they are desired.
 #define POLL_SHIFT  24
 #define POLL_MASK   0x1F
 
@@ -93,11 +97,15 @@ static void discard_handles(mx_handle_t* handles, unsigned count) {
 mx_status_t mxrio_handle_rpc(mx_handle_t h, mxrio_msg_t* msg, mxrio_cb_t cb, void* cookie) {
     mx_status_t r;
 
-    msg->hcount = MXIO_MAX_HANDLES;
+    // NOTE: hcount intentionally received out-of-bound from the message to
+    // avoid letting "client-supplied" bytes override the REAL hcount value.
+    uint32_t hcount = 0;
     uint32_t dsz = sizeof(mxrio_msg_t);
-    if ((r = mx_channel_read(h, 0, msg, msg->handle, dsz, msg->hcount, &dsz, &msg->hcount)) < 0) {
+    if ((r = mx_channel_read(h, 0, msg, msg->handle, dsz, MXIO_MAX_HANDLES, &dsz, &hcount)) < 0) {
         return r;
     }
+    // Now, "msg->hcount" can be trusted once again.
+    msg->hcount = hcount;
 
     if (!is_message_reply_valid(msg, dsz)) {
         discard_handles(msg->handle, msg->hcount);
@@ -540,19 +548,34 @@ static mx_status_t mxrio_connect(mx_handle_t svc, mx_handle_t cnxn,
 
 mx_status_t mxio_service_connect(const char* svcpath, mx_handle_t h) {
     if (svcpath == NULL) {
+        mx_handle_close(h);
         return ERR_INVALID_ARGS;
     }
-    if (strncmp("/svc/", svcpath, 5)) {
-        return ERR_NOT_FOUND;
+    // If there's an explicit svcroot handle,
+    // attempt to connect through that
+    if (mxio_svc_root != MX_HANDLE_INVALID) {
+        if (strncmp("/svc/", svcpath, 5)) {
+            goto not_found;
+        }
+        return mxio_service_connect_at(mxio_svc_root, svcpath + 5, h);
     }
-    return mxio_service_connect_at(mxio_svc_root, svcpath + 5, h);
+    // Otherwise attempt to connect through the root namespace
+    if (mxio_root_ns != NULL) {
+        return mxio_ns_connect(mxio_root_ns, svcpath, h);
+    }
+    // Otherwise we fail
+not_found:
+    mx_handle_close(h);
+    return ERR_NOT_FOUND;
 }
 
 mx_status_t mxio_service_connect_at(mx_handle_t dir, const char* path, mx_handle_t h) {
     if (path == NULL) {
+        mx_handle_close(h);
         return ERR_INVALID_ARGS;
     }
     if (dir == MX_HANDLE_INVALID) {
+        mx_handle_close(h);
         return ERR_UNAVAILABLE;
     }
     return mxrio_connect(dir, h, MXRIO_OPEN, path);
@@ -842,12 +865,24 @@ static mx_status_t mxrio_unwrap(mxio_t* io, mx_handle_t* handles, uint32_t* type
 static void mxrio_wait_begin(mxio_t* io, uint32_t events, mx_handle_t* handle, mx_signals_t* _signals) {
     mxrio_t* rio = (void*)io;
     *handle = rio->h2;
+
+    mx_signals_t signals = 0;
+    // Manually add signals that don't fit within POLL_MASK
+    if (events & EPOLLRDHUP) {
+        signals |= MX_CHANNEL_PEER_CLOSED;
+    }
+
     // POLLERR is always detected
-    *_signals = ((EPOLLERR | events) & POLL_MASK) << POLL_SHIFT;
+    *_signals = (((EPOLLERR | events) & POLL_MASK) << POLL_SHIFT) | signals;
 }
 
 static void mxrio_wait_end(mxio_t* io, mx_signals_t signals, uint32_t* _events) {
-    *_events = (signals >> POLL_SHIFT) & POLL_MASK;
+    // Manually add events that don't fit within POLL_MASK
+    uint32_t events = 0;
+    if (signals & MX_CHANNEL_PEER_CLOSED) {
+        events |= EPOLLRDHUP;
+    }
+    *_events = ((signals >> POLL_SHIFT) & POLL_MASK) | events;
 }
 
 static mxio_ops_t mx_remote_ops = {

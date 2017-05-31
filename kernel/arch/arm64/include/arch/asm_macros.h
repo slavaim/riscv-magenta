@@ -7,12 +7,43 @@
 
 #pragma once
 
+.macro movlit reg, literal
+mov \reg, #((\literal) & 0xffff)
+.ifne (((\literal) >> 16) & 0xffff)
+movk \reg, #(((\literal) >> 16) & 0xffff), lsl #16
+.endif
+.ifne (((\literal) >> 32) & 0xffff)
+movk \reg, #(((\literal) >> 32) & 0xffff), lsl #32
+.endif
+.ifne (((\literal) >> 48) & 0xffff)
+movk \reg, #(((\literal) >> 48) & 0xffff), lsl #48
+.endif
+.endm
+
 .macro push ra, rb
 stp \ra, \rb, [sp,#-16]!
 .endm
 
 .macro pop ra, rb
 ldp \ra, \rb, [sp], #16
+.endm
+
+.macro adr_global reg, symbol
+adrp \reg, \symbol
+add \reg, \reg, #:lo12:\symbol
+.endm
+
+.macro movabs reg, symbol
+// TODO(mcgrathr): Remove this workaround when the upstream LLVM assembler
+// bug http://bugs.llvm.org/show_bug.cgi?id=32527 is fixed.
+#ifdef __clang__
+ldr \reg, =\symbol
+#else
+movz \reg, #:abs_g0_nc:\symbol
+movk \reg, #:abs_g1_nc:\symbol
+movk \reg, #:abs_g2_nc:\symbol
+movk \reg, #:abs_g3:\symbol
+#endif
 .endm
 
 .macro tbzmask, reg, mask, label, shift=0
@@ -68,4 +99,3 @@ ldp \ra, \rb, [sp], #16
     cmp     \tmp, \new_ptr_end
     b.lo    .Lcalloc_bootmem_aligned_clear_loop\@
 .endm
-

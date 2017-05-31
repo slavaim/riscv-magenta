@@ -8,13 +8,14 @@
 
 #include <assert.h>
 #include <err.h>
-#include <new.h>
 #include <platform.h>
 #include <pow2.h>
 
 #include <magenta/compiler.h>
 #include <magenta/state_tracker.h>
 #include <magenta/syscalls/port.h>
+
+#include <mxalloc/new.h>
 
 #include <kernel/auto_lock.h>
 
@@ -68,7 +69,7 @@ bool PortObserver::OnCancel(Handle* handle) {
 }
 
 bool PortObserver::OnCancelByKey(Handle* handle, const void* port, uint64_t key) {
-    if ((key_ != key) || (handle_ != handle))
+    if ((key_ != key) || (handle_ != handle) || (port_.get() != port))
         return false;
     remove_ = true;
     return false;

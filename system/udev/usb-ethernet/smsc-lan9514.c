@@ -8,6 +8,7 @@
 #include <ddk/driver.h>
 #include <ddk/protocol/bcm-bus.h>
 #include <ddk/protocol/ethernet.h>
+#include <ddk/protocol/platform-device.h>
 #include <magenta/device/ethernet.h>
 #include <magenta/listnode.h>
 #include <sync/completion.h>
@@ -36,7 +37,6 @@
 typedef struct {
     mx_device_t* device;
     mx_device_t* usb_device;
-    mx_driver_t* driver;
 
     uint8_t phy_id;
     uint8_t mac_addr[6];
@@ -548,11 +548,12 @@ static mx_status_t lan9514_reset(lan9514_t* eth) {
 
     // if we are on rpi, then try to find BCM bus device to fetch MAC address
     // TODO(voydanoff) come up with a better way of accessing the bus protocol
-    mx_device_t* busdev = eth->usb_device;
+    mx_device_t* pdev = eth->usb_device;
+    mx_device_t* busdev = NULL;
     bcm_bus_protocol_t* bus_proto = NULL;
-    while (busdev && device_op_get_protocol(busdev, MX_PROTOCOL_BCM_BUS, (void**)&bus_proto)
-           != NO_ERROR) {
-        busdev = device_get_parent(busdev);
+    while (pdev && platform_device_find_protocol(pdev, MX_PROTOCOL_BCM_BUS, &busdev,
+                                                 (void**)&bus_proto) != NO_ERROR) {
+        pdev = device_get_parent(pdev);
     }
     if (busdev && bus_proto) {
         uint8_t temp_mac[6];
@@ -645,7 +646,6 @@ static int lan9514_start_thread(void* arg) {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "smsc-lan9514",
         .ctx = eth,
-        .driver = eth->driver,
         .ops = &lan9514_device_proto,
         .proto_id = MX_PROTOCOL_ETHERMAC,
         .proto_ops = &ethmac_ops,
@@ -722,7 +722,7 @@ teardown:
     return status;
 }
 
-static mx_status_t lan9514_bind(mx_driver_t* driver, mx_device_t* device, void** cookie) {
+static mx_status_t lan9514_bind(void* ctx, mx_device_t* device, void** cookie) {
     printf("LAN9514 - attempting to bind\n");
 
     // find our endpoints
@@ -779,7 +779,6 @@ static mx_status_t lan9514_bind(mx_driver_t* driver, mx_device_t* device, void**
     list_initialize(&eth->free_intr_reqs);
 
     eth->usb_device = device;
-    eth->driver = driver;
 
     mx_status_t status = NO_ERROR;
     for (int i = 0; i < READ_REQ_COUNT; i++) {

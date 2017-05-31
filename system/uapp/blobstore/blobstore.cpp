@@ -10,9 +10,10 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include <magenta/new.h>
+#include <fs/mxio-dispatcher.h>
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <mxalloc/new.h>
 #include <merkle/digest.h>
 #include <merkle/tree.h>
 #include <mxtl/ref_ptr.h>
@@ -133,6 +134,12 @@ mx_status_t blobstore_check_info(const blobstore_info_t* info, uint64_t max) {
 
 namespace blobstore {
 
+mxtl::unique_ptr<fs::Dispatcher> blobstore_global_dispatcher;
+
+fs::Dispatcher* VnodeBlob::GetDispatcher() {
+    return blobstore_global_dispatcher.get();
+}
+
 void* Blobstore::GetBlockmapData(uint64_t n) const {
     assert(n < BlockMapBlocks(info_));
     return get_raw_bitmap_data(block_map_, n);
@@ -171,7 +178,7 @@ mx_status_t writeblk(int fd, uint64_t bno, const void* data) {
 }
 
 mx_status_t VnodeBlob::InitVmos() {
-    if (vmo_blob_ != MX_HANDLE_INVALID) {
+    if (blob_ != nullptr) {
         return NO_ERROR;
     }
 
@@ -182,45 +189,31 @@ mx_status_t VnodeBlob::InitVmos() {
     uint64_t data_vmo_size = BlobDataBlocks(*inode) * kBlobstoreBlockSize;
 
     if (merkle_vmo_size != 0) {
-        if ((status = mx_vmo_create(merkle_vmo_size, 0, &vmo_merkle_tree_)) != NO_ERROR) {
+        if ((status = MappedVmo::Create(merkle_vmo_size, &merkle_tree_)) != NO_ERROR) {
             error("Failed to initialize vmo; error: %d\n", status);
             goto fail;
         }
 
         for (uint64_t n = 0; n < MerkleTreeBlocks(*inode); n++) {
             uint64_t bno = inode->start_block + n;
-            if ((status = vn_fill_block(fd, vmo_merkle_tree_, n, bno)) != NO_ERROR) {
+            if ((status = vn_fill_block(fd, merkle_tree_->GetVmo(), n, bno)) != NO_ERROR) {
                 error("Failed to fill bno\n");
                 goto fail;
             }
         }
-
-        if ((status = mx_vmar_map(mx_vmar_root_self(), 0, vmo_merkle_tree_, 0,
-                                  merkle_vmo_size,
-                                  MX_VM_FLAG_PERM_READ,
-                                  &vmo_merkle_tree_addr_)) != NO_ERROR) {
-            goto fail;
-        }
     }
 
-    if ((status = mx_vmo_create(data_vmo_size, 0, &vmo_blob_)) != NO_ERROR) {
+    if ((status = MappedVmo::Create(data_vmo_size, &blob_)) != NO_ERROR) {
         error("Failed to initialize vmo; error: %d\n", status);
         goto fail;
     }
 
     for (uint64_t n = 0; n < BlobDataBlocks(*inode); n++) {
         uint64_t bno = inode->start_block + n + MerkleTreeBlocks(*inode);
-        if ((status = vn_fill_block(fd, vmo_blob_, n, bno)) != NO_ERROR) {
+        if ((status = vn_fill_block(fd, blob_->GetVmo(), n, bno)) != NO_ERROR) {
             error("Failed to fill bno\n");
             goto fail;
         }
-    }
-
-    if ((status = mx_vmar_map(mx_vmar_root_self(), 0, vmo_blob_, 0,
-                              data_vmo_size,
-                              MX_VM_FLAG_PERM_READ,
-                              &vmo_blob_addr_)) != NO_ERROR) {
-        goto fail;
     }
 
     return NO_ERROR;
@@ -239,11 +232,6 @@ uint64_t VnodeBlob::SizeData() const {
 
 VnodeBlob::VnodeBlob(mxtl::RefPtr<Blobstore> bs, const merkle::Digest& digest) :
     blobstore_(mxtl::move(bs)),
-    vmo_merkle_tree_(MX_HANDLE_INVALID),
-    vmo_merkle_tree_addr_(0),
-    vmo_blob_(MX_HANDLE_INVALID),
-    vmo_blob_addr_(0),
-    readable_event_(MX_HANDLE_INVALID),
     bytes_written_(0),
     flags_(kBlobStateEmpty) {
 
@@ -252,37 +240,13 @@ VnodeBlob::VnodeBlob(mxtl::RefPtr<Blobstore> bs, const merkle::Digest& digest) :
 
 VnodeBlob::VnodeBlob(mxtl::RefPtr<Blobstore> bs) :
     blobstore_(mxtl::move(bs)),
-    vmo_merkle_tree_(MX_HANDLE_INVALID),
-    vmo_merkle_tree_addr_(0),
-    vmo_blob_(MX_HANDLE_INVALID),
-    vmo_blob_addr_(0),
-    readable_event_(MX_HANDLE_INVALID),
     bytes_written_(0),
     flags_(kBlobStateEmpty | kBlobFlagDirectory) {}
 
 void VnodeBlob::BlobCloseHandles() {
-    auto inode = &blobstore_->node_map_[map_index_];
-    if (vmo_merkle_tree_addr_ != 0) {
-        uint64_t size_merkle = merkle::Tree::GetTreeLength(inode->blob_size);
-        mx_vmar_unmap(mx_vmar_root_self(), vmo_merkle_tree_addr_, size_merkle);
-    }
-    if (vmo_blob_addr_ != 0) {
-        mx_vmar_unmap(mx_vmar_root_self(), vmo_blob_addr_, inode->blob_size);
-    }
-    if (vmo_merkle_tree_ != MX_HANDLE_INVALID) {
-        mx_handle_close(vmo_merkle_tree_);
-    }
-    if (vmo_blob_ != MX_HANDLE_INVALID) {
-        mx_handle_close(vmo_blob_);
-    }
-    if (readable_event_ != MX_HANDLE_INVALID) {
-        mx_handle_close(readable_event_);
-    }
-    vmo_merkle_tree_addr_ = 0;
-    vmo_blob_addr_ = 0;
-    vmo_merkle_tree_ = MX_HANDLE_INVALID;
-    vmo_blob_ = MX_HANDLE_INVALID;
-    readable_event_ = MX_HANDLE_INVALID;
+    merkle_tree_ = nullptr;
+    blob_ = nullptr;
+    readable_event_.reset();
 }
 
 mx_status_t VnodeBlob::SpaceAllocate(uint64_t size_data) {
@@ -308,21 +272,11 @@ mx_status_t VnodeBlob::SpaceAllocate(uint64_t size_data) {
     // Open VMOs, so we can begin writing after allocate succeeds.
     uint64_t size_merkle = merkle::Tree::GetTreeLength(size_data);
     if (size_merkle != 0) {
-        if ((status = mx_vmo_create(size_merkle, 0, &vmo_merkle_tree_)) != NO_ERROR) {
-            goto fail;
-        } else if ((status = mx_vmar_map(mx_vmar_root_self(), 0, vmo_merkle_tree_, 0,
-                                         size_merkle,
-                                         MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
-                                         &vmo_merkle_tree_addr_)) != NO_ERROR) {
+        if ((status = MappedVmo::Create(size_merkle, &merkle_tree_)) != NO_ERROR) {
             goto fail;
         }
     }
-    if ((status = mx_vmo_create(size_data, 0, &vmo_blob_)) != NO_ERROR) {
-        goto fail;
-    } else if ((status = mx_vmar_map(mx_vmar_root_self(), 0, vmo_blob_, 0,
-                                     size_data,
-                                     MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
-                                     &vmo_blob_addr_)) != NO_ERROR) {
+    if ((status = MappedVmo::Create(size_data, &blob_)) != NO_ERROR) {
         goto fail;
     }
 
@@ -331,7 +285,7 @@ mx_status_t VnodeBlob::SpaceAllocate(uint64_t size_data) {
         goto fail;
     }
 
-    SetState(size_merkle != 0 ? kBlobStateMerkleWrite : kBlobStateDataWrite);
+    SetState(kBlobStateDataWrite);
     return NO_ERROR;
 
 fail:
@@ -342,17 +296,12 @@ fail:
 
 // A helper function for dumping either the Merkle Tree or the actual blob data
 // to both (1) The containing VMO, and (2) disk.
-mx_status_t VnodeBlob::WriteShared(const void** data, size_t* len, size_t* actual,
-                                   uint64_t maxlen, mx_handle_t vmo, uint64_t start_block) {
-    size_t to_write = mxtl::min(*len, maxlen - bytes_written_);
-    mx_status_t status = vmo_write_exact(vmo, *data, bytes_written_, to_write);
-    if (status != NO_ERROR) {
-        return status;
-    }
-
+mx_status_t VnodeBlob::WriteShared(size_t start, size_t len, uint64_t maxlen,
+                                   mx_handle_t vmo, uint64_t start_block) {
     // Write as many 'entire blocks' as possible
-    uint64_t n = bytes_written_ / kBlobstoreBlockSize;
-    uint64_t n_end = (bytes_written_ + to_write) / kBlobstoreBlockSize;
+    uint64_t n = start / kBlobstoreBlockSize;
+    uint64_t n_end = (start + len) / kBlobstoreBlockSize;
+    mx_status_t status;
     while (n < n_end) {
         status = vn_dump_block(blobstore_->blockfd_, vmo, n, n + start_block, false);
         if (status != NO_ERROR) {
@@ -363,7 +312,7 @@ mx_status_t VnodeBlob::WriteShared(const void** data, size_t* len, size_t* actua
 
     // Special case: We've written all the 'whole blocks', but we're missing
     // a partial block at the very end.
-    if ((bytes_written_ + to_write == maxlen) &&
+    if ((start + len == maxlen) &&
         (maxlen % kBlobstoreBlockSize != 0)) {
         status = vn_dump_block(blobstore_->blockfd_, vmo, n, n + start_block, true);
         if (status != NO_ERROR) {
@@ -371,11 +320,7 @@ mx_status_t VnodeBlob::WriteShared(const void** data, size_t* len, size_t* actua
         }
     }
 
-    bytes_written_ += to_write;
-    assert(bytes_written_ <= maxlen);
-    *actual += to_write;
-    *len -= to_write;
-    *data = (const void*)((uintptr_t)(*data) + (uintptr_t)(to_write));
+    assert(start + len <= maxlen);
     return NO_ERROR;
 }
 
@@ -384,8 +329,8 @@ mx_status_t VnodeBlob::WriteMetadata() {
 
     // All data has been written to the containing VMO
     SetState(kBlobStateReadable);
-    if (readable_event_ != MX_HANDLE_INVALID) {
-        mx_status_t status = mx_object_signal(readable_event_, 0u, MX_USER_SIGNAL_0);
+    if (readable_event_.is_valid()) {
+        mx_status_t status = readable_event_.signal(0u, MX_USER_SIGNAL_0);
         if (status != NO_ERROR) {
             SetState(kBlobStateError);
             return status;
@@ -428,38 +373,54 @@ mx_status_t VnodeBlob::WriteInternal(const void* data, size_t len, size_t* actua
     }
 
     auto inode = &blobstore_->node_map_[map_index_];
-    mx_status_t status;
-    if (GetState() == kBlobStateMerkleWrite) {
-        uint64_t size_merkle = merkle::Tree::GetTreeLength(inode->blob_size);
-        status = WriteShared(&data, &len, actual, size_merkle,
-                             vmo_merkle_tree_, inode->start_block);
-        if (status != NO_ERROR) {
-            return status;
-        }
-
-        // More merkle to write.
-        if (bytes_written_ < size_merkle) {
-            return NO_ERROR;
-        }
-
-        // No more merkle to write. Move on to data.
-        SetState(kBlobStateDataWrite);
-        bytes_written_ = 0;
-        if (len == 0) {
-            return NO_ERROR;
-        }
-    }
 
     if (GetState() == kBlobStateDataWrite) {
-        status = WriteShared(&data, &len, actual, inode->blob_size,
-                             vmo_blob_, inode->start_block + MerkleTreeBlocks(*inode));
+        size_t to_write = mxtl::min(len, inode->blob_size - bytes_written_);
+        mx_status_t status = vmo_write_exact(blob_->GetVmo(), data,
+                                             bytes_written_, to_write);
         if (status != NO_ERROR) {
             return status;
         }
+
+        status = WriteShared(bytes_written_, len, inode->blob_size,
+                             blob_->GetVmo(),
+                             inode->start_block + MerkleTreeBlocks(*inode));
+        if (status != NO_ERROR) {
+            SetState(kBlobStateError);
+            return status;
+        }
+
+        *actual = to_write;
+        bytes_written_ += to_write;
 
         // More data to write.
         if (bytes_written_ < inode->blob_size) {
             return NO_ERROR;
+        }
+
+        // TODO(smklein): As an optimization, use the CreateInit/Update/Final
+        // methods to create the merkle tree as we write data, rather than
+        // waiting until the data is fully downloaded to create the tree.
+        merkle::Tree tree;
+        size_t merkle_size = tree.GetTreeLength(inode->blob_size);
+        if (merkle_size > 0) {
+            merkle::Digest digest;
+            if (tree.Create(blob_->GetData(), inode->blob_size, merkle_tree_->GetData(),
+                            merkle_size, &digest) != NO_ERROR) {
+                SetState(kBlobStateError);
+                return status;
+            } else if (digest != digest_) {
+                // Downloaded blob did not match provided digest
+                SetState(kBlobStateError);
+                return status;
+            }
+
+            status = WriteShared(0, merkle_size, merkle_size, merkle_tree_->GetVmo(),
+                                 inode->start_block);
+            if (status != NO_ERROR) {
+                SetState(kBlobStateError);
+                return status;
+            }
         }
 
         // No more data to write. Flush to disk.
@@ -476,15 +437,15 @@ mx_status_t VnodeBlob::WriteInternal(const void* data, size_t len, size_t* actua
 mx_status_t VnodeBlob::GetReadableEvent(mx_handle_t* out) {
     mx_status_t status;
     // This is the first 'wait until read event' request received
-    if (readable_event_ == MX_HANDLE_INVALID) {
-        status = mx_event_create(0, &readable_event_);
+    if (!readable_event_.is_valid()) {
+        status = mx::event::create(0, &readable_event_);
         if (status != NO_ERROR) {
             return status;
         } else if (GetState() == kBlobStateReadable) {
-            mx_object_signal(readable_event_, 0u, MX_USER_SIGNAL_0);
+            readable_event_.signal(0u, MX_USER_SIGNAL_0);
         }
     }
-    status = mx_handle_duplicate(readable_event_, MX_RIGHT_DUPLICATE |
+    status = mx_handle_duplicate(readable_event_.get(), MX_RIGHT_DUPLICATE |
                                  MX_RIGHT_TRANSFER | MX_RIGHT_READ, out);
     if (status != NO_ERROR) {
         return status;
@@ -511,14 +472,15 @@ mx_status_t VnodeBlob::CopyVmo(mx_rights_t rights, mx_handle_t* out) {
     d = ((const uint8_t*) &digest_[0]);
     auto inode = &blobstore_->node_map_[map_index_];
     uint64_t size_merkle = merkle::Tree::GetTreeLength(inode->blob_size);
-    status = mt.Verify((const void*)vmo_blob_addr_, inode->blob_size,
-                       (const void*)vmo_merkle_tree_addr_, size_merkle,
+    const void* merkle_data = (merkle_tree_ != nullptr) ? merkle_tree_->GetData() : nullptr;
+    status = mt.Verify(blob_->GetData(), inode->blob_size,
+                       merkle_data, size_merkle,
                        0, inode->blob_size, d);
     if (status != NO_ERROR) {
         return status;
     }
 
-    return mx_handle_duplicate(vmo_blob_, rights, out);
+    return mx_handle_duplicate(blob_->GetVmo(), rights, out);
 }
 
 mx_status_t VnodeBlob::ReadInternal(void* data, size_t len, size_t off, size_t* actual) {
@@ -536,14 +498,15 @@ mx_status_t VnodeBlob::ReadInternal(void* data, size_t len, size_t off, size_t* 
     d = ((const uint8_t*) &digest_[0]);
     auto inode = &blobstore_->node_map_[map_index_];
     uint64_t size_merkle = merkle::Tree::GetTreeLength(inode->blob_size);
-    status = mt.Verify((const void*)vmo_blob_addr_, inode->blob_size,
-                       (const void*)vmo_merkle_tree_addr_, size_merkle,
+    const void* merkle_data = (merkle_tree_ != nullptr) ? merkle_tree_->GetData() : nullptr;
+    status = mt.Verify(blob_->GetData(), inode->blob_size,
+                       merkle_data, size_merkle,
                        off, len, d);
     if (status != NO_ERROR) {
         return status;
     }
 
-    return mx_vmo_read(vmo_blob_, data, off, len, actual);
+    return mx_vmo_read(blob_->GetVmo(), data, off, len, actual);
 }
 
 void VnodeBlob::QueueUnlink() {
@@ -654,7 +617,6 @@ mx_status_t Blobstore::ReleaseBlob(VnodeBlob* vn) {
             }
             // Fall-through
         }
-        case kBlobStateMerkleWrite:
         case kBlobStateDataWrite:
         case kBlobStateError: {
             vn->SetState(kBlobStateReleasing);
@@ -756,6 +718,9 @@ mx_status_t Blobstore::Create(int fd, const blobstore_info_t* info, mxtl::RefPtr
         return status;
     }
 
+    if ((status = fs::MxioDispatcher::Create(&blobstore_global_dispatcher)) != NO_ERROR) {
+        return status;
+    }
     AllocChecker ac;
     mxtl::RefPtr<Blobstore> fs = mxtl::AdoptRef(new (&ac) Blobstore(fd, info));
     if (!ac.check()) {

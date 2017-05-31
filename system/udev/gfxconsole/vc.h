@@ -5,8 +5,7 @@
 #pragma once
 
 #include <assert.h>
-#include <ddk/device.h>
-#include <ddk/common/hid-fifo.h>
+
 #include <gfx/gfx.h>
 #include <hid/hid.h>
 #include <mxio/vfs.h>
@@ -19,9 +18,7 @@
 
 #define MAX_COLOR 0xf
 
-typedef struct vc_device {
-    mx_device_t* mxdev;
-
+typedef struct vc {
     char title[8];
     // vc title, shown in status bar
     bool active;
@@ -33,8 +30,15 @@ typedef struct vc_device {
     gfx_surface* gfx;
     // surface to draw on
     gfx_surface* st_gfx;
-    // status bar surface
-    gfx_surface* hw_gfx;
+
+#if BUILD_FOR_TEST
+    gfx_surface* test_gfx;
+#endif
+
+    int fd;
+
+    int client_fd;
+
     // backing store
     const gfx_font* font;
 
@@ -72,14 +76,11 @@ typedef struct vc_device {
 
     textcon_t textcon;
 
-    mx_hid_fifo_t fifo;
-    // FIFO for storing keyboard input.  Note that this stores characters,
-    // not HID events.
     keychar_t* keymap;
 
     struct list_node node;
     // for virtual console list
-} vc_device_t;
+} vc_t;
 
 // When VC_FLAG_HASOUTPUT is set, this indicates that there was output to
 // the console that hasn't been displayed yet, because this console isn't
@@ -90,8 +91,8 @@ typedef struct vc_device {
 extern mtx_t g_vc_lock;
 
 const gfx_font* vc_get_font();
-mx_status_t vc_device_alloc(gfx_surface* hw_gfx, vc_device_t** out_dev);
-void vc_device_free(vc_device_t* dev);
+mx_status_t vc_alloc(gfx_surface* test, int fd, vc_t** out_dev);
+void vc_free(vc_t* vc);
 
 void vc_get_status_line(char* str, int n) TA_REQ(g_vc_lock);
 
@@ -105,36 +106,36 @@ typedef struct vc_battery_info {
 } vc_battery_info_t;
 void vc_get_battery_info(vc_battery_info_t* info) TA_REQ(g_vc_lock);
 
-void vc_device_write_status(vc_device_t* dev) TA_REQ(g_vc_lock);
-void vc_device_render(vc_device_t* dev) TA_REQ(g_vc_lock);
-void vc_device_invalidate_all_for_testing(vc_device_t* dev);
-int vc_device_get_scrollback_lines(vc_device_t* dev);
-vc_char_t* vc_device_get_scrollback_line_ptr(vc_device_t* dev, unsigned row);
-void vc_device_scroll_viewport(vc_device_t* dev, int dir) TA_REQ(g_vc_lock);
-void vc_device_scroll_viewport_top(vc_device_t* dev) TA_REQ(g_vc_lock);
-void vc_device_scroll_viewport_bottom(vc_device_t* dev) TA_REQ(g_vc_lock);
-void vc_device_set_fullscreen(vc_device_t* dev, bool fullscreen)
+void vc_write_status(vc_t* vc) TA_REQ(g_vc_lock);
+void vc_render(vc_t* vc) TA_REQ(g_vc_lock);
+void vc_invalidate_all_for_testing(vc_t* vc);
+int vc_get_scrollback_lines(vc_t* vc);
+vc_char_t* vc_get_scrollback_line_ptr(vc_t* vc, unsigned row);
+void vc_scroll_viewport(vc_t* vc, int dir) TA_REQ(g_vc_lock);
+void vc_scroll_viewport_top(vc_t* vc) TA_REQ(g_vc_lock);
+void vc_scroll_viewport_bottom(vc_t* vc) TA_REQ(g_vc_lock);
+void vc_set_fullscreen(vc_t* vc, bool fullscreen)
     TA_REQ(g_vc_lock);
 
-ssize_t vc_device_write(vc_device_t* dev, const void* buf, size_t count,
+ssize_t vc_write(vc_t* vc, const void* buf, size_t count,
                         mx_off_t off);
 
-static inline int vc_device_rows(vc_device_t* dev) {
-    return dev->flags & VC_FLAG_FULLSCREEN ? dev->rows : dev->rows - 1;
+static inline int vc_rows(vc_t* vc) {
+    return vc->flags & VC_FLAG_FULLSCREEN ? vc->rows : vc->rows - 1;
 }
 
 // drawing:
 
-void vc_gfx_invalidate_all(vc_device_t* dev);
-void vc_gfx_invalidate_status(vc_device_t* dev);
+void vc_gfx_invalidate_all(vc_t* vc);
+void vc_gfx_invalidate_status(vc_t* vc);
 // invalidates a region in characters
-void vc_gfx_invalidate(vc_device_t* dev, unsigned x, unsigned y, unsigned w, unsigned h);
+void vc_gfx_invalidate(vc_t* vc, unsigned x, unsigned y, unsigned w, unsigned h);
 // invalidates a region in pixels
-void vc_gfx_invalidate_region(vc_device_t* dev, unsigned x, unsigned y, unsigned w, unsigned h);
-void vc_gfx_draw_char(vc_device_t* dev, vc_char_t ch, unsigned x, unsigned y,
+void vc_gfx_invalidate_region(vc_t* vc, unsigned x, unsigned y, unsigned w, unsigned h);
+void vc_gfx_draw_char(vc_t* vc, vc_char_t ch, unsigned x, unsigned y,
                       bool invert);
 
-static inline uint32_t palette_to_color(vc_device_t* dev, uint8_t color) {
+static inline uint32_t palette_to_color(vc_t* vc, uint8_t color) {
     assert(color <= MAX_COLOR);
-    return dev->palette[color];
+    return vc->palette[color];
 }

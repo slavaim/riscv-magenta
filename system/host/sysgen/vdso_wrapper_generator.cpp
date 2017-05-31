@@ -10,8 +10,8 @@ using std::ofstream;
 using std::string;
 using std::vector;
 
-static auto in = std::string(4u, ' ');
-static auto inin = std::string(8u, ' ');
+static const string in = "    ";
+static const string inin = in + in;
 
 void write_extern_syscall_signature_line(ofstream& os, const Syscall& sc, string name_prefix) {
     os << "extern \"C\" {\nextern ";
@@ -44,7 +44,7 @@ static bool none_apply(const Syscall& sc, const std::vector<CallWrapper*> wrappe
     return true;
 }
 
-bool VdsoWrapperGenerator::syscall(ofstream& os, const Syscall& sc) const {
+bool VdsoWrapperGenerator::syscall(ofstream& os, const Syscall& sc) {
     if (sc.is_vdso() || none_apply(sc, wrappers_)) {
         // Skip all calls implemented in the VDSO. They're on their own.
         return os.good();

@@ -24,6 +24,7 @@
 #include <mxtl/array.h>
 #include <mxtl/canary.h>
 #include <mxtl/intrusive_double_list.h>
+#include <mxtl/name.h>
 #include <mxtl/ref_counted.h>
 #include <mxtl/ref_ptr.h>
 #include <mxtl/string_piece.h>
@@ -228,7 +229,18 @@ public:
     //     // Ok to create a channel.
     mx_status_t QueryPolicy(uint32_t condition) const;
 
+    // return a cached copy of the vdso code address or compute a new one
+    uintptr_t vdso_code_address() {
+        if (unlikely(vdso_code_address_ == 0)) {
+            return cache_vdso_code_address();
+        }
+        return vdso_code_address_;
+    }
+
 private:
+    // compute the vdso code address and store in vdso_code_address_
+    uintptr_t cache_vdso_code_address();
+
     // The diagnostic code is allow to know about the internals of this code.
     friend void DumpProcessList();
     friend uint32_t BuildHandleStats(const ProcessDispatcher&, uint32_t*, size_t);
@@ -304,12 +316,12 @@ private:
     // See third_party/ulib/musl/ldso/dynlink.c.
     uintptr_t debug_addr_ TA_GUARDED(state_lock_) = 0;
 
-    // Used to protect name read/writes
-    mutable SpinLock name_lock_;
+    // This is a cache of aspace()->vdso_code_address().
+    uintptr_t vdso_code_address_ = 0;
 
-    // The user-friendly process name. For debug purposes only.
-    // This includes the trailing NUL.
-    char name_[MX_MAX_NAME_LEN] TA_GUARDED(name_lock_) = {};
+    // The user-friendly process name. For debug purposes only. That
+    // is, there is no mechanism to mint a handle to a process via this name.
+    mxtl::Name<MX_MAX_NAME_LEN> name_;
 };
 
 const char* StateToString(ProcessDispatcher::State state);

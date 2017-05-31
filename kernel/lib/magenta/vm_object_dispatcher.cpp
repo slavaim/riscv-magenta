@@ -9,8 +9,9 @@
 #include <kernel/vm/vm_aspace.h>
 #include <kernel/vm/vm_object.h>
 
+#include <mxalloc/new.h>
+
 #include <assert.h>
-#include <new.h>
 #include <err.h>
 #include <inttypes.h>
 #include <trace.h>
@@ -18,7 +19,14 @@
 #define LOCAL_TRACE 0
 
 constexpr mx_rights_t kDefaultVmoRights =
-    MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_EXECUTE | MX_RIGHT_MAP;
+    MX_RIGHT_DUPLICATE |
+    MX_RIGHT_TRANSFER |
+    MX_RIGHT_READ |
+    MX_RIGHT_WRITE |
+    MX_RIGHT_EXECUTE |
+    MX_RIGHT_MAP |
+    MX_RIGHT_GET_PROPERTY |
+    MX_RIGHT_SET_PROPERTY;
 
 status_t VmObjectDispatcher::Create(mxtl::RefPtr<VmObject> vmo,
                                     mxtl::RefPtr<Dispatcher>* dispatcher,
@@ -28,6 +36,7 @@ status_t VmObjectDispatcher::Create(mxtl::RefPtr<VmObject> vmo,
     if (!ac.check())
         return ERR_NO_MEMORY;
 
+    disp->vmo()->set_user_id(disp->get_koid());
     *rights = kDefaultVmoRights;
     *dispatcher = mxtl::AdoptRef<Dispatcher>(disp);
     return NO_ERROR;
@@ -36,7 +45,21 @@ status_t VmObjectDispatcher::Create(mxtl::RefPtr<VmObject> vmo,
 VmObjectDispatcher::VmObjectDispatcher(mxtl::RefPtr<VmObject> vmo)
     : vmo_(vmo), state_tracker_(0u) {}
 
-VmObjectDispatcher::~VmObjectDispatcher() {}
+VmObjectDispatcher::~VmObjectDispatcher() {
+    // Intentionally leave vmo_->user_id() set to our koid even though we're
+    // dying and the koid will no longer map to a Dispatcher. koids are never
+    // recycled, and it could be a useful breadcrumb.
+}
+
+void VmObjectDispatcher::get_name(char out_name[MX_MAX_NAME_LEN]) const {
+    canary_.Assert();
+    vmo_->get_name(out_name, MX_MAX_NAME_LEN);
+}
+
+status_t VmObjectDispatcher::set_name(const char* name, size_t len) {
+    canary_.Assert();
+    return vmo_->set_name(name, len);
+}
 
 mx_status_t VmObjectDispatcher::Read(user_ptr<void> user_data,
                                      size_t length,
@@ -113,6 +136,10 @@ mx_status_t VmObjectDispatcher::RangeOp(uint32_t op, uint64_t offset, uint64_t s
         default:
             return ERR_INVALID_ARGS;
     }
+}
+
+mx_status_t VmObjectDispatcher::SetMappingCachePolicy(uint32_t cache_policy) {
+    return vmo_->SetMappingCachePolicy(cache_policy);
 }
 
 mx_status_t VmObjectDispatcher::Clone(uint32_t options, uint64_t offset, uint64_t size,

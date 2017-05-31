@@ -7,17 +7,20 @@
 #include <magenta/job_dispatcher.h>
 
 #include <err.h>
-#include <new.h>
 
 #include <kernel/auto_lock.h>
 
 #include <magenta/process_dispatcher.h>
 #include <magenta/syscalls/policy.h>
+#include <mxalloc/new.h>
+
+// The starting max_height value of the root job.
+static const uint32_t kRootJobMaxHeight = 32;
 
 constexpr mx_rights_t kDefaultJobRights =
     MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_READ | MX_RIGHT_WRITE |
-    MX_RIGHT_ENUMERATE | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY |
-    MX_RIGHT_SET_POLICY | MX_RIGHT_GET_POLICY;
+    MX_RIGHT_ENUMERATE | MX_RIGHT_DESTROY | MX_RIGHT_GET_PROPERTY |
+    MX_RIGHT_SET_PROPERTY | MX_RIGHT_SET_POLICY | MX_RIGHT_GET_POLICY;
 
 mxtl::RefPtr<JobDispatcher> JobDispatcher::CreateRootJob() {
     AllocChecker ac;
@@ -29,6 +32,11 @@ status_t JobDispatcher::Create(uint32_t flags,
                                mxtl::RefPtr<JobDispatcher> parent,
                                mxtl::RefPtr<Dispatcher>* dispatcher,
                                mx_rights_t* rights) {
+    if (parent != nullptr && parent->max_height() == 0) {
+        // The parent job cannot have children.
+        return ERR_OUT_OF_RANGE;
+    }
+
     AllocChecker ac;
     auto job = new (&ac) JobDispatcher(flags, parent, parent->GetPolicy());
     if (!ac.check())
@@ -48,9 +56,11 @@ JobDispatcher::JobDispatcher(uint32_t /*flags*/,
                              mxtl::RefPtr<JobDispatcher> parent,
                              pol_cookie_t policy)
     : parent_(mxtl::move(parent)),
+      max_height_(parent_ ? parent_->max_height() - 1 : kRootJobMaxHeight),
       state_(State::READY),
-      process_count_(0u), job_count_(0u),
-      state_tracker_(MX_JOB_NO_PROCESSES|MX_JOB_NO_JOBS),
+      process_count_(0u),
+      job_count_(0u),
+      state_tracker_(MX_JOB_NO_PROCESSES | MX_JOB_NO_JOBS),
       policy_(policy) {
 }
 
@@ -268,18 +278,13 @@ mxtl::RefPtr<JobDispatcher> JobDispatcher::LookupJobById(mx_koid_t koid) {
 }
 
 void JobDispatcher::get_name(char out_name[MX_MAX_NAME_LEN]) const {
-    AutoSpinLock lock(name_lock_);
-    memcpy(out_name, name_, MX_MAX_NAME_LEN);
+    canary_.Assert();
+
+    name_.get(MX_MAX_NAME_LEN, out_name);
 }
 
 status_t JobDispatcher::set_name(const char* name, size_t len) {
     canary_.Assert();
 
-    if (len >= MX_MAX_NAME_LEN)
-        len = MX_MAX_NAME_LEN - 1;
-
-    AutoSpinLock lock(name_lock_);
-    memcpy(name_, name, len);
-    memset(name_ + len, 0, MX_MAX_NAME_LEN - len);
-    return NO_ERROR;
+    return name_.set(name, len);
 }

@@ -17,6 +17,7 @@
 #include <mxtl/canary.h>
 #include <mxtl/intrusive_double_list.h>
 #include <mxtl/macros.h>
+#include <mxtl/name.h>
 #include <mxtl/ref_counted.h>
 #include <mxtl/ref_ptr.h>
 #include <stdint.h>
@@ -94,6 +95,25 @@ public:
         return ERR_NOT_SUPPORTED;
     }
 
+    // Returns a null-terminated name, or the empty string if set_name() has not
+    // been called.
+    void get_name(char* out_name, size_t len) const;
+
+    // Sets the name of the object. May truncate internally. |len| is the size
+    // of the buffer pointed to by |name|.
+    status_t set_name(const char* name, size_t len);
+
+    // Returns a user ID associated with this VMO, or zero.
+    // Typically used to hold a magenta koid for Dispatcher-wrapped VMOs.
+    uint64_t user_id() const;
+
+    // Returns the parent's user_id() if this VMO has a parent,
+    // otherwise returns zero.
+    uint64_t parent_user_id() const;
+
+    // Sets the value returned by |user_id()|. May only be called once.
+    void set_user_id(uint64_t user_id);
+
     virtual void Dump(uint depth, bool verbose) = 0;
 
     // cache maintainence operations.
@@ -107,6 +127,14 @@ public:
         return ERR_NOT_SUPPORTED;
     }
     virtual status_t SyncCache(const uint64_t offset, const uint64_t len) {
+        return ERR_NOT_SUPPORTED;
+    }
+
+    virtual status_t GetMappingCachePolicy(uint32_t* cache_policy) {
+        return ERR_NOT_SUPPORTED;
+    }
+
+    virtual status_t SetMappingCachePolicy(const uint32_t cache_policy) {
         return ERR_NOT_SUPPORTED;
     }
 
@@ -134,6 +162,10 @@ public:
     void AddMappingLocked(VmMapping* r) TA_REQ(lock_);
     void RemoveMappingLocked(VmMapping* r) TA_REQ(lock_);
     uint32_t num_mappings() const;
+
+    // Returns an estimate of the number of unique VmAspaces that this object
+    // is mapped into.
+    uint32_t share_count() const;
 
     void AddChildLocked(VmObject* r) TA_REQ(lock_);
     void RemoveChildLocked(VmObject* r) TA_REQ(lock_);
@@ -184,4 +216,10 @@ protected:
     // lengths of corresponding lists
     uint32_t mapping_list_len_ TA_GUARDED(lock_) = 0;
     uint32_t children_list_len_ TA_GUARDED(lock_) = 0;
+
+    uint64_t user_id_ TA_GUARDED(lock_) = 0;
+
+    // The user-friendly VMO name. For debug purposes only. That
+    // is, there is no mechanism to get access to a VMO via this name.
+    mxtl::Name<MX_MAX_NAME_LEN> name_;
 };

@@ -44,10 +44,15 @@ constexpr size_t kMaxHandleCount = 256 * 1024u;
 // there are this many outstanding handles.
 constexpr size_t kHighHandleCount = (kMaxHandleCount * 7) / 8;
 
-// The handle arena and its mutex.
+// The handle arena and its mutex. It also guards Dispatcher::handle_count_.
 static Mutex handle_mutex;
 static mxtl::Arena TA_GUARDED(handle_mutex) handle_arena;
 static size_t outstanding_handles TA_GUARDED(handle_mutex) = 0u;
+
+size_t internal::OutstandingHandles() {
+    AutoLock lock(&handle_mutex);
+    return outstanding_handles;
+}
 
 // The system exception port.
 static mutex_t system_exception_mutex = MUTEX_INITIAL_VALUE(system_exception_mutex);
@@ -56,10 +61,6 @@ static mxtl::RefPtr<ExceptionPort> system_exception_port TA_GUARDED(system_excep
 // All jobs and processes are rooted at the |root_job|.
 static mxtl::RefPtr<JobDispatcher> root_job;
 
-// If true, kill processes that use abnormally small deadlines (likely bugs).
-// TODO(teisenbe): Remove this and magenta_check_deadline by mid May 2017.  It's
-// just to help catch bugs during a migration.
-static bool fatal_small_deadlines = false;
 // The singleton policy manager, for jobs and processes. This is
 // a magenta internal class (not a dispatcher-derived).
 static PolicyManager* policy_manager;
@@ -67,7 +68,6 @@ static PolicyManager* policy_manager;
 void magenta_init(uint level) TA_NO_THREAD_SAFETY_ANALYSIS {
     handle_arena.Init("handles", sizeof(Handle), kMaxHandleCount);
     root_job = JobDispatcher::CreateRootJob();
-    fatal_small_deadlines = cmdline_get_bool("magenta.fatal_small_deadlines", false);
     policy_manager = PolicyManager::Create();
 }
 
@@ -153,49 +153,87 @@ static void high_handle_count(size_t count) {
 }
 
 Handle* MakeHandle(mxtl::RefPtr<Dispatcher> dispatcher, mx_rights_t rights) {
-    AutoLock lock(&handle_mutex);
-    void* addr = handle_arena.Alloc();
-    if (addr == nullptr) {
-        const auto oh = outstanding_handles;
-        lock.release();
-        printf("WARNING: Could not allocate new handle (%zu outstanding)\n",
-               oh);
-        return nullptr;
+    uint32_t* handle_count = nullptr;
+    void* addr;
+    uint32_t base_value;
+
+    {
+        AutoLock lock(&handle_mutex);
+        addr = handle_arena.Alloc();
+        if (addr == nullptr) {
+            const auto oh = outstanding_handles;
+            lock.release();
+            printf("WARNING: Could not allocate new handle (%zu outstanding)\n",
+                   oh);
+            return nullptr;
+        }
+        if (++outstanding_handles > kHighHandleCount)
+            high_handle_count(outstanding_handles);
+
+        handle_count = dispatcher->get_handle_count_ptr();
+        (*handle_count)++;
+        if (*handle_count != 2u)
+            handle_count = nullptr;
+
+        base_value = GetNewHandleBaseValue(addr);
     }
-    if (++outstanding_handles > kHighHandleCount)
-        high_handle_count(outstanding_handles);
-    uint32_t base_value = GetNewHandleBaseValue(addr);
+
+    auto state_tracker = dispatcher->get_state_tracker();
+    if (state_tracker != nullptr)
+        state_tracker->UpdateLastHandleSignal(handle_count);
+
     return new (addr) Handle(mxtl::move(dispatcher), rights, base_value);
 }
 
-Handle* DupHandle(Handle* source, mx_rights_t rights) {
-    AutoLock lock(&handle_mutex);
-    void* addr = handle_arena.Alloc();
-    if (addr == nullptr) {
-        const auto oh = outstanding_handles;
-        lock.release();
-        printf(
-            "WARNING: Could not allocate duplicate handle (%zu outstanding)\n",
-            oh);
-        return nullptr;
+Handle* DupHandle(Handle* source, mx_rights_t rights, bool is_replace) {
+    mxtl::RefPtr<Dispatcher> dispatcher(source->dispatcher());
+    uint32_t* handle_count;
+    void* addr;
+    uint32_t base_value;
+
+    {
+        AutoLock lock(&handle_mutex);
+        addr = handle_arena.Alloc();
+        if (addr == nullptr) {
+            const auto oh = outstanding_handles;
+            lock.release();
+            printf(
+                "WARNING: Could not allocate duplicate handle (%zu outstanding)\n", oh);
+            return nullptr;
+        }
+        if (++outstanding_handles > kHighHandleCount)
+            high_handle_count(outstanding_handles);
+
+        handle_count = dispatcher->get_handle_count_ptr();
+        (*handle_count)++;
+        if (*handle_count != 2u)
+            handle_count = nullptr;
+
+        base_value = GetNewHandleBaseValue(addr);
     }
-    if (++outstanding_handles > kHighHandleCount)
-        high_handle_count(outstanding_handles);
-    uint32_t base_value = GetNewHandleBaseValue(addr);
+
+    auto state_tracker = dispatcher->get_state_tracker();
+    if (!is_replace && (state_tracker != nullptr))
+        state_tracker->UpdateLastHandleSignal(handle_count);
+
     return new (addr) Handle(source, rights, base_value);
 }
 
 void DeleteHandle(Handle* handle) {
-    StateTracker* state_tracker = handle->dispatcher()->get_state_tracker();
+    mxtl::RefPtr<Dispatcher> dispatcher(handle->dispatcher());
+    auto state_tracker = dispatcher->get_state_tracker();
+
     if (state_tracker) {
         state_tracker->Cancel(handle);
     } else {
-        auto disp = handle->dispatcher();
         // This code is sad but necessary because certain dispatchers
         // have complicated Close() logic which cannot be untangled at
         // this time.
-        switch (disp->get_type()) {
+        switch (dispatcher->get_type()) {
             case MX_OBJ_TYPE_IOMAP: {
+                // DownCastDispatcher moves the reference so we need a copy
+                // because we use |dispatcher| after the cast.
+                auto disp = dispatcher;
                 auto iodisp = DownCastDispatcher<IoMappingDispatcher>(&disp);
                 if (iodisp)
                     iodisp->Close();
@@ -211,9 +249,32 @@ void DeleteHandle(Handle* handle) {
     // base_value for reuse the next time this slot is allocated.
     internal::TearDownHandle(handle);
 
-    AutoLock lock(&handle_mutex);
-    --outstanding_handles;
-    handle_arena.Free(handle);
+    bool zero_handles = false;
+    uint32_t* handle_count;
+    {
+        AutoLock lock(&handle_mutex);
+        --outstanding_handles;
+
+        handle_count = dispatcher->get_handle_count_ptr();
+        (*handle_count)--;
+        if (*handle_count == 0u)
+            zero_handles = true;
+        else if (*handle_count != 1u)
+            handle_count = nullptr;
+
+        handle_arena.Free(handle);
+    }
+
+    if (zero_handles) {
+        dispatcher->on_zero_handles();
+        return;
+    }
+
+    if (state_tracker)
+        state_tracker->UpdateLastHandleSignal(handle_count);
+
+    // If |dispatcher| is the last reference then the dispatcher object
+    // gets destroyed here.
 }
 
 bool HandleInRange(void* addr) {
@@ -278,34 +339,8 @@ bool magenta_rights_check(const Handle* handle, mx_rights_t desired) {
 }
 
 mx_status_t magenta_sleep(mx_time_t deadline) {
-    magenta_check_deadline("sleep", deadline);
     /* sleep with interruptable flag set */
     return thread_sleep_etc(deadline, true);
-}
-
-// TODO(teisenbe): Remove this function post-migration
-void magenta_check_deadline(const char* name, mx_time_t deadline) {
-    mx_time_t min_deadline = 0;
-    mx_time_t now = current_time();
-    if (now > LK_SEC(1)) {
-        if (now <= LK_SEC(6)) {
-            min_deadline = now - LK_SEC(1);
-        } else {
-            min_deadline = LK_SEC(5);
-        }
-    }
-
-    if (deadline != 0 && deadline <= min_deadline) {
-        if (fatal_small_deadlines) {
-            auto up = ProcessDispatcher::GetCurrent();
-            char proc_name[MX_MAX_NAME_LEN];
-            up->get_name(proc_name);
-            printf("\n[fatal: %s used a bad deadline for %s]\n", proc_name, name);
-            up->Exit(ERR_INVALID_ARGS);
-        } else {
-            TRACEF("WARNING: Oddly short deadline %" PRIu64 " for %s\n", deadline, name);
-        }
-    }
 }
 
 mx_status_t validate_resource_handle(mx_handle_t handle) {

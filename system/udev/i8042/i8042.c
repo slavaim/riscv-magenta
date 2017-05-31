@@ -22,8 +22,6 @@
 
 #define xprintf(fmt...) do {} while (0)
 
-mx_driver_t _driver_i8042;
-
 typedef struct i8042_device {
     mx_device_t* mxdev;
 
@@ -750,7 +748,6 @@ static mx_status_t i8042_dev_init(i8042_device_t* dev, const char* name, mx_devi
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = name,
         .ctx = dev,
-        .driver = &_driver_i8042,
         .ops = &i8042_dev_proto,
         .proto_id = MX_PROTOCOL_HIDBUS,
         .proto_ops = &hidbus_ops,
@@ -814,10 +811,26 @@ static int i8042_init_thread(void* arg) {
     return NO_ERROR;
 }
 
-static mx_status_t i8042_bind(mx_driver_t* driver, mx_device_t* parent, void** cookie) {
+static mx_protocol_device_t i8042_root_proto = {
+    .version = DEVICE_OPS_VERSION,
+};
+
+static mx_status_t i8042_bind(void* ctx, mx_device_t* parent, void** cookie) {
+    mx_device_t* root;
+    device_add_args_t args = {
+        .version = DEVICE_ADD_ARGS_VERSION,
+        .name = "i8042",
+        .ops = &i8042_root_proto,
+    };
+
+    mx_status_t status = device_add(parent, &args, &root);
+    if (status != NO_ERROR) {
+        printf("i8042_bind device_add failed: %d\n", status);
+        return status;
+    }
+
     thrd_t t;
-    int rc = thrd_create_with_name(&t, i8042_init_thread, parent, "i8042-init");
-    return rc;
+    return thrd_create_with_name(&t, i8042_init_thread, root, "i8042-init");
 }
 
 static mx_driver_ops_t i8042_driver_ops = {
