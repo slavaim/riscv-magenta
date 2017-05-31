@@ -85,14 +85,14 @@ MODULE_LDFLAGS := -T scripts/rodso.ld -e _start
 #
 # There is an issue with RISC-V. The libgcc.a global __clz_tab
 # array is linked by a relocation of R_RISCV_GOT_HI20 type
-# (R_RISCV_GOT_HI20  0000000000000000 __clz_tab + 0).
+# (R_RISCV_GOT_HI20  0000000000000000 __clz_tab + 0) in rela.dyn.
 # This relocation is used on load for the .got section
 # for adding the library load address to offset for __clz_tab
 # in the .got section. The .got is used for the PC relative
 # code for relocation as a level of indirection to avoid
 # code modification that subverts the idea of code sharing.
 # The relocations are not allowed for this library so
-# a local clz* code is uded to prevent from binding to
+# a local clz* code is used to prevent from binding to
 # a libgcc.a version of clz* which uses __clz_tab.
 #
 ifeq ($(SUBARCH),riscv-rv64)
