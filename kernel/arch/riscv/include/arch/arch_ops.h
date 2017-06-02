@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <debug.h>
 #include <assert.h>
+#include <arch/riscv.h>
 #include <arch/riscv/mp.h>
 #include <arch/riscv/irqflags.h>
 #include <arch/riscv/sbi.h>
@@ -81,6 +82,15 @@ static inline void arch_spinloop_signal(void)
     //
     // TO_DO_RISCV implement
     //
+}
+
+static inline uint32_t arch_dcache_line_size(void) {
+
+    //
+    // TO_DO_RISCV
+    // the most common used cache line size is 64 bytes
+    //
+    return 64;
 }
 
 // Log architecture-specific data for process creation.

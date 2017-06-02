@@ -12,4 +12,8 @@ __BEGIN_CDECLS
 
 void riscv_syscall(struct pt_regs*  regs);
 
+struct arch_exception_context {
+    struct pt_regs* frame;
+};
+
 __END_CDECLS

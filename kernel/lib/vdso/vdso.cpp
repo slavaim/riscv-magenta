@@ -144,6 +144,13 @@ public:
         for (size_t i = 0; i < size / 4; ++i)
             code[i] = 0xd4200020; // 'brk #1' (what __builtin_trap() emits)
 
+#elif __riscv && __riscv_xlen==64
+
+        // Fill with the zeroes, so any place
+        // user-mode jumps into this code, it gets a trap.
+        // TO_DO_RISCV find smth better
+        memset(&Code()[address], 0x0, size);
+
 #else
 #error what architecture?
 #endif

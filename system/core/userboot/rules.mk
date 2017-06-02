@@ -98,7 +98,9 @@ MODULE_LDFLAGS := -T scripts/rodso.ld -e _start
 ifeq ($(SUBARCH),riscv-rv64)
     MODULE_SRCS += $(LOCAL_DIR)/lib/clz_ctz.c
     MODULE_DEFINES += BITS_PER_LONG=64
-else
+endif
+
+ifeq ($(SUBARCH),riscv-rv32)
     $(error The 32 bit RISC-V is not supported yet)
     MODULE_SRCS += $(LOCAL_DIR)/lib/clz_ctz.c
 	MODULE_DEFINES += BITS_PER_LONG=32

@@ -13,7 +13,8 @@ MODULE_DEPS += \
     kernel/lib/mxtl \
     kernel/lib/pretty \
     kernel/lib/user_copy \
-    third_party/lib/cryptolib
+    third_party/lib/cryptolib \
+    kernel/lib/mxcpp
 
 MODULE_SRCS += \
     $(LOCAL_DIR)/bootalloc.cpp \

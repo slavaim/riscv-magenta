@@ -53,7 +53,15 @@ MODULE_SO_INSTALL_NAME := -
 # All the code this DSO is pure read-only/reentrant code that
 # does not need any writable data (except its caller's stack).
 # Make it use a simplified, hardened memory layout.
+# RISC-V uses the tailored script because of the
+# RISC-V binutils idiosyncratic, see comments in .ld script
+ifeq ($(ARCH),riscv)
+MODULE_LDFLAGS := -T scripts/rodso-syscalls-riscv64.ld
+MODULE_SRCDEPS += scripts/rodso-syscalls-riscv64.ld
+else
 MODULE_LDFLAGS := -T scripts/rodso.ld
+MODULE_SRCDEPS += scripts/rodso.ld
+endif
 
 # Explicit dependency to make sure the file gets generated first.
 # MODULE_SRCDEPS is overkill for this since only one file uses it.
