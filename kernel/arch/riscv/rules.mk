@@ -172,6 +172,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/hypervisor.cpp \
 	$(LOCAL_DIR)/mmu.cpp \
 	$(LOCAL_DIR)/mp.c \
+	$(LOCAL_DIR)/mexec.S \
 	$(LOCAL_DIR)/ops.c \
 	$(LOCAL_DIR)/thread.c \
 	$(LOCAL_DIR)/user_copy.c \

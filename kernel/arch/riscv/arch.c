@@ -25,3 +25,8 @@ void arch_early_init(void)
 void arch_init(void)
 {
 }
+
+/* switch to user mode, set the user stack pointer to user_stack_top, put the svc stack pointer to the top of the kernel stack */
+void arch_enter_uspace(uintptr_t pc, uintptr_t sp, uintptr_t arg1, uintptr_t arg2) {
+    PANIC_UNIMPLEMENTED;
+}

@@ -30,3 +30,12 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
 {
 	PANIC_UNIMPLEMENTED;
 }
+
+#if WITH_LIB_MAGENTA
+void arch_fill_in_suspension_context(mx_exception_report_t *report)
+{
+    mx_exception_context_t *mx_context = &report->context;
+
+    mx_context->arch_id = ARCH_ID_RISCV_64;
+}
+#endif

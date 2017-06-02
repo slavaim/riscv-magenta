@@ -86,4 +86,9 @@ void platform_stop_timer(void)
     //
 }
 
+uint64_t ticks_per_second(void)
+{
+    return timebase;
+}
+
 LK_INIT_HOOK(timer, &platform_init_timer, LK_INIT_LEVEL_VM + 3);

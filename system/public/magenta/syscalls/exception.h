@@ -83,9 +83,16 @@ typedef struct arm64_exc_data {
     uint64_t far;
 } arm64_exc_data_t;
 
+typedef struct riscv64_exc_data {
+    // TO_DO_RISCV
+    uint64_t reserved1;
+    uint64_t reserved2;
+} riscv64_exc_data_t;
+
 #define ARCH_ID_UNKNOWN        0u
 #define ARCH_ID_X86_64         1u
 #define ARCH_ID_ARM_64         2u
+#define ARCH_ID_RISCV_64       3u
 
 // data associated with an exception (siginfo in linux parlance)
 typedef struct mx_exception_context {
@@ -101,8 +108,9 @@ typedef struct mx_exception_context {
     struct {
         mx_vaddr_t pc;
         union {
-            x86_64_exc_data_t x86_64;
-            arm64_exc_data_t  arm_64;
+            x86_64_exc_data_t   x86_64;
+            arm64_exc_data_t    arm_64;
+            riscv64_exc_data_t  riscv_64;
         } u;
         // TODO(dje): add more stuff, revisit packing
         // For an example list of things one might add, see linux siginfo.

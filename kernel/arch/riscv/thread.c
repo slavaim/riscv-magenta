@@ -1,4 +1,3 @@
-// Copyright 2016 The Fuchsia Authors
 // Copyright 2017 Slava Imameev
 //
 // Use of this source code is governed by a MIT-style
@@ -11,6 +10,7 @@
 #include <arch/riscv/thread_info.h>
 #include <arch/riscv/switch_to.h>
 #include <debug.h>
+#include <inttypes.h>
 
 void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
 {
@@ -97,4 +97,11 @@ void arch_context_switch(struct thread *oldthread, struct thread *newthread)
     riscv_switch_to(&oldthread->arch.state, &newthread->arch.state);
 }
 
+void arch_dump_thread(thread_t *t)
+{
+    if (t->state != THREAD_RUNNING) {
+        dprintf(INFO, "\tarch: ");
+        dprintf(INFO, "sp %#" PRIxPTR "\n", t->arch.state.sp);
+    }
+}
 

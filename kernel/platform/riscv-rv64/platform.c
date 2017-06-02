@@ -10,8 +10,29 @@
 #include <platform.h>
 #include <platform/riscv/memory.h>
 
+#include <dev/display.h>
+#include <dev/hw_rng.h>
+
+#include <debug.h>
+
 void platform_early_init(void)
 {
     /* initialize physical memory arenas */
     platform_mem_init();
+}
+
+int platform_dgetc(char *c, bool wait)
+{
+    PANIC_UNIMPLEMENTED;
+}
+
+/* currently doesn't exist on test platform */
+size_t hw_rng_get_entropy(void* buf, size_t len, bool block) {
+    // TO_DO_RISCV
+    return 0;
+}
+
+/* no built in framebuffer */
+status_t display_get_info(struct display_info *info) {
+    return ERR_NOT_FOUND;
 }
