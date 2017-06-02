@@ -750,11 +750,11 @@ mx_status_t sys_pci_map_mmio(mx_handle_t, uint32_t, mx_cache_policy_t, user_ptr<
     return ERR_NOT_SUPPORTED;
 }
 
-mx_status_t sys_pci_get_bar(mx_handle_t, uint32_t, mx_pci_resource_t**) {
+mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<mx_pci_resource_t> out_bar) {
     return ERR_NOT_SUPPORTED;
 }
 
-mx_status_t sys_pci_get_config(mx_handle_t dev_handle, mx_pci_resource_t* out_config) {
+mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_t> out_config) {
     return ERR_NOT_SUPPORTED;
 }
 

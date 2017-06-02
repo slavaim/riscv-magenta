@@ -75,7 +75,7 @@ SECTIONS {
         * 2: 000000000000591c    40 FUNC    WEAK   DEFAULT   10 mx_handle_close
         *
         * It is not clear how to remove it from the .dynsym section instead
-        * DATA_START_dynsym value is incremented to the size of one entry.
+        * DATA_START_dynsym value is incremented by the size of one entry.
         * This is a necessary evil to keep everything else intact.
         */
         HIDDEN(DATA_START_dynsym = . + 24 );
