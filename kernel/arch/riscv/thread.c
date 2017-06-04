@@ -12,6 +12,21 @@
 #include <debug.h>
 #include <inttypes.h>
 
+static inline init_thread_info(struct thread * t, thread_info_t*  ti)
+{
+    memset(ti, 0, sizeof(*ti));
+
+    ti->thread = t;
+    t->arch.ti = ti;
+
+    //
+    // set a bogus cpu as the thread is not running, 
+    // the actual cpu number is updated on each
+    // context switch
+    //
+    ti->cpu = (-1);
+}
+
 void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
 {
     thread_info_t*  ti;
@@ -46,15 +61,7 @@ void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
     //
     ti = stack_to_thread_info(t->arch.state.sp);
     assert(0x0 == ((unsigned long)ti) % sizeof(void*));
-    ti->thread = t;
-    t->arch.ti = ti;
-
-    //
-    // set a bogus cpu as the thread is not running, 
-    // the actual cpu number is updated on each
-    // context switch
-    //
-    ti->cpu = (-1);
+    init_thread_info(t, ti);
 }
 
 void arch_thread_construct_first(thread_t *t)
@@ -66,8 +73,7 @@ void arch_thread_construct_first(thread_t *t)
     //
     thread_info_t* ti = current_thread_info();
 
-    ti->thread = t;
-    t->arch.ti = ti;
+    init_thread_info(t, ti);
 
     //
     // we always start at 0 heart

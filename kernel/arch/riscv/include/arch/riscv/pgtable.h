@@ -249,6 +249,15 @@ static inline int pte_huge(pte_t pte)
 		&& pte_any_flags(pte, (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
 }
 
+/*
+mapped leaf contains valid virt to physical mappinf for a va
+*/
+static inline int pte_valid_va2pa(pte_t pte)
+{
+	return pte_present(pte)
+		&& pte_any_flags(pte, (_PAGE_READ | _PAGE_WRITE | _PAGE_EXEC));
+}
+
 /*a leaf pte points to a page with data or to nothing(i.e. no mappng),
   non-leaf pte points to next level page table*/
 static inline bool pte_leaf(pte_t pte)

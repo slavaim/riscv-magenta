@@ -10,10 +10,11 @@
 #pragma once
 
 #include <stdint.h>
+#include <arch/riscv/sbi.h>
 
 __BEGIN_CDECLS
 
-int setup_memory_info(void);
+memory_block_info* setup_memory_info(void);
 void setup_kernel_init_pgd(void);
 
 __END_CDECLS

@@ -1,11 +1,13 @@
 /*
-The code has been borrowed from the Linux kernel which is under GPLv2 license.
+Some definitions have been borrowed from the Linux kernel which is under GPLv2 license.
 2017 Modified for Magenta by Slava Imameev.
 */
 
 #pragma once
 
 #include <magenta/compiler.h>
+#include <sys/types.h>
+#include <arch/riscv/asm/page.h>
 
 __BEGIN_CDECLS
 
@@ -45,6 +47,32 @@ __BEGIN_CDECLS
 
 /* Advertise support for _PAGE_SPECIAL */
 #define __HAVE_ARCH_PTE_SPECIAL
+
+#if __riscv_xlen == 64
+
+	static_assert(PAGE_SIZE == 4096, "Unsupported page size");
+
+	# define VA_BITS 39
+	# define IS_UPPER_VA(va) (0x0 != ((va) & 1UL<<(VA_BITS-1)))
+	# define UPPER_VA_BITS (~((1UL<<(VA_BITS-1)) - 1))  /*[63-38] bits are set*/
+
+	//
+	// converts a VA_BITS wide VA to a canonical 64 bit VA
+	//
+	static inline vaddr_t get_canonical_va(vaddr_t va) {
+		if (IS_UPPER_VA(va))
+			va = va | UPPER_VA_BITS;
+		return va;
+	}
+
+	# define PGLEVEL_BITS 9
+	# define PMD_PAGE_SIZE ((uintptr_t)(PAGE_SIZE << PGLEVEL_BITS))
+	# define PGD_PAGE_SIZE (PMD_PAGE_SIZE << PGLEVEL_BITS)
+	# define VA_SIZE_RANGE (PGD_PAGE_SIZE << PGLEVEL_BITS)
+
+#else
+	# error "32 bit RISC-V is not supported"
+#endif
 
 __END_CDECLS
 

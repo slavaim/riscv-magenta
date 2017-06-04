@@ -31,18 +31,6 @@ typedef struct thread_info {
 
 __BEGIN_CDECLS
 
-/*
- * macros/functions for gaining access to the thread information structure
- *
- * preempt_count needs to be 1 initially, until the scheduler is functional.
- */
-#define INIT_THREAD_INFO(thread)			\
-{						\
-    .task		= &thread,			\
-    .flags		= 0,			\
-    .cpu		= 0,			\
-}
-
 union thread_union {
 	thread_info_t thread_info;
 	unsigned long stack[ARCH_DEFAULT_STACK_SIZE/sizeof(long)];

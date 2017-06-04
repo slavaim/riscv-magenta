@@ -19,26 +19,11 @@
 #include <debug.h>
 
 //
-// a memory info reported by a bootloader,
-// a global variable for a debug purposes
+// a memory info reported by a bootloader
 //
 static memory_block_info setup_block_info;
 
-struct mmu_initial_mapping mmu_initial_mappings[] = {
-
-    /* range of memory mapped where the kernel lives */
-    {
-        .phys = MEMBASE,
-        .virt = KERNEL_BASE,
-        .size = -KERNEL_BASE,
-        .flags = 0,
-        .name = "memory"
-    },
-    /* null entry to terminate the list */
-    {}
-};
-
-int setup_memory_info(void)
+memory_block_info* setup_memory_info(void)
 {
     unsigned long error = 0;
 
@@ -61,14 +46,7 @@ int setup_memory_info(void)
 	max_low_pfn = PFN_DOWN(setup_block_info.base + setup_block_info.size);
 	max_mapnr = PFN_DOWN(setup_block_info.size);
 
-	//
-	// fix the initial mappings physical address
-	//
-	mmu_initial_mappings[0].phys = setup_block_info.base;
-	mmu_initial_mappings[0].virt = KERNEL_BASE;
-	mmu_initial_mappings[0].size = setup_block_info.size;
-
-    return error;
+    return &setup_block_info;
 }
 
 void setup_kernel_init_pgd(void)
