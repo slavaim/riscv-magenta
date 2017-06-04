@@ -42,7 +42,7 @@ END(excp_vect_table)
 
 	.text
 	.altmacro
-	.macro SAVE_ALL
+	.macro SAVE_ALL_FOR_EXCEPTION
     /*
      * registers usage
      *   s0 - a frame pointer to facilitate debugging
@@ -59,14 +59,36 @@ END(excp_vect_table)
 
 	/* 
 	 * If coming from userspace, preserve the user stack pointer and load
-	 * the kernel stack pointer.  If we came from the kernel, sscratch
-	 * will contain 0, and we should continue on the current stack. 
+	 * the kernel stack pointer.  If we came from the kernel, $sscratch
+	 * will contain 0, and we should continue on the current stack.
+	 *
+	 * $sscratch contains
+	 * - thread_info if entered from the user mode
+	 * - 0x0 if entered from the kernel mode
 	 */
-	csrrw sp, sscratch, sp
-	bnez sp, _save_context
+	csrrw tp, sscratch, tp
+	bnez  tp, _get_kernel_sp
 
 _restore_kernel_sp:
-	csrr sp, sscratch
+	/*
+	* the previous $sscratch was zero so we entered from the kernel mode
+	* restore the kernel $tp that was saved in $sscratch and continue with
+	* the current $sp, save the current $sp as an exception $sp to restore
+	* it on return from the exception
+	*/
+	csrr  tp, sscratch   /* restore $tp */
+	REG_S sp, TI_ESP(tp) /* save an exception $sp */ 
+	j _save_context 
+
+_get_kernel_sp:
+	/*
+	* we entered from the user mode and
+	* $sscratch contained the thread information
+	* we need to save the user mode $sp and retrieve
+	* the saved $sp for the kernel mode
+	*/
+	REG_S sp, TI_ESP(tp) /* save an exception $sp */
+	REG_L sp, TI_KSP(tp) /* switch to a kernel $sp */
 
 _save_context:
 
@@ -87,7 +109,7 @@ _save_context:
     /* save the registers */
 	REG_S x1,  PT_RA(sp)
 	REG_S x3,  PT_GP(sp)
-	REG_S x4,  PT_TP(sp)
+	/*REG_S x4,  PT_TP(sp)*/ /* $tp has been modified, a copy is saved in $sscratch */
 	REG_S x5,  PT_T0(sp)
 	REG_S x6,  PT_T1(sp)
 	REG_S x7,  PT_T2(sp)
@@ -124,19 +146,28 @@ _save_context:
 
     /* s0 is used as a frame pointer, do not 
        overwrite it */
-	csrr  s1, sscratch            /* sp for interrupted code, might be a user sp */
+	REG_L s1, TI_ESP(tp)     /* $sp for interrupted code, might be a user sp */
 	csrrc s2, sstatus, t0
 	csrr  s3, sepc
 	csrr  s4, sbadaddr
 	csrr  s5, scause
+	csrr  s6, sscratch        /* $tp for interrupted code, might be a user $tp */
     REG_S s1, PT_SP(sp)
 	REG_S s2, PT_SSTATUS(sp)
 	REG_S s3, PT_SEPC(sp)
 	REG_S s4, PT_SBADADDR(sp) /* exception access address */
 	REG_S s5, PT_SCAUSE(sp)   /* cause of the exception */
+	REG_S s6, PT_TP(sp)
+
+	/*
+	* Set sscratch register to 0, so that if a recursive exception
+	* occurs, the exception vector knows it came from the kernel
+	*/
+	csrw sscratch, x0
+
 	.endm
 
-	.macro RESTORE_ALL
+	.macro RESTORE_ALL_FOR_EXCEPTION
 	REG_L a0, PT_SSTATUS(sp)
 	REG_L a2, PT_SEPC(sp)
 	csrw sstatus, a0
@@ -192,27 +223,7 @@ _save_context:
 
 .section .text
 FUNCTION(handle_exception)
-	SAVE_ALL
-
-	/*
-	* Set sscratch register to 0, so that if a recursive exception
-	* occurs, the exception vector knows it came from the kernel
-	*/
-	csrw sscratch, x0
-
-	/*
-	 * Compute the address of the current thread_info,
-     * if we enter from a user mode the tp register
-     * contains a user mode value but the stack has been
-     * switch using the scratch register so we compute
-     * the thread_info address on the stack and fetch
-     * the current thread pointer from the thread_info
-	 */
-	li tp, ~(ARCH_DEFAULT_STACK_SIZE-1)
-	and tp, tp, sp
-
-	/* Set the current thread pointer */
-	REG_L tp, TI_THREAD(tp)
+	SAVE_ALL_FOR_EXCEPTION
 
 1:	la ra, ret_from_exception
 	/*
@@ -274,12 +285,14 @@ ret_from_exception:
 resume_userspace:
 	/*
 	 * Interrupts must be disabled here
-	 * Save unwound kernel stack pointer in sscratch
+	 * Save unwound kernel stack pointer in 
+	 * the thread info and save the last in $sscratch
 	 */
-	addi s1, sp, (PT_SIZE + GDB_FRAME_SZ)
-	csrw sscratch, s1
+	addi  s1, sp, (PT_SIZE + GDB_FRAME_SZ)
+	REG_S s1, TI_KSP(tp)
+	csrw sscratch, tp
 restore_all:
-	RESTORE_ALL
+	RESTORE_ALL_FOR_EXCEPTION
 	sret
 END(handle_exception)
 
@@ -326,7 +339,7 @@ FUNCTION(__switch_to)
 	REG_L s9,  THREAD_S9(a1)
 	REG_L s10, THREAD_S10(a1)
 	REG_L s11, THREAD_S11(a1)
-	REG_L tp,  THREAD_TH(a1) /* Next current pointer */
+	REG_L tp,  THREAD_TI(a1) /* Next thread_info pointer */
 	ret
 END(__switch_to)
 

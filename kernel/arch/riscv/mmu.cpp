@@ -5,7 +5,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include <string.h>
+#include <string.h> // for memset
 #include <magenta/errors.h>
 #include <arch/mmu.h>
 #include <kernel/vm.h>

@@ -22,6 +22,8 @@ struct thread;
  *   in asm-offsets.c must be updated accordingly
  */
 typedef struct thread_info {
+    unsigned long       e_sp;       /* exception $sp */
+    unsigned long       k_sp;       /* kernel mode $sp */
     struct thread* 	    thread;		/* main task structure */
     unsigned long		flags;		/* low level flags */
     unsigned int        cpu;		/* current CPU */
@@ -32,30 +34,19 @@ typedef struct thread_info {
 __BEGIN_CDECLS
 
 union thread_union {
-	thread_info_t thread_info;
 	unsigned long stack[ARCH_DEFAULT_STACK_SIZE/sizeof(long)];
 };
 
-#define init_thread_info	(init_thread_union.thread_info)
 #define init_stack		(init_thread_union.stack)
-
-/*
- * Pointer to the thread_info struct of the current process
- * Assumes that the kernel mode stack (thread_union) is THREAD_SIZE-aligned
- */
-static inline thread_info_t *stack_to_thread_info(unsigned long sp)
-{
-    return (thread_info_t *)(sp & ~(ARCH_DEFAULT_STACK_SIZE - 1));
-}
 
 static inline thread_info_t *current_thread_info(void)
 {
-    register unsigned long sp;
+    register thread_info_t* ti;
      __asm__ __volatile__ (
-         "move %0, sp"
-         :"=r"(sp)
+         "move %0, tp"
+         :"=r"(ti)
          ::);
-    return stack_to_thread_info(sp);
+    return ti;
 }
 
 __END_CDECLS

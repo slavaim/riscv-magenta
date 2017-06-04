@@ -35,7 +35,7 @@ void asm_offsets(void)
 	OFFSET(THREAD_S11, riscv_thread_state, s[11]);
 	OFFSET(THREAD_SP, riscv_thread_state, sp);
     
-    OFFSET(THREAD_TH, riscv_thread_state, thread);
+    OFFSET(THREAD_TI, riscv_thread_state, ti);
 
 	OFFSET(THREAD_F0,  riscv_thread_state, fstate.f[0]);
 	OFFSET(THREAD_F1,  riscv_thread_state, fstate.f[1]);
@@ -71,6 +71,8 @@ void asm_offsets(void)
 	OFFSET(THREAD_F31, riscv_thread_state, fstate.f[31]);
 	OFFSET(THREAD_FCSR, riscv_thread_state, fstate.fcsr);
 
+	OFFSET(TI_KSP, thread_info, k_sp);
+	OFFSET(TI_ESP, thread_info, e_sp);
 	OFFSET(TI_THREAD, thread_info, thread);
 	OFFSET(TI_FLAGS, thread_info, flags);
 	OFFSET(TI_CPU, thread_info, cpu);

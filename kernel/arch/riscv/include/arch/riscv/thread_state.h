@@ -16,5 +16,5 @@ typedef struct riscv_thread_state {
 	unsigned long sp;	/* Kernel mode stack */
 	unsigned long s[12];	/* s[0]: frame pointer */
 	struct user_fpregs_struct fstate;
-	struct thread* thread; /* a back pointer to a thread */
+	struct thread_info* ti; /* a back pointer to a thread_info */
 } riscv_thread_state_t;

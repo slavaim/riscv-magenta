@@ -11,13 +11,13 @@
 #include <arch/riscv/switch_to.h>
 #include <debug.h>
 #include <inttypes.h>
+#include <string.h> // for memset
 
-static inline init_thread_info(struct thread * t, thread_info_t*  ti)
+static inline void init_thread_info(struct thread * t, thread_info_t*  ti)
 {
     memset(ti, 0, sizeof(*ti));
 
     ti->thread = t;
-    t->arch.ti = ti;
 
     //
     // set a bogus cpu as the thread is not running, 
@@ -49,19 +49,18 @@ void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
     t->arch.state.s[0] = 0;
 
     //
-    // set the back pointer, see __switch_to for details
-    //
-    t->arch.state.thread = t;
-
-    //
     // init a thread_info on the stack bottom,
     // use the stack top as t->stack might cross
     // the page boundary because of a stack padding,
     // searchook THREAD_STACK_BOUNDS_CHECK for details
     //
-    ti = stack_to_thread_info(t->arch.state.sp);
-    assert(0x0 == ((unsigned long)ti) % sizeof(void*));
+    ti = &t->arch.ti;
     init_thread_info(t, ti);
+
+    //
+    // set the back pointer, see __switch_to for details
+    //
+    t->arch.state.ti = ti;
 }
 
 void arch_thread_construct_first(thread_t *t)
@@ -71,8 +70,7 @@ void arch_thread_construct_first(thread_t *t)
     //
     // initialize the boot thread's thread_info structure
     //
-    thread_info_t* ti = current_thread_info();
-
+    thread_info_t* ti = &t->arch.ti;
     init_thread_info(t, ti);
 
     //
@@ -84,7 +82,7 @@ void arch_thread_construct_first(thread_t *t)
     //
     // set the thread pointer, see __switch_to for details
     //
-    t->arch.state.thread = t;
+    t->arch.state.ti = ti;
 }
 
 void arch_context_switch(struct thread *oldthread, struct thread *newthread)
@@ -92,10 +90,10 @@ void arch_context_switch(struct thread *oldthread, struct thread *newthread)
     //
     // set the cpu number, look at arch_curr_cpu_num that uses it
     //
-    if (newthread->arch.ti->cpu != oldthread->arch.ti->cpu)
-        newthread->arch.ti->cpu = oldthread->arch.ti->cpu;
+    if (newthread->arch.ti.cpu != oldthread->arch.ti.cpu)
+        newthread->arch.ti.cpu = oldthread->arch.ti.cpu;
 
-    assert( newthread->arch.ti->cpu < SMP_MAX_CPUS );
+    assert( newthread->arch.ti.cpu < SMP_MAX_CPUS );
     
     //
     // swap registers

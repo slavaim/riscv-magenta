@@ -70,6 +70,7 @@ asmlinkage void do_IRQ(unsigned int cause, struct pt_regs *regs)
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
 	assert(arch_irqs_disabled());
+	assert(get_current());
 
 	arch_set_in_int_handler(true);
 

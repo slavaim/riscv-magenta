@@ -61,7 +61,18 @@ static inline uint arch_curr_cpu_num(void)
     // every cpu has a valid thread info on the stack
     // copied on each context switch
     //
-    return (uint)current_thread_info()->cpu;
+    thread_info_t* ti = current_thread_info();
+
+    //
+    // if ti is NULL this is an intitalization phase
+    // before the first thread_info structure initialization
+    // by thread_init_early() the initialization phase always
+    // runs on the hart 0
+    //
+    if (!ti)
+        return 0;
+
+    return ti->cpu;
 }
 
 static inline uint arch_max_num_cpus(void)

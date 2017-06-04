@@ -30,7 +30,8 @@ static inline void riscv_switch_to(struct riscv_thread_state * prev,
                                    struct riscv_thread_state * next)
 {
     __switch_to_aux(prev, next);
-    __switch_to(prev, next); 
+    __switch_to(prev, next);
+    assert(get_current());
 }
 
 __END_CDECLS
