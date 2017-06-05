@@ -19,9 +19,9 @@ KERNEL_ASPACE_BASE ?= 0xffffff8000000000UL # -512GB
 KERNEL_ASPACE_SIZE ?= 0x0000008000000000UL
 USER_ASPACE_BASE   ?= 0x0000000001000000UL # 16MB
 # We set the top of user address space to be (1 << 47) - 4k.  See
-# docs/magenta/sysret_problem.md for why we subtract 4k here.
-# Subtracting USER_ASPACE_BASE from that value gives the value for
-# USER_ASPACE_SIZE below.
+# docs/sysret_problem.md for why we subtract 4k here.  Subtracting
+# USER_ASPACE_BASE from that value gives the value for USER_ASPACE_SIZE
+# below.
 USER_ASPACE_SIZE   ?= 0x00007ffffefff000UL
 SUBARCH_DIR := $(LOCAL_DIR)/64
 
@@ -53,6 +53,7 @@ MODULE_SRCS += \
 	$(SUBARCH_DIR)/uspace_entry.S \
 \
 	$(LOCAL_DIR)/arch.cpp \
+	$(LOCAL_DIR)/bp_percpu.c \
 	$(LOCAL_DIR)/cache.cpp \
 	$(LOCAL_DIR)/cpu_topology.cpp \
 	$(LOCAL_DIR)/debugger.cpp \
@@ -84,20 +85,13 @@ MODULE_DEPS += \
 
 include $(LOCAL_DIR)/toolchain.mk
 
-# enable more if smp is requested
-ifeq ($(call TOBOOL,$(WITH_SMP)),true)
-
-SMP_MAX_CPUS ?= 16
-KERNEL_DEFINES += \
-	WITH_SMP=1
 MODULE_SRCS += \
 	$(SUBARCH_DIR)/bootstrap16.cpp \
 	$(SUBARCH_DIR)/smp.cpp \
 	$(SUBARCH_DIR)/start16.S
 
-endif
-
-# always set this to something
+# default to 16 cpu max support
+SMP_MAX_CPUS ?= 16
 KERNEL_DEFINES += \
 	SMP_MAX_CPUS=$(SMP_MAX_CPUS)
 

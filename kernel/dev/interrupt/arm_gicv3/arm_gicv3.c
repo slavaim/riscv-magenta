@@ -11,6 +11,7 @@
 #include <string.h>
 #include <dev/interrupt/arm_gic.h>
 #include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <kernel/vm.h>
 #include <lk/init.h>
 #include <dev/interrupt.h>
@@ -83,7 +84,7 @@ static void gic_set_enable(uint vector, bool enable)
 }
 
 static void gic_init_percpu_early(void)
-{   
+{
     uint cpu = arch_curr_cpu_num();
 
     // configure sgi/ppi as non-secure group 1
@@ -265,7 +266,7 @@ static enum handler_return gic_handle_irq(iframe* frame) {
 
     // tracking external hardware irqs in this variable
     if (vector >= 32)
-        THREAD_STATS_INC(interrupts);
+        CPU_STATS_INC(interrupts);
 
     uint cpu = arch_curr_cpu_num();
 

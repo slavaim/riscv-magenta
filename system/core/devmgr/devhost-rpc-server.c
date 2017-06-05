@@ -33,8 +33,6 @@
 #define CAN_WRITE(ios) (((03 & ios->flags) == O_RDWR) || ((03 & ios->flags) == O_WRONLY))
 #define CAN_READ(ios) (((03 & ios->flags) == O_RDWR) || ((03 & ios->flags) == O_RDONLY))
 
-mxio_dispatcher_t* devhost_rio_dispatcher;
-
 devhost_iostate_t* create_devhost_iostate(mx_device_t* dev) {
     devhost_iostate_t* ios;
     if ((ios = calloc(1, sizeof(devhost_iostate_t))) == NULL) {
@@ -137,6 +135,20 @@ static void sync_io_complete(iotxn_t* txn, void* cookie) {
 }
 
 static ssize_t do_sync_io(mx_device_t* dev, uint32_t opcode, void* buf, size_t count, mx_off_t off) {
+    if (dev->ops->iotxn_queue == NULL) {
+        size_t actual;
+        mx_status_t r;
+        if (opcode == IOTXN_OP_READ) {
+            r = device_op_read(dev, buf, count, off, &actual);
+        } else {
+            r = device_op_write(dev, buf, count, off, &actual);
+        }
+        if (r < 0) {
+            return r;
+        } else {
+            return actual;
+        }
+    }
     iotxn_t* txn;
     mx_status_t status = iotxn_alloc(&txn, IOTXN_ALLOC_CONTIGUOUS | IOTXN_ALLOC_POOL, MXIO_CHUNK_SIZE);
     if (status != NO_ERROR) {

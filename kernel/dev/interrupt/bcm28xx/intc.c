@@ -10,7 +10,7 @@
 #include <err.h>
 #include <kernel/mp.h>
 #include <kernel/spinlock.h>
-#include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <dev/bcm28xx.h>
 #include <trace.h>
 #include <arch/arm64.h>
@@ -186,7 +186,6 @@ decoded:
     // dispatch the irq
     enum handler_return ret = INT_NO_RESCHEDULE;
 
-#if WITH_SMP
     if (vector == INTERRUPT_ARM_LOCAL_MAILBOX0) {
         pend = *REG32(INTC_LOCAL_MAILBOX0_CLR0 + 0x10 * cpu);
         LTRACEF("mailbox0 clr 0x%x\n", pend);
@@ -200,15 +199,13 @@ decoded:
         if (pend & (1 << MP_IPI_RESCHEDULE)) {
             ret = mp_mbx_reschedule_irq();
         }
-    } else
-#endif // WITH_SMP
-    if (vector == 0xffffffff) {
+    } else if (vector == 0xffffffff) {
         ret = INT_NO_RESCHEDULE;
     } else {
         struct int_handler_struct* handler = pdev_get_int_handler(vector);
         if (handler && handler->handler) {
             if (vector < ARM_IRQ_LOCAL_BASE) {
-                THREAD_STATS_INC(interrupts);
+                CPU_STATS_INC(interrupts);
             }
             ret = handler->handler(handler->arg);
         } else {

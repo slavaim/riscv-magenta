@@ -133,6 +133,10 @@ public:
         EXPECT_EQ(mx_task_kill(handle_), NO_ERROR, "mx_task_kill() failed");
     }
 
+    mx_handle_t get_thread_handle() {
+        return thrd_get_mx_handle(thread_);
+    }
+
 private:
     static int wakeup_test_thread(void* thread_arg) {
         TestThread* thread = reinterpret_cast<TestThread*>(thread_arg);
@@ -394,33 +398,58 @@ bool test_futex_thread_killed() {
     END_TEST;
 }
 
+// Test that the futex_wait() syscall is restarted properly if the thread
+// calling it gets suspended and resumed.  (This tests for a bug where the
+// futex_wait() syscall would return ERR_TIMED_OUT and not get restarted by
+// the syscall wrapper in the VDSO.)
+static bool test_futex_thread_suspended() {
+    BEGIN_TEST;
+    volatile int futex_value = 1;
+    TestThread thread(&futex_value);
+
+    ASSERT_EQ(mx_task_suspend(thread.get_thread_handle()), NO_ERROR, "");
+    // Wait some time for the thread suspension to take effect.
+    struct timespec wait_time = {0, 10 * 1000000 /* nanoseconds */};
+    ASSERT_EQ(nanosleep(&wait_time, NULL), 0, "Error during sleep");
+
+    ASSERT_EQ(mx_task_resume(thread.get_thread_handle(), 0), NO_ERROR, "");
+    // Wait some time for the thread to resume and execute.
+    ASSERT_EQ(nanosleep(&wait_time, NULL), 0, "Error during sleep");
+
+    thread.assert_thread_not_woken();
+    check_futex_wake(&futex_value, 1);
+    thread.assert_thread_woken();
+
+    END_TEST;
+}
+
 // Test that misaligned pointers cause futex syscalls to return a failure.
 static bool test_futex_misaligned() {
-  BEGIN_TEST;
+    BEGIN_TEST;
 
-  // Make sure the whole thing is aligned, so the 'futex' member will
-  // definitely be misaligned.
-  alignas(mx_futex_t) struct {
-      uint8_t misalign;
-      mx_futex_t futex[2];
-  } __attribute__((packed)) buffer;
-  mx_futex_t* const futex = &buffer.futex[0];
-  mx_futex_t* const futex_2 = &buffer.futex[1];
-  ASSERT_GT(alignof(mx_futex_t), 1, "");
-  ASSERT_NEQ((uintptr_t)futex % alignof(mx_futex_t), 0, "");
-  ASSERT_NEQ((uintptr_t)futex_2 % alignof(mx_futex_t), 0, "");
+    // Make sure the whole thing is aligned, so the 'futex' member will
+    // definitely be misaligned.
+    alignas(mx_futex_t) struct {
+        uint8_t misalign;
+        mx_futex_t futex[2];
+    } __attribute__((packed)) buffer;
+    mx_futex_t* const futex = &buffer.futex[0];
+    mx_futex_t* const futex_2 = &buffer.futex[1];
+    ASSERT_GT(alignof(mx_futex_t), 1, "");
+    ASSERT_NEQ((uintptr_t)futex % alignof(mx_futex_t), 0, "");
+    ASSERT_NEQ((uintptr_t)futex_2 % alignof(mx_futex_t), 0, "");
 
-  // mx_futex_requeue might check the waited-for value before it
-  // checks the second futex's alignment, so make sure the call is
-  // valid other than the alignment.  (Also don't ask anybody to
-  // look at uninitialized stack space!)
-  memset(&buffer, 0, sizeof(buffer));
+    // mx_futex_requeue might check the waited-for value before it
+    // checks the second futex's alignment, so make sure the call is
+    // valid other than the alignment.  (Also don't ask anybody to
+    // look at uninitialized stack space!)
+    memset(&buffer, 0, sizeof(buffer));
 
-  ASSERT_EQ(mx_futex_wait(futex, 0, MX_TIME_INFINITE), ERR_INVALID_ARGS, "");
-  ASSERT_EQ(mx_futex_wake(futex, 1), ERR_INVALID_ARGS, "");
-  ASSERT_EQ(mx_futex_requeue(futex, 1, 0, futex_2, 1), ERR_INVALID_ARGS, "");
+    ASSERT_EQ(mx_futex_wait(futex, 0, MX_TIME_INFINITE), ERR_INVALID_ARGS, "");
+    ASSERT_EQ(mx_futex_wake(futex, 1), ERR_INVALID_ARGS, "");
+    ASSERT_EQ(mx_futex_requeue(futex, 1, 0, futex_2, 1), ERR_INVALID_ARGS, "");
 
-  END_TEST;
+    END_TEST;
 }
 
 static void log(const char* str) {
@@ -513,6 +542,7 @@ RUN_TEST(test_futex_requeue_same_addr);
 RUN_TEST(test_futex_requeue);
 RUN_TEST(test_futex_requeue_unqueued_on_timeout);
 RUN_TEST(test_futex_thread_killed);
+RUN_TEST(test_futex_thread_suspended);
 RUN_TEST(test_futex_misaligned);
 RUN_TEST(test_event_signaling);
 END_TEST_CASE(futex_tests)

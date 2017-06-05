@@ -97,5 +97,5 @@ asmlinkage void do_IRQ(unsigned int cause, struct pt_regs *regs)
 	assert(arch_irqs_disabled());
 
     if (ret != INT_NO_RESCHEDULE)
-        thread_preempt(true);
+        thread_preempt();
 }

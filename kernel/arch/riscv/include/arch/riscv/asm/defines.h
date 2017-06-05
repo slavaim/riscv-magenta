@@ -10,6 +10,7 @@
 #pragma once
 
 #define CACHE_LINE 32
+#define MAX_CACHE_LINE 64
 
 #define ARCH_DEFAULT_STACK_SIZE 8192
 #define DEFAULT_TSS 4096

@@ -14,15 +14,19 @@
 #define PERCPU_CURRENT_THREAD_OFFSET   0x8
 //      MX_TLS_STACK_GUARD_OFFSET      0x10
 //      MX_TLS_UNSAFE_SP_OFFSET        0x18
-#define PERCPU_KERNEL_SP_OFFSET        0x20
-#define PERCPU_SAVED_USER_SP_OFFSET    0x28
-#define PERCPU_IN_IRQ_OFFSET           0x30
-#define PERCPU_GPF_RETURN_OFFSET       0x38
-#define PERCPU_DEFAULT_TSS_OFFSET      0x50
+#define PERCPU_SAVED_USER_SP_OFFSET    0x20
+#define PERCPU_IN_IRQ_OFFSET           0x28
+#define PERCPU_GPF_RETURN_OFFSET       0x30
+#define PERCPU_CPU_NUM_OFFSET          0x38
+#define PERCPU_DEFAULT_TSS_OFFSET      0x40
+
+/* offset of default_tss.rsp0 */
+#define PERCPU_KERNEL_SP_OFFSET        (PERCPU_DEFAULT_TSS_OFFSET + 4)
 
 #ifndef ASSEMBLY
 
 #include <arch/spinlock.h>
+#include <arch/ops.h>
 #include <arch/x86.h>
 #include <arch/x86/idt.h>
 #include <assert.h>
@@ -46,11 +50,6 @@ struct x86_percpu {
     uintptr_t stack_guard;
     uintptr_t kernel_unsafe_sp;
 
-    /* our current kernel sp, to be loaded by syscall */
-    // TODO: Remove this and replace with a fetch from
-    // the current tss?
-    uintptr_t kernel_sp;
-
     /* temporarily saved during a syscall */
     uintptr_t saved_user_sp;
 
@@ -67,27 +66,29 @@ struct x86_percpu {
     uint32_t cpu_num;
 
     /* This CPU's default TSS */
-    tss_t __ALIGNED(16) default_tss;
+    tss_t default_tss __ALIGNED(16);
 
     /* Reserved space for interrupt stacks */
-    uint8_t interrupt_stacks[NUM_ASSIGNED_IST_ENTRIES][PAGE_SIZE];
-};
+    uint8_t interrupt_stacks[NUM_ASSIGNED_IST_ENTRIES][PAGE_SIZE] __ALIGNED(16);
+} __CPU_MAX_ALIGN;
 
 static_assert(__offsetof(struct x86_percpu, direct) == PERCPU_DIRECT_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, current_thread) == PERCPU_CURRENT_THREAD_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, stack_guard) == MX_TLS_STACK_GUARD_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, kernel_unsafe_sp) == MX_TLS_UNSAFE_SP_OFFSET, "");
-static_assert(__offsetof(struct x86_percpu, kernel_sp) == PERCPU_KERNEL_SP_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, saved_user_sp) == PERCPU_SAVED_USER_SP_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, in_irq) == PERCPU_IN_IRQ_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, gpf_return_target) == PERCPU_GPF_RETURN_OFFSET, "");
+static_assert(__offsetof(struct x86_percpu, cpu_num) == PERCPU_CPU_NUM_OFFSET, "");
 static_assert(__offsetof(struct x86_percpu, default_tss) == PERCPU_DEFAULT_TSS_OFFSET, "");
+static_assert(__offsetof(struct x86_percpu, default_tss.rsp0) == PERCPU_KERNEL_SP_OFFSET, "");
+
+extern struct x86_percpu bp_percpu;
+extern struct x86_percpu *ap_percpus;
 
 // This needs to be run very early in the boot process from start.S and as
-// each CPU is brought up.  It returns the global stack_guard value, for
-// secondary CPUs.  On the initial CPU, it returns zero because the
-// stack_guard value has not been initialized yet.
-uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp);
+// each CPU is brought up.
+void x86_init_percpu(uint cpu_num);
 
 /* used to set the bootstrap processor's apic_id once the APIC is initialized */
 void x86_set_local_apic_id(uint32_t apic_id);
@@ -111,12 +112,6 @@ extern uint8_t x86_num_cpus;
 static uint arch_max_num_cpus(void)
 {
     return x86_num_cpus;
-}
-
-/* set on every context switch and before entering user space */
-static inline void x86_set_percpu_kernel_sp(uintptr_t sp)
-{
-    x86_write_gs_offset64(PERCPU_KERNEL_SP_OFFSET, sp);
 }
 
 static bool arch_in_int_handler(void)

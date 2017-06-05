@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <ctype.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -16,12 +18,33 @@
 
 #include "acpi.h"
 #include "devcoordinator.h"
+#include "driver-info.h"
 #include "log.h"
 #include "memfs-private.h"
 
 uint32_t log_flags = LOG_ERROR | LOG_INFO;
 
 static void dc_dump_state(void);
+static void dc_dump_devprops(void);
+static void dc_dump_drivers(void);
+
+static mx_handle_t dmctl_socket;
+
+static void dmprintf(const char* fmt, ...) {
+    if (dmctl_socket == MX_HANDLE_INVALID) {
+        return;
+    }
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    size_t actual;
+    if (mx_socket_write(dmctl_socket, 0, buf, strlen(buf), &actual) < 0) {
+        mx_handle_close(dmctl_socket);
+        dmctl_socket = MX_HANDLE_INVALID;
+    }
+}
 
 static mx_status_t handle_dmctl_write(size_t len, const char* cmd) {
     if (len == 4) {
@@ -30,20 +53,26 @@ static mx_status_t handle_dmctl_write(size_t len, const char* cmd) {
             return NO_ERROR;
         }
         if (!memcmp(cmd, "help", 4)) {
-            printf("dump        - dump device tree\n"
-                   "poweroff    - power off the system\n"
-                   "shutdown    - power off the system\n"
-                   "reboot      - reboot the system\n"
-                   "kerneldebug - send a command to the kernel\n"
-                   "ktraceoff   - stop kernel tracing\n"
-                   "ktraceon    - start kernel tracing\n"
-                   "acpi-ps0    - invoke the _PS0 method on an acpi object\n"
-                   );
+            dmprintf("dump        - dump device tree\n"
+                     "poweroff    - power off the system\n"
+                     "shutdown    - power off the system\n"
+                     "reboot      - reboot the system\n"
+                     "kerneldebug - send a command to the kernel\n"
+                     "ktraceoff   - stop kernel tracing\n"
+                     "ktraceon    - start kernel tracing\n"
+                     "acpi-ps0    - invoke the _PS0 method on an acpi object\n"
+                     "devprops    - dump published devices and their binding properties\n"
+                     "drivers     - list discovered drivers and their properties\n"
+                     );
             return NO_ERROR;
         }
     }
     if ((len == 6) && !memcmp(cmd, "reboot", 6)) {
         devhost_acpi_reboot();
+        return NO_ERROR;
+    }
+    if ((len == 7) && !memcmp(cmd, "drivers", 7)) {
+        dc_dump_drivers();
         return NO_ERROR;
     }
     if (len == 8) {
@@ -53,6 +82,10 @@ static mx_status_t handle_dmctl_write(size_t len, const char* cmd) {
         }
         if (!memcmp(cmd, "ktraceon", 8)) {
             mx_ktrace_control(get_root_resource(), KTRACE_ACTION_START, KTRACE_GRP_ALL, NULL);
+            return NO_ERROR;
+        }
+        if (!memcmp(cmd, "devprops", 8)) {
+            dc_dump_devprops();
             return NO_ERROR;
         }
     }
@@ -71,6 +104,7 @@ static mx_status_t handle_dmctl_write(size_t len, const char* cmd) {
     if ((len > 12) && !memcmp(cmd, "kerneldebug ", 12)) {
         return mx_debug_send_command(get_root_resource(), cmd + 12, len - 12);
     }
+    dmprintf("unknown command\n");
     log(ERROR, "dmctl: unknown command '%.*s'\n", (int) len, cmd);
     return ERR_NOT_SUPPORTED;
 }
@@ -174,15 +208,15 @@ static void dc_dump_device(device_t* dev, size_t indent) {
         extra[0] = 0;
     }
     if (pid == 0) {
-        printf("%*s[%s]%s\n", (int) (indent * 3), "", dev->name, extra);
+        dmprintf("%*s[%s]%s\n", (int) (indent * 3), "", dev->name, extra);
     } else {
-        printf("%*s%c%s%c pid=%zu%s %s\n",
-               (int) (indent * 3), "",
-               dev->flags & DEV_CTX_SHADOW ? '<' : '[',
-               dev->name,
-               dev->flags & DEV_CTX_SHADOW ? '>' : ']',
-               pid, extra,
-               dev->libname ? dev->libname : "");
+        dmprintf("%*s%c%s%c pid=%zu%s %s\n",
+                 (int) (indent * 3), "",
+                 dev->flags & DEV_CTX_SHADOW ? '<' : '[',
+                 dev->name,
+                 dev->flags & DEV_CTX_SHADOW ? '>' : ']',
+                 pid, extra,
+                 dev->libname ? dev->libname : "");
     }
     device_t* child;
     if (dev->shadow) {
@@ -198,6 +232,86 @@ static void dc_dump_state(void) {
     dc_dump_device(&root_device, 0);
     dc_dump_device(&misc_device, 1);
     dc_dump_device(&platform_device, 1);
+}
+
+static void dc_dump_device_props(device_t* dev) {
+    if (dev->host) {
+        dmprintf("Name [%s]%s%s%s\n",
+                 dev->name,
+                 dev->libname ? " Driver [" : "",
+                 dev->libname ? dev->libname : "",
+                 dev->libname ? "]" : "");
+        dmprintf("Flags   :%s%s%s%s%s%s%s\n",
+                 dev->flags & DEV_CTX_IMMORTAL   ? " Immortal"  : "",
+                 dev->flags & DEV_CTX_BUSDEV     ? " BusDev"    : "",
+                 dev->flags & DEV_CTX_MULTI_BIND ? " MultiBind" : "",
+                 dev->flags & DEV_CTX_BOUND      ? " Bound"     : "",
+                 dev->flags & DEV_CTX_DEAD       ? " Dead"      : "",
+                 dev->flags & DEV_CTX_ZOMBIE     ? " Zombie"    : "",
+                 dev->flags & DEV_CTX_SHADOW     ? " Shadow"    : "");
+
+        char a = (char)((dev->protocol_id >> 24) & 0xFF);
+        char b = (char)((dev->protocol_id >> 16) & 0xFF);
+        char c = (char)((dev->protocol_id >> 8) & 0xFF);
+        char d = (char)(dev->protocol_id & 0xFF);
+        dmprintf("ProtoId : '%c%c%c%c' 0x%08x(%u)\n",
+                 isprint(a) ? a : '.',
+                 isprint(b) ? b : '.',
+                 isprint(c) ? c : '.',
+                 isprint(d) ? d : '.',
+                 dev->protocol_id,
+                 dev->protocol_id);
+
+        dmprintf("%u Propert%s\n", dev->prop_count, dev->prop_count == 1 ? "y" : "ies");
+        for (uint32_t i = 0; i < dev->prop_count; ++i) {
+            const mx_device_prop_t* p = dev->props + i;
+            const char* param_name = lookup_bind_param_name(p->id);
+
+            if (param_name) {
+                dmprintf("[%2u/%2u] : Value 0x%08x Id %s\n",
+                         i, dev->prop_count, p->value, param_name);
+            } else {
+                dmprintf("[%2u/%2u] : Value 0x%08x Id 0x%04hx\n",
+                         i, dev->prop_count, p->value, p->id);
+            }
+        }
+        dmprintf("\n");
+    }
+
+    device_t* child;
+    if (dev->shadow) {
+        dc_dump_device_props(dev->shadow);
+    }
+    list_for_every_entry(&dev->children, child, device_t, node) {
+        dc_dump_device_props(child);
+    }
+}
+
+static void dc_dump_devprops(void) {
+    dc_dump_device_props(&root_device);
+    dc_dump_device_props(&misc_device);
+    dc_dump_device_props(&platform_device);
+}
+
+static void dc_dump_drivers(void) {
+    driver_t* drv;
+    bool first = true;
+    list_for_every_entry(&list_drivers, drv, driver_t, node) {
+        dmprintf("%sName    : %s\n", first ? "" : "\n", drv->name);
+        dmprintf("Driver  : %s\n", drv->libname ? drv->libname : "(null)");
+        dmprintf("Flags   : 0x%08x\n", drv->flags);
+        if (drv->binding_size) {
+            char line[256];
+            uint32_t count = drv->binding_size / sizeof(drv->binding[0]);
+            dmprintf("Binding : %u instruction%s (%u bytes)\n",
+                     count, (count == 1) ? "" : "s", drv->binding_size);
+            for (uint32_t i = 0; i < count; ++i) {
+                dump_bind_inst(drv->binding + i, line, sizeof(line));
+                dmprintf("[%u/%u]: %s\n", i + 1, count, line);
+            }
+        }
+        first = false;
+    }
 }
 
 static void dc_handle_new_device(device_t* dev);
@@ -439,7 +553,7 @@ static mx_status_t dc_add_device(device_t* parent,
     dev->ph.handle = handle[0];
     dev->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
     dev->ph.func = dc_handle_device;
-    if ((r = port_watch(&dc_port, &dev->ph)) < 0) {
+    if ((r = port_wait(&dc_port, &dev->ph)) < 0) {
         devfs_unpublish(dev);
         free(dev);
         return r;
@@ -618,9 +732,11 @@ static mx_status_t dc_handle_device_read(device_t* dev) {
         return ERR_INTERNAL;
     }
 
-    // Only ADD_DEVICE takes handles.
+    // Only ADD_DEVICE and DM_COMMAND take handles.
     // For all other ops, silently close any passed handles.
-    if ((hcount != 0) && (msg.op != DC_OP_ADD_DEVICE)) {
+    if ((hcount != 0) &&
+        (msg.op != DC_OP_ADD_DEVICE) &&
+        (!((msg.op == DC_OP_DM_COMMAND) && (hcount == 1)))) {
         while (hcount > 0) {
             mx_handle_close(hin[--hcount]);
         }
@@ -650,7 +766,14 @@ static mx_status_t dc_handle_device_read(device_t* dev) {
         break;
 
     case DC_OP_DM_COMMAND:
+        if (hcount == 1) {
+            dmctl_socket = hin[0];
+        }
         r = handle_dmctl_write(msg.datalen, data);
+        if (dmctl_socket != MX_HANDLE_INVALID) {
+            mx_handle_close(dmctl_socket);
+            dmctl_socket = MX_HANDLE_INVALID;
+        }
         break;
 
     case DC_OP_STATUS: {
@@ -772,7 +895,7 @@ static mx_status_t dh_create_device(device_t* dev, devhost_t* dh,
     dev->ph.handle = hrpc;
     dev->ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
     dev->ph.func = dc_handle_device;
-    if ((r = port_watch(&dc_port, &dev->ph)) < 0) {
+    if ((r = port_wait(&dc_port, &dev->ph)) < 0) {
         goto fail_watch;
     }
     dev->host = dh;
@@ -1013,9 +1136,9 @@ void coordinator(void) {
     for (;;) {
         mx_status_t status;
         if (list_is_empty(&list_pending_work)) {
-            status = port_dispatch(&dc_port, MX_TIME_INFINITE);
+            status = port_dispatch(&dc_port, MX_TIME_INFINITE, true);
         } else {
-            status = port_dispatch(&dc_port, 0);
+            status = port_dispatch(&dc_port, 0, true);
             if (status == ERR_TIMED_OUT) {
                 process_work(list_remove_head_type(&list_pending_work, work_t, node));
                 continue;

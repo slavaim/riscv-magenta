@@ -266,15 +266,26 @@ int service_starter(void* arg) {
     // create a directory for sevice rendezvous
     mkdir("/svc", 0755);
 
-    const char* virtcon = "/boot/bin/gfxconsole";
-    devmgr_launch(svcs_job_handle, "virtual-console",
-                  1, &virtcon, NULL, -1, NULL, NULL, 0);
+    {
+        const char* args[] = { "/boot/bin/gfxconsole", "--keep-log-active" };
+        devmgr_launch(svcs_job_handle, "virtual-console",
+                      switch_to_first_vc() ? 1 : 2, args, NULL, -1, NULL, NULL, 0);
+    }
 
     if (getenv("netsvc.disable") == NULL) {
-        // launch the network service
-        const char* args[] = { "/boot/bin/netsvc", NULL };
-        args[1] = getenv("magenta.nodename");
-        devmgr_launch(svcs_job_handle, "netsvc", args[1] ? 2 : 1, args,
+        const char* args[] = { "/boot/bin/netsvc", NULL, NULL };
+        int argc = 1;
+
+        if (getenv("netsvc.netboot")) {
+            args[argc++] = "--netboot";
+        }
+
+        const char* nodename = getenv("magenta.nodename");
+        if (nodename) {
+            args[argc++] = nodename;
+        }
+
+        devmgr_launch(svcs_job_handle, "netsvc", argc, args,
                       NULL, -1, NULL, NULL, 0);
     }
 
@@ -306,7 +317,7 @@ static int console_starter(void* arg) {
     if (term != NULL)
         term -= sizeof("TERM=") - 1;
 
-    const char* envp[] = { "PS1=magenta$ ", term ? term : NULL, NULL, };
+    const char* envp[] = { term ? term : NULL, NULL, };
     for (unsigned n = 0; n < 30; n++) {
         int fd;
         if ((fd = open("/dev/misc/console", O_RDWR)) >= 0) {
@@ -329,10 +340,18 @@ static void start_console_shell(void) {
 static void start_console_shell(void) {}
 #endif
 
-// a more colorful prompt messes up line editing, unfortunately...
-// "PS1=\033[35;1mmagenta\033[39m$ ";
-
-static const char* envp_sh[] = { "PS1=magenta$ ", NULL, };
+static void start_vc_shell(int dirfd, const char* name, bool set_as_active) {
+    int fd;
+    if ((fd = openat(dirfd, name, O_RDWR)) >= 0) {
+        if (set_as_active) {
+            ioctl_console_set_active_vc(fd);
+        }
+        devmgr_launch(svcs_job_handle, "sh:vc",
+                      countof(argv_sh), argv_sh, NULL, fd, NULL, NULL, 0);
+    } else {
+        printf("devmgr: cannot open vc\n");
+    }
+}
 
 static mx_status_t console_device_added(int dirfd, int event, const char* name, void* cookie) {
     if (event != WATCH_EVENT_ADD_FILE) {
@@ -343,17 +362,10 @@ static mx_status_t console_device_added(int dirfd, int event, const char* name, 
         return NO_ERROR;
     }
 
-    // Start a shell on a virtual console
-    int fd;
-    if ((fd = openat(dirfd, name, O_RDWR)) >= 0) {
-        if (switch_to_first_vc()) {
-            ioctl_console_set_active_vc(fd);
-        }
-        devmgr_launch(svcs_job_handle, "sh:vc",
-                      countof(argv_sh), argv_sh, envp_sh, fd, NULL, NULL, 0);
-    } else {
-        printf("devmgr: cannot open vc\n");
-    }
+    // Start three shells on a virtual consoles
+    start_vc_shell(dirfd, name, switch_to_first_vc());
+    start_vc_shell(dirfd, name, false);
+    start_vc_shell(dirfd, name, false);
 
     // stop polling
     return 1;

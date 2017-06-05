@@ -8,6 +8,7 @@
 
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/debug.h>
 #include <magenta/syscalls/exception.h>
 #include <magenta/syscalls/object.h>
 #include <magenta/syscalls/port.h>
@@ -288,31 +289,6 @@ static bool test_resume_suspended(void) {
     END_TEST;
 }
 
-static bool test_kill_suspended(void) {
-    BEGIN_TEST;
-
-    mx_handle_t event;
-    mxr_thread_t thread;
-
-    ASSERT_EQ(mx_event_create(0, &event), NO_ERROR, "");
-    ASSERT_TRUE(start_thread(test_wait_thread_fn, &event, &thread), "");
-    mx_handle_t thread_h = mxr_thread_get_handle(&thread);
-    ASSERT_EQ(mx_task_suspend(thread_h), NO_ERROR, "");
-    mx_nanosleep(mx_deadline_after(MX_MSEC(10)));
-    ASSERT_EQ(mx_task_kill(thread_h), NO_ERROR, "");
-
-    ASSERT_EQ(mx_object_wait_one(
-        thread_h, MX_THREAD_TERMINATED, MX_TIME_INFINITE, NULL), NO_ERROR, "");
-
-    // make sure the thread did not execute more user code.
-    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, mx_deadline_after(MX_MSEC(100)), NULL), ERR_TIMED_OUT, "");
-
-    ASSERT_EQ(mx_handle_close(event), NO_ERROR, "");
-    ASSERT_EQ(mx_handle_close(thread_h), NO_ERROR, "");
-
-    END_TEST;
-}
-
 static bool test_suspend_sleeping(void) {
     BEGIN_TEST;
 
@@ -515,8 +491,168 @@ static bool test_suspend_stops_thread(void) {
         mx_nanosleep(0);
     }
 
+    // Clean up.
     ASSERT_EQ(mx_task_kill(thread_h), NO_ERROR, "");
+    // Wait for the thread termination to complete.  We should do this so
+    // that any later tests which use set_debugger_exception_port() do not
+    // receive an MX_EXCP_THREAD_EXITING event.
+    ASSERT_EQ(mx_object_wait_one(thread_h, MX_THREAD_TERMINATED,
+                                 MX_TIME_INFINITE, NULL), NO_ERROR, "");
     ASSERT_EQ(mx_handle_close(thread_h), NO_ERROR, "");
+
+    END_TEST;
+}
+
+// This tests for a bug in which killing a suspended thread causes the
+// thread to be resumed and execute more instructions in userland.
+static bool test_kill_suspended_thread(void) {
+    BEGIN_TEST;
+
+    mxr_thread_t thread;
+    struct test_writing_thread_arg arg = { .v = 0 };
+    ASSERT_TRUE(start_thread(test_writing_thread_fn, &arg, &thread), "");
+    mx_handle_t thread_h = mxr_thread_get_handle(&thread);
+
+    // Wait until the thread has started and has modified arg.v.
+    while (arg.v != 1) {
+        mx_nanosleep(0);
+    }
+
+    // Attach to debugger port so we can see MX_EXCP_THREAD_SUSPENDED.
+    mx_handle_t eport;
+    ASSERT_TRUE(set_debugger_exception_port(&eport),"");
+
+    ASSERT_EQ(mx_task_suspend(thread_h), NO_ERROR, "");
+
+    // Wait for the thread to suspend.
+    mx_exception_packet_t packet;
+    ASSERT_EQ(mx_port_wait(eport, MX_TIME_INFINITE, &packet, sizeof(packet)),
+              NO_ERROR, "");
+    ASSERT_EQ(packet.hdr.key, kExceptionPortKey, "");
+    ASSERT_EQ(packet.report.header.type, (uint32_t)MX_EXCP_THREAD_SUSPENDED,
+              "");
+
+    // Reset the test memory location.
+    arg.v = 100;
+    ASSERT_EQ(mx_task_kill(thread_h), NO_ERROR, "");
+    // Wait for the thread termination to complete.
+    ASSERT_EQ(mx_object_wait_one(thread_h, MX_THREAD_TERMINATED,
+                                 MX_TIME_INFINITE, NULL), NO_ERROR, "");
+    // Check for the bug.  The thread should not have resumed execution and
+    // so should not have modified arg.v.
+    EXPECT_EQ(arg.v, 100, "");
+
+    // Check that the thread is reported as exiting and not as resumed.
+    ASSERT_EQ(mx_port_wait(eport, MX_TIME_INFINITE, &packet, sizeof(packet)),
+              NO_ERROR, "");
+    ASSERT_EQ(packet.hdr.key, kExceptionPortKey, "");
+    ASSERT_EQ(packet.report.header.type, (uint32_t)MX_EXCP_THREAD_EXITING,
+              "");
+
+    // Clean up.
+    ASSERT_EQ(mx_handle_close(eport), NO_ERROR, "");
+    ASSERT_EQ(mx_handle_close(thread_h), NO_ERROR, "");
+
+    END_TEST;
+}
+
+#if defined(__x86_64__)
+
+// This is based on code from kernel/ which isn't usable by code in system/.
+enum { X86_CPUID_ADDR_WIDTH = 0x80000008 };
+
+static uint32_t x86_linear_address_width(void) {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__("cpuid"
+            : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+            : "a"(X86_CPUID_ADDR_WIDTH), "c"(0));
+    return (eax >> 8) & 0xff;
+}
+
+#endif
+
+// Test that mx_thread_write_state() does not allow setting RIP to a
+// non-canonical address for a thread that was suspended inside a syscall,
+// because if the kernel returns to that address using SYSRET, that can
+// cause a fault in kernel mode that is exploitable.  See
+// sysret_problem.md.
+static bool test_noncanonical_rip_address(void) {
+    BEGIN_TEST;
+
+#if defined(__x86_64__)
+    mx_handle_t event;
+    ASSERT_EQ(mx_event_create(0, &event), NO_ERROR, "");
+    mxr_thread_t thread;
+    ASSERT_TRUE(start_thread(test_wait_thread_fn, &event, &thread), "");
+
+    // Allow some time for the thread to begin execution and block inside
+    // the syscall.
+    ASSERT_EQ(mx_nanosleep(mx_deadline_after(MX_MSEC(10))), NO_ERROR, "");
+
+    // Attach to debugger port so we can see MX_EXCP_THREAD_SUSPENDED.
+    mx_handle_t eport;
+    ASSERT_TRUE(set_debugger_exception_port(&eport),"");
+
+    // suspend the thread
+    mx_handle_t thread_handle = mxr_thread_get_handle(&thread);
+    ASSERT_EQ(mx_task_suspend(thread_handle), NO_ERROR, "");
+
+    // Wait for the thread to suspend.
+    mx_exception_packet_t packet;
+    ASSERT_EQ(mx_port_wait(eport, MX_TIME_INFINITE, &packet, sizeof(packet)),
+              NO_ERROR, "");
+    ASSERT_EQ(packet.hdr.key, kExceptionPortKey, "");
+    ASSERT_EQ(packet.report.header.type, (uint32_t)MX_EXCP_THREAD_SUSPENDED,
+              "");
+
+    struct mx_x86_64_general_regs regs;
+    uint32_t size_read;
+    ASSERT_EQ(mx_thread_read_state(thread_handle, MX_THREAD_STATE_REGSET0,
+                                   &regs, sizeof(regs), &size_read),
+              NO_ERROR, "");
+    ASSERT_EQ(size_read, sizeof(regs), "");
+
+    // Example addresses to test.
+    uintptr_t noncanonical_addr =
+        ((uintptr_t) 1) << (x86_linear_address_width() - 1);
+    uintptr_t canonical_addr = noncanonical_addr - 1;
+    uint64_t kKernelAddr = 0xffff800000000000;
+
+    struct mx_x86_64_general_regs regs_modified = regs;
+
+    // This RIP address must be disallowed.
+    regs_modified.rip = noncanonical_addr;
+    ASSERT_EQ(mx_thread_write_state(thread_handle, MX_THREAD_STATE_REGSET0,
+                                    &regs_modified, sizeof(regs_modified)),
+              ERR_INVALID_ARGS, "");
+
+    regs_modified.rip = canonical_addr;
+    ASSERT_EQ(mx_thread_write_state(thread_handle, MX_THREAD_STATE_REGSET0,
+                                    &regs_modified, sizeof(regs_modified)),
+              NO_ERROR, "");
+
+    // This RIP address does not need to be disallowed, but it is currently
+    // disallowed because this simplifies the check and it's not useful to
+    // allow this address.
+    regs_modified.rip = kKernelAddr;
+    ASSERT_EQ(mx_thread_write_state(thread_handle, MX_THREAD_STATE_REGSET0,
+                                    &regs_modified, sizeof(regs_modified)),
+              ERR_INVALID_ARGS, "");
+
+    // Clean up: Restore the original register state.
+    ASSERT_EQ(mx_thread_write_state(thread_handle, MX_THREAD_STATE_REGSET0,
+                                    &regs, sizeof(regs)), NO_ERROR, "");
+    // Allow the child thread to resume and exit.
+    ASSERT_EQ(mx_task_resume(thread_handle, 0), NO_ERROR, "");
+    ASSERT_EQ(mx_object_signal(event, 0, MX_USER_SIGNAL_0), NO_ERROR, "");
+    // Wait for the child thread to signal that it has continued.
+    ASSERT_EQ(mx_object_wait_one(event, MX_USER_SIGNAL_1, MX_TIME_INFINITE,
+                                 NULL), NO_ERROR, "");
+    ASSERT_EQ(mx_handle_close(eport), NO_ERROR, "");
+    ASSERT_EQ(mx_handle_close(event), NO_ERROR, "");
+    ASSERT_EQ(mx_handle_close(thread_handle), NO_ERROR, "");
+#endif
+
     END_TEST;
 }
 
@@ -530,11 +666,12 @@ RUN_TEST(test_kill_sleep_thread)
 RUN_TEST(test_kill_wait_thread)
 RUN_TEST(test_info_task_stats_fails)
 RUN_TEST(test_resume_suspended)
-RUN_TEST(test_kill_suspended)
 RUN_TEST(test_suspend_sleeping)
 RUN_TEST(test_suspend_channel_call)
 RUN_TEST(test_suspend_port_call)
 RUN_TEST(test_suspend_stops_thread)
+RUN_TEST(test_kill_suspended_thread)
+RUN_TEST(test_noncanonical_rip_address)
 END_TEST_CASE(threads_tests)
 
 #ifndef BUILD_COMBINED_TESTS

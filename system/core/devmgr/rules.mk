@@ -43,6 +43,7 @@ MODULE_STATIC_LIBS := \
     system/ulib/mxalloc \
     system/ulib/mxcpp \
     system/ulib/mxtl \
+    system/ulib/port \
     system/ulib/acpisvc-client \
 
 MODULE_LIBS := \
@@ -65,7 +66,7 @@ MODULE_NAME := devhost
 
 MODULE_TYPE := userapp
 
-MODULE_DEFINES := MAGENTA_BUILTIN_DRIVERS=1 DDK_INTERNAL=1
+MODULE_DEFINES := DDK_INTERNAL=1
 
 MODULE_SRCS := \
 	$(LOCAL_DIR)/devhost.c \
@@ -74,7 +75,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/devhost-rpc-server.c \
     $(LOCAL_DIR)/devhost-shared.c \
 
-MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync system/ulib/port
 
 MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/magenta system/ulib/c
 
@@ -92,10 +93,27 @@ MODULE_SRCS := \
 	$(LOCAL_DIR)/dmctl.c \
 	$(LOCAL_DIR)/devhost-shared.c \
 
-MODULE_STATIC_LIBS := system/ulib/ddk
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/port
 
 MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/magenta system/ulib/c
 
 MODULE_DEFINES := DDK_INTERNAL=1
+
+include make/module.mk
+
+
+MODULE := $(LOCAL_DIR).driver-info
+
+MODULE_TYPE := userapp
+
+MODULE_NAME := driverinfo
+
+MODULE_SRCS := \
+	$(LOCAL_DIR)/driver-info.c \
+	$(LOCAL_DIR)/driver-info-app.c
+
+MODULE_HEADER_DEPS := system/ulib/ddk
+
+MODULE_LIBS := system/ulib/mxio system/ulib/c
 
 include make/module.mk

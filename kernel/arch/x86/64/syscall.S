@@ -277,7 +277,7 @@ FUNCTION(x86_syscall)
     // pre_push and post_pop macros above to maintain alignment.
 #if WITH_LIB_SYSCALLS
     // Verify the syscall is in range and jump to it.
-    cmp     $MX_SYS_COUNT, %eax
+    cmp     $MX_SYS_COUNT, %rax
     jae     .Lunknown_syscall
     jmp     *.Lcall_wrapper_table(, %rax, 8)
 #include <magenta/syscall-kernel-branches.S>
@@ -323,7 +323,7 @@ FUNCTION(x86_syscall)
     swapgs
 
     /* This will fault if the return address is non-canonical.  See
-     * docs/magenta/sysret_problem.md for how we avoid that. */
+     * docs/sysret_problem.md for how we avoid that. */
     sysretq
 
 .Lthread_signaled:

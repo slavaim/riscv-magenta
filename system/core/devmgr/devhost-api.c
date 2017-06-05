@@ -18,8 +18,8 @@ static void _device_unbind(mx_device_t* dev) {
     DM_UNLOCK();
 }
 
-static mx_status_t _device_add(mx_device_t* parent, device_add_args_t* args,
-                               mx_device_t** out) {
+static mx_status_t _device_add(mx_driver_t* drv, mx_device_t* parent,
+                               device_add_args_t* args, mx_device_t** out) {
     mx_status_t r;
     mx_device_t* dev = NULL;
 
@@ -40,16 +40,17 @@ static mx_status_t _device_add(mx_device_t* parent, device_add_args_t* args,
     }
 
     DM_LOCK();
-    r = devhost_device_create(parent, args->name, args->ctx, args->ops, &dev);
+    r = devhost_device_create(drv, parent, args->name, args->ctx, args->ops, &dev);
     if (r != NO_ERROR) {
         DM_UNLOCK();
         return r;
     }
     if (args->proto_id) {
-        devhost_device_set_protocol(dev, args->proto_id, args->proto_ops);
+        dev->protocol_id = args->proto_id;
+        dev->protocol_ops = args->proto_ops;
     }
     if (args->flags & DEVICE_ADD_NON_BINDABLE) {
-        devhost_device_set_bindable(dev, false);
+        dev->flags |= DEV_FLAG_UNBINDABLE;
     }
 
     if (args->flags & DEVICE_ADD_BUSDEV) {

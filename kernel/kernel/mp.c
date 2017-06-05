@@ -19,11 +19,11 @@
 #include <kernel/mp.h>
 #include <kernel/mutex.h>
 #include <kernel/spinlock.h>
+#include <kernel/stats.h>
 #include <kernel/timer.h>
 
 #define LOCAL_TRACE 0
 
-#if WITH_SMP
 /* a global state structure, aligned on cpu cache line to minimize aliasing */
 struct mp_state mp __CPU_ALIGN = {
     .hotplug_lock = MUTEX_INITIAL_VALUE(mp.hotplug_lock),
@@ -354,7 +354,7 @@ enum handler_return mp_mbx_generic_irq(void)
     DEBUG_ASSERT(arch_ints_disabled());
     uint local_cpu = arch_curr_cpu_num();
 
-    THREAD_STATS_INC(generic_ipis);
+    CPU_STATS_INC(generic_ipis);
 
     while (1) {
         struct mp_ipi_task *task;
@@ -376,7 +376,7 @@ enum handler_return mp_mbx_reschedule_irq(void)
 
     LTRACEF("cpu %u\n", cpu);
 
-    THREAD_STATS_INC(reschedule_ipis);
+    CPU_STATS_INC(reschedule_ipis);
 
     return (mp.active_cpus & (1U << cpu)) ? INT_RESCHEDULE : INT_NO_RESCHEDULE;
 }
@@ -387,5 +387,3 @@ __WEAK status_t arch_mp_cpu_unplug(uint cpu_id) { return ERR_NOT_SUPPORTED; }
 __WEAK status_t platform_mp_cpu_hotplug(uint cpu_id) { return arch_mp_cpu_hotplug(cpu_id); }
 __WEAK status_t platform_mp_prep_cpu_unplug(uint cpu_id) { return arch_mp_prep_cpu_unplug(cpu_id); }
 __WEAK status_t platform_mp_cpu_unplug(uint cpu_id) { return arch_mp_cpu_unplug(cpu_id); }
-
-#endif

@@ -158,22 +158,12 @@ void dev_ref_release(mx_device_t* dev) {
     }
 }
 
-mx_status_t devhost_device_create(mx_device_t* parent, const char* name, void* ctx,
+mx_status_t devhost_device_create(mx_driver_t* drv, mx_device_t* parent,
+                                  const char* name, void* ctx,
                                   mx_protocol_device_t* ops, mx_device_t** out) {
 
-    mx_driver_rec_t* driver = NULL;
-
-    // determine driver for the new device
-    if (parent->owner) {
-        // typically the device is created by the driver bound to the parent
-        driver = parent->owner;
-    } else {
-        // but sometimes a driver may create devices with parent that has not been bound
-        // in that case we use the driver that created the parent
-        driver = parent->driver;
-    }
-    if (!driver) {
-        printf("_device_add could not find driver!\n");
+    if (!drv) {
+        printf("devhost: _device_add could not find driver!\n");
         return ERR_INVALID_ARGS;
     }
 
@@ -185,7 +175,7 @@ mx_status_t devhost_device_create(mx_device_t* parent, const char* name, void* c
     memset(dev, 0, sizeof(mx_device_t));
     dev->magic = DEV_MAGIC;
     dev->ops = ops;
-    dev->driver = driver;
+    dev->driver = drv;
     list_initialize(&dev->children);
     list_initialize(&dev->instances);
 
@@ -207,21 +197,6 @@ mx_status_t devhost_device_create(mx_device_t* parent, const char* name, void* c
     dev->ctx = ctx ? ctx : dev;
     *out = dev;
     return NO_ERROR;
-}
-
-void devhost_device_set_protocol(mx_device_t* dev, uint32_t proto_id, void* proto_ops) {
-    MX_DEBUG_ASSERT(!(dev->flags & DEV_FLAG_ADDED));
-    dev->protocol_id = proto_id;
-    dev->protocol_ops = proto_ops;
-}
-
-void devhost_device_set_bindable(mx_device_t* dev, bool bindable) {
-    MX_DEBUG_ASSERT(!(dev->flags & DEV_FLAG_ADDED));
-    if (bindable) {
-        dev->flags &= ~DEV_FLAG_UNBINDABLE;
-    } else {
-        dev->flags |= DEV_FLAG_UNBINDABLE;
-    }
 }
 
 #define DEFAULT_IF_NULL(ops,method) \

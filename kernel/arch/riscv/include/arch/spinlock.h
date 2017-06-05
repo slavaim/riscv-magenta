@@ -30,7 +30,13 @@ static inline void arch_spin_lock_init(spin_lock_t *lock)
 
 static inline bool arch_spin_lock_held(spin_lock_t *lock)
 {
-    return *(arch_spinlock_t*)lock != 0;
+    //return *(arch_spinlock_t*)lock != 0;
+    return __atomic_load_n(lock, __ATOMIC_RELAXED) != 0;
+}
+
+static inline uint arch_spin_lock_holder_cpu(spin_lock_t *lock)
+{
+    return (uint)__atomic_load_n(lock, __ATOMIC_RELAXED) - 1;
 }
 
 static inline void arch_spin_lock(spin_lock_t *lock)

@@ -7,6 +7,7 @@
 
 #include <err.h>
 #include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <lib/ktrace.h>
 #include <lib/vdso.h>
 #include <magenta/mx-syscall-numbers.h>
@@ -48,10 +49,7 @@ inline uint64_t invoke_syscall(
     switch (syscall_num) {
 #include <magenta/syscall-invocation-cases.inc>
     default:
-        // This should be unreachable because the numbers are densely packed.
-        ASSERT_MSG(
-            0, "invalid syscall number %lu from PC %#lx reached switch!",
-            syscall_num, pc);
+        return ERR_BAD_SYSCALL;
     }
 
     return ret;
@@ -69,11 +67,11 @@ extern "C" void arm64_syscall(struct arm64_iframe_long* frame, bool is_64bit, ui
 
     ktrace_tiny(TAG_SYSCALL_ENTER, ((uint32_t)syscall_num << 8) | arch_curr_cpu_num());
 
-    THREAD_STATS_INC(syscalls);
+    CPU_STATS_INC(syscalls);
 
     /* re-enable interrupts to maintain kernel preemptiveness
        This must be done after the above ktrace_tiny call, and after the
-       above THREAD_STATS_INC call as it also calls arch_curr_cpu_num. */
+       above CPU_STATS_INC call as it also calls arch_curr_cpu_num. */
     arch_enable_ints();
 
     LTRACEF_LEVEL(2, "num %" PRIu64 "\n", syscall_num);
@@ -110,11 +108,11 @@ inline x86_64_syscall_result do_syscall(uint64_t syscall_num, uint64_t ip,
                                         bool (*valid_pc)(uintptr_t), T make_call) {
     ktrace_tiny(TAG_SYSCALL_ENTER, (static_cast<uint32_t>(syscall_num) << 8) | arch_curr_cpu_num());
 
-    THREAD_STATS_INC(syscalls);
+    CPU_STATS_INC(syscalls);
 
     /* re-enable interrupts to maintain kernel preemptiveness
        This must be done after the above ktrace_tiny call, and after the
-       above THREAD_STATS_INC call as it also calls arch_curr_cpu_num. */
+       above CPU_STATS_INC call as it also calls arch_curr_cpu_num. */
     arch_enable_ints();
 
     LTRACEF_LEVEL(2, "t %p syscall num %" PRIu64 " ip %#" PRIx64 "\n",
@@ -142,7 +140,7 @@ inline x86_64_syscall_result do_syscall(uint64_t syscall_num, uint64_t ip,
     return {ret, thread_is_signaled(get_current_thread())};
 }
 
-inline x86_64_syscall_result unknown_syscall(uint64_t syscall_num, uint64_t ip) {
+x86_64_syscall_result unknown_syscall(uint64_t syscall_num, uint64_t ip) {
     return do_syscall(syscall_num, ip,
                       [](uintptr_t) { return false; },
                       [&]() {
@@ -170,8 +168,6 @@ void riscv_syscall(struct pt_regs*  regs)
         regs->a0 = ERR_BAD_SYSCALL;
         return;
     }
-
-    THREAD_STATS_INC(syscalls);
 
     /* re-enable interrupts to maintain kernel preemptiveness */
     arch_enable_ints();

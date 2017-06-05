@@ -19,7 +19,7 @@
 #include <kernel/vm.h>
 #include <debug.h>
 
-__BEGIN_CDECLS;
+__BEGIN_CDECLS
 
 /* debug-enable runtime checks */
 #if LK_DEBUGLEVEL > 1
@@ -74,16 +74,17 @@ typedef struct thread {
 
     /* active bits */
     struct list_node queue_node;
-    int priority;
     enum thread_state state;
     lk_time_t last_started_running;
     lk_time_t remaining_time_slice;
     unsigned int flags;
     unsigned int signals;
-#if WITH_SMP
+
+    int base_priority;
+    int priority_boost;
+
     uint last_cpu; /* last/current cpu the thread is running on */
     int pinned_cpu; /* only run on pinned_cpu if >= 0 */
-#endif
 
     /* pointer to the kernel address space this thread is associated with */
     vmm_aspace_t *aspace;
@@ -140,21 +141,15 @@ typedef struct thread {
 #endif
 } thread_t;
 
-#if WITH_SMP
+/* TODO: make real inline functions */
 #define thread_last_cpu(t) ((t)->last_cpu)
 #define thread_pinned_cpu(t) ((t)->pinned_cpu)
 #define thread_set_last_cpu(t,c) ((t)->last_cpu = (c))
 #define thread_set_pinned_cpu(t, c) ((t)->pinned_cpu = (c))
-#else
-#define thread_last_cpu(t) (0)
-#define thread_pinned_cpu(t) (-1)
-#define thread_set_last_cpu(t,c) do {} while(0)
-#define thread_set_pinned_cpu(t, c) do {} while(0)
-#endif
 
 /* thread priority */
-#define NUM_PRIORITIES 32
-#define LOWEST_PRIORITY 0
+#define NUM_PRIORITIES (32)
+#define LOWEST_PRIORITY (0)
 #define HIGHEST_PRIORITY (NUM_PRIORITIES - 1)
 #define DPC_PRIORITY (NUM_PRIORITIES - 2)
 #define IDLE_PRIORITY LOWEST_PRIORITY
@@ -191,6 +186,12 @@ status_t thread_detach(thread_t *t);
 status_t thread_join(thread_t *t, int *retcode, lk_time_t deadline);
 status_t thread_detach_and_resume(thread_t *t);
 status_t thread_set_real_time(thread_t *t);
+
+/* scheduler routines to be used by regular kernel code */
+void thread_yield(void);      /* give up the cpu and time slice voluntarily */
+void thread_preempt(void);    /* get preempted at irq time */
+void thread_reschedule(void); /* revaluate the run queue on the current cpu,
+                                 can be used after waking up threads */
 
 void thread_owner_name(thread_t *t, char out_name[THREAD_NAME_LENGTH]);
 
@@ -241,14 +242,9 @@ void dump_thread(thread_t *t, bool full);
 void arch_dump_thread(thread_t *t);
 void dump_all_threads(bool full);
 
-/* scheduler routines */
-void thread_yield(void);             /* give up the cpu and time slice voluntarily */
-void thread_preempt(bool interrupt); /* get preempted (return to head of queue and reschedule) */
-void thread_resched(void);
-
 static inline bool thread_is_realtime(thread_t *t)
 {
-    return (t->flags & THREAD_FLAG_REAL_TIME) && t->priority > DEFAULT_PRIORITY;
+    return (t->flags & THREAD_FLAG_REAL_TIME) && t->base_priority > DEFAULT_PRIORITY;
 }
 
 static inline bool thread_is_idle(thread_t *t)
@@ -269,9 +265,6 @@ enum handler_return thread_timer_tick(void);
 thread_t *get_current_thread(void);
 void set_current_thread(thread_t *);
 
-/* the idle thread(s) (statically allocated) */
-extern thread_t idle_threads[SMP_MAX_CPUS];
-
 /* scheduler lock */
 extern spin_lock_t thread_lock;
 
@@ -283,34 +276,6 @@ static inline bool thread_lock_held(void)
     return spin_lock_held(&thread_lock);
 }
 
-/* thread/cpu level statistics */
-struct thread_stats {
-    lk_time_t idle_time;
-    lk_time_t last_idle_timestamp;
-    ulong reschedules;
-    ulong context_switches;
-    ulong irq_preempts;
-    ulong preempts;
-    ulong yields;
-
-    /* cpu level interrupts and exceptions */
-    ulong interrupts; /* hardware interrupts, minus timer interrupts or inter-processor interrupts */
-    ulong timer_ints; /* timer interrupts */
-    ulong timers; /* timer callbacks */
-    ulong exceptions; /* exceptions such as page fault or undefined opcode */
-    ulong syscalls;
-
-#if WITH_SMP
-    /* inter-processor interrupts */
-    ulong reschedule_ipis;
-    ulong generic_ipis;
-#endif
-};
-
-extern struct thread_stats thread_stats[SMP_MAX_CPUS];
-
-#define THREAD_STATS_INC(name) do { __atomic_fetch_add(&thread_stats[arch_curr_cpu_num()].name, 1u, __ATOMIC_RELAXED); } while(0)
-
-__END_CDECLS;
+__END_CDECLS
 
 #endif

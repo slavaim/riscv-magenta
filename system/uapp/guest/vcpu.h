@@ -37,6 +37,10 @@ typedef struct io_port_state {
     uint16_t offset;
     // Index of the RTC register to use.
     uint8_t rtc_index;
+    // Command being issued to the i8042 controller.
+    uint8_t i8042_command;
+    // State of power management enable register.
+    uint16_t pm1_enable;
 } io_port_state_t;
 
 typedef struct guest_state {

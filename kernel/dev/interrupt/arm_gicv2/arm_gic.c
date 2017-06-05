@@ -16,6 +16,7 @@
 #include <dev/interrupt/arm_gicv2m.h>
 #include <reg.h>
 #include <kernel/thread.h>
+#include <kernel/stats.h>
 #include <lk/init.h>
 #include <dev/interrupt.h>
 #include <arch/ops.h>
@@ -229,7 +230,7 @@ static enum handler_return gic_handle_irq(struct iframe *frame)
 
     // tracking external hardware irqs in this variable
     if (vector >= 32)
-        THREAD_STATS_INC(interrupts);
+        CPU_STATS_INC(interrupts);
 
     uint cpu = arch_curr_cpu_num();
 

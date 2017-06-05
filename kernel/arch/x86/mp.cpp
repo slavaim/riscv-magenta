@@ -10,6 +10,7 @@
 #include <debug.h>
 #include <err.h>
 #include <stdio.h>
+#include <string.h>
 #include <trace.h>
 
 #include <arch/mp.h>
@@ -31,11 +32,7 @@
 
 #define LOCAL_TRACE 0
 
-// put the boot cpu percpu structure in .data since we get initialized before
-// the bss clearing code runs.
-__SECTION(".data") struct x86_percpu bp_percpu;
-
-static struct x86_percpu *ap_percpus;
+struct x86_percpu *ap_percpus;
 uint8_t x86_num_cpus = 1;
 
 extern struct idt _idt;
@@ -50,10 +47,12 @@ status_t x86_allocate_ap_structures(uint32_t *apic_ids, uint8_t cpu_count)
     }
 
     if (cpu_count > 1) {
-        ap_percpus = (x86_percpu *)calloc(sizeof(*ap_percpus), cpu_count - 1);
+        size_t len = sizeof(*ap_percpus) * (cpu_count - 1);
+        ap_percpus = (x86_percpu *)memalign(MAX_CACHE_LINE, len);
         if (ap_percpus == NULL) {
             return ERR_NO_MEMORY;
         }
+        memset(ap_percpus, 0, len);
     }
 
     uint32_t bootstrap_ap = apic_local_id();
@@ -78,38 +77,22 @@ status_t x86_allocate_ap_structures(uint32_t *apic_ids, uint8_t cpu_count)
     return NO_ERROR;
 }
 
-__NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
+void x86_init_percpu(uint cpu_num)
 {
-    struct x86_percpu *percpu;
-    if (cpu_num == 0) {
-        percpu = &bp_percpu;
-
-        percpu->cpu_num = 0;
-        percpu->direct = &bp_percpu;
-        /* Start with an invalid id until we know the local APIC is setup */
-        percpu->apic_id = INVALID_APIC_ID;
-    } else {
-        percpu = &ap_percpus[cpu_num - 1];
-    }
+    struct x86_percpu *const percpu =
+        cpu_num == 0 ? &bp_percpu : &ap_percpus[cpu_num - 1];
     DEBUG_ASSERT(percpu->cpu_num == cpu_num);
     DEBUG_ASSERT(percpu->direct == percpu);
 
-    /* point gs at the per cpu structure */
-    write_msr(X86_MSR_IA32_GS_BASE, (uintptr_t)percpu);
+    // Assembly code has already set up %gs.base so that this function's
+    // own code can use it implicitly for stack-protector or safe-stack.
+    DEBUG_ASSERT(read_msr(X86_MSR_IA32_GS_BASE) == (uintptr_t)percpu);
 
     /* set the KERNEL_GS_BASE MSR to 0 */
     /* when we enter user space, this will be populated via a swapgs */
     write_msr(X86_MSR_IA32_KERNEL_GS_BASE, 0);
 
     x86_feature_init();
-
-#if __has_feature(safe_stack)
-    if (cpu_num == 0) {
-        static uint8_t unsafe_kstack[PAGE_SIZE] __ALIGNED(16);
-        unsafe_sp = (uintptr_t)&unsafe_kstack[sizeof(unsafe_kstack)];
-    }
-    x86_write_gs_offset64(MX_TLS_UNSAFE_SP_OFFSET, unsafe_sp);
-#endif
 
     x86_cpu_topology_init();
     x86_extended_register_init();
@@ -210,11 +193,7 @@ __NO_SAFESTACK uintptr_t x86_init_percpu(uint cpu_num, uintptr_t unsafe_sp)
         write_msr(0x1fc, power_ctl_msr & ~0x2);
     }
 
-#if WITH_SMP
     mp_set_curr_cpu_online(true);
-#endif
-
-    return bp_percpu.stack_guard;
 }
 
 void x86_set_local_apic_id(uint32_t apic_id)
@@ -238,7 +217,6 @@ int x86_apic_id_to_cpu_num(uint32_t apic_id)
     return -1;
 }
 
-#if WITH_SMP
 status_t arch_mp_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi)
 {
     uint8_t vector = 0;
@@ -380,5 +358,3 @@ void arch_flush_state_and_halt(event_t *flush_done)
         __asm__ volatile("cli; hlt" : : : "memory");
     }
 }
-
-#endif
