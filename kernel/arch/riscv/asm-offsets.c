@@ -74,7 +74,6 @@ void asm_offsets(void)
 	OFFSET(TI_KSP, thread_info, k_sp);
 	OFFSET(TI_ESP, thread_info, e_sp);
 	OFFSET(TI_THREAD, thread_info, thread);
-	OFFSET(TI_FLAGS, thread_info, flags);
 	OFFSET(TI_CPU, thread_info, cpu);
 
 	DEFINE(PT_SIZE, sizeof(struct pt_regs));

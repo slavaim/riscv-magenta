@@ -1,6 +1,5 @@
 /*
-Some code has been borrowed from the Linux kernel which is under GPLv2 license.
-2017 Modified for Magenta by Slava Imameev.
+Copyright 2017 Slava Imameev.
 */
 
 #pragma once
@@ -15,17 +14,29 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 struct thread;
 
 /*
- * low level task data that entry.S needs immediate access to
- * - this struct should fit entirely inside of one cache line
- * - this struct resides at the bottom of the supervisor stack
+ * low level task data that exception.S needs immediate access to
+ * - it is advisably that this struct fits entirely inside of
+ *   one cache line
+ * - this struct pointer is saved in the supervisor/kernel $tp
+ *   as we can't resides it at the bottom of the supervisor stack
+ *   as stacks in Magenta are not page aligned so the Linux
+ *   trick with zeroing $sp low order bits to access thread_info
+ *   doesn't work here
  * - if the members of this struct changes, the assembly constants
  *   in asm-offsets.c must be updated accordingly
  */
 typedef struct thread_info {
-    unsigned long       e_sp;       /* exception $sp */
-    unsigned long       k_sp;       /* kernel mode $sp */
-    struct thread* 	    thread;		/* main task structure */
-    unsigned long		flags;		/* low level flags */
+    unsigned long       e_sp;       /* exception $sp, a temporary
+                                       storage for $sp of the
+                                       interrupted code, valid in
+                                       the region with disabled
+                                       interrupts */
+    unsigned long       k_sp;       /* kernel mode $sp, saves the
+                                       kernel stack when returning
+                                       into user mode, valid only
+                                       when entering into the exception
+                                       handler from the user mode */
+    struct thread* 	    thread;		/* main thread structure */
     unsigned int        cpu;		/* current CPU */
 } thread_info_t;
 
