@@ -58,22 +58,22 @@ SUBARCH_BUILDDIR := $(call TOBUILDDIR,$(SUBARCH_DIR))
 
 $(info LINKER_SCRIPT = $(LINKER_SCRIPT))
 
+# the default DRAM base, changed to real value on boot
+# by a query to SBI
 MEMBASE ?= 0
 # kernel base is the same as mapped by BBL
 KERNEL_BASE ?= 0xffffffff80000000 # -2GB
 
 # The following two definitions are not required for RISC-V
-# but checked on kernel compilation TO_DO_RISCV
+# but used in the kernel code TO_DO_RISCV
 KERNEL_LOAD_OFFSET ?= 0
-PHYS_HEADER_LOAD_OFFSET ?= 0
 
 KERNEL_DEFINES += \
 	ARCH_$(SUBARCH)=1 \
+	BITS_PER_LONG=$(BITS_PER_LONG) \
 	MEMBASE=$(MEMBASE) \
 	KERNEL_BASE=$(KERNEL_BASE) \
 	KERNEL_LOAD_OFFSET=$(KERNEL_LOAD_OFFSET) \
-	PHYS_HEADER_LOAD_OFFSET=$(PHYS_HEADER_LOAD_OFFSET) \
-	BITS_PER_LONG=$(BITS_PER_LONG) \
 
 # debug checkss
 KERNEL_DEFINES += \
@@ -85,8 +85,8 @@ ifeq ($(SUBARCH),riscv-rv64)
 endif
 
 GLOBAL_DEFINES += \
-	KERNEL_BASE=$(KERNEL_BASE) \
 	PLATFORM_HAS_DYNAMIC_TIMER=1 \
+	#KERNEL_BASE=$(KERNEL_BASE) \
 
 WITH_SMP ?= 1
 SMP_MAX_CPUS ?= 8
@@ -188,7 +188,7 @@ GENERATED += $(SUBARCH_BUILDDIR)/kernel.ld
 $(SUBARCH_BUILDDIR)/kernel.ld: $(SUBARCH_DIR)/kernel.ld $(wildcard arch/*.ld)
 	@echo generating $@
 	@$(MKDIR)
-	$(NOECHO)sed "s/%MEMBASE%/$(MEMBASE)/;s/%MEMSIZE%/$(MEMSIZE)/;s/%KERNEL_BASE%/$(KERNEL_BASE)/;" < $< > $@.tmp
+	$(NOECHO)sed "s/%KERNEL_BASE%/$(KERNEL_BASE)/;" < $< > $@.tmp
 	@$(call TESTANDREPLACEFILE,$@.tmp,$@)
 
 # force a rebuild every time in case something changes

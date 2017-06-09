@@ -24,7 +24,6 @@
     # define KERNEL_ASPACE_BASE  UPPER_VA_BITS_MASK   /* 0xffffffC000000000UL # -256GB */
     # define KERNEL_ASPACE_SIZE  (1UL<<(VA_BITS-1))   /* 0x0000004000000000UL # 256GB */
 
-
     # define USER_ASPACE_BASE    0x0000000001000000UL /* 16MB */
 
     /* We set the top of user address space to be (1 << 38) - 4k.  See

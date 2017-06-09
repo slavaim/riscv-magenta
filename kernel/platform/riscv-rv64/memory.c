@@ -200,9 +200,9 @@ static void traverse_boot_page_table(
         if (!pte_leaf(table[i]))
         {
             //
-            // the current RV64 architecture has a 3 level page table
+            // the RV64 architecture has a NM_PAGE_TABLES level page table
             //
-            assert(next_depth < 3);
+            assert(next_depth < NM_PAGE_TABLES);
             traverse_boot_page_table(pfn_to_virt(pte_pfn(table[i])),
                                      va_mapped + i*page_size,
                                      next_depth,
