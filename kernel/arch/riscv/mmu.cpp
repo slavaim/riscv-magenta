@@ -78,9 +78,35 @@ static bool is_valid_vaddr(arch_aspace_t* aspace, vaddr_t vaddr) {
 }
 
 /* routines to map/unmap/update permissions/query mappings per address space */
-status_t arch_mmu_map(arch_aspace_t* aspace, vaddr_t vaddr, paddr_t paddr, size_t count, uint mmu_flags, size_t* mapped)
+status_t arch_mmu_map(
+    arch_aspace_t* aspace,
+    vaddr_t vaddr,
+    paddr_t paddr,
+    size_t count,
+    uint mmu_flags,
+    size_t* mapped)
 {
-    PANIC_UNIMPLEMENTED;
+    #if 0
+    DEBUG_ASSERT(aspace);
+    DEBUG_ASSERT(aspace->magic == ARCH_ASPACE_MAGIC);
+    DEBUG_ASSERT(aspace->tt_virt);
+
+    DEBUG_ASSERT(is_valid_vaddr(aspace, vaddr));
+    if (!is_valid_vaddr(aspace, vaddr))
+        return ERR_OUT_OF_RANGE;
+
+    if (!(flags & ARCH_MMU_FLAG_PERM_READ))
+        return ERR_INVALID_ARGS;
+
+    /* paddr and vaddr must be aligned */
+    DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
+    DEBUG_ASSERT(IS_PAGE_ALIGNED(paddr));
+    if (!IS_PAGE_ALIGNED(vaddr) || !IS_PAGE_ALIGNED(paddr))
+        return ERR_INVALID_ARGS;
+
+    if (count == 0)
+        return NO_ERROR;
+#endif
     return ERR_NOT_SUPPORTED;
 }
 

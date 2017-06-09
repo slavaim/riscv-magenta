@@ -59,15 +59,8 @@ SUBARCH_BUILDDIR := $(call TOBUILDDIR,$(SUBARCH_DIR))
 $(info LINKER_SCRIPT = $(LINKER_SCRIPT))
 
 MEMBASE ?= 0
+# kernel base is the same as mapped by BBL
 KERNEL_BASE ?= 0xffffffff80000000 # -2GB
-KERNEL_ASPACE_BASE ?= 0xffffff8000000000UL # -512GB
-KERNEL_ASPACE_SIZE ?= 0x0000008000000000UL
-USER_ASPACE_BASE   ?= 0x0000000001000000UL # 16MB
-# We set the top of user address space to be (1 << 47) - 4k.  See
-# docs/magenta/sysret_problem.md for why we subtract 4k here.
-# Subtracting USER_ASPACE_BASE from that value gives the value for
-# USER_ASPACE_SIZE below.
-USER_ASPACE_SIZE   ?= 0x00007ffffefff000
 
 # The following two definitions are not required for RISC-V
 # but checked on kernel compilation TO_DO_RISCV
@@ -93,10 +86,6 @@ endif
 
 GLOBAL_DEFINES += \
 	KERNEL_BASE=$(KERNEL_BASE) \
-    KERNEL_ASPACE_BASE=$(KERNEL_ASPACE_BASE) \
-    KERNEL_ASPACE_SIZE=$(KERNEL_ASPACE_SIZE) \
-    USER_ASPACE_BASE=$(USER_ASPACE_BASE) \
-    USER_ASPACE_SIZE=$(USER_ASPACE_SIZE) \
 	PLATFORM_HAS_DYNAMIC_TIMER=1 \
 
 WITH_SMP ?= 1

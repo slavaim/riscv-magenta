@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <magenta/compiler.h>
 #include <arch/riscv/page.h>
+#include <arch/riscv/pgtable-bits.h>
 
 __BEGIN_CDECLS
 

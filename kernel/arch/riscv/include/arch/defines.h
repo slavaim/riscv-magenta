@@ -6,5 +6,10 @@
 
 #pragma once
 
-#include <arch/riscv/asm/page.h>
+//
+// the file is used for assembler code so it should
+// include only arch/riscv/asm files
+//
 #include <arch/riscv/asm/defines.h>
+#include <arch/riscv/asm/page.h>
+#include <arch/riscv/asm/va-space-layout.h>
