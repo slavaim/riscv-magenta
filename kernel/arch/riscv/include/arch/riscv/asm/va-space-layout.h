@@ -12,14 +12,14 @@
 #if __riscv_xlen == 64
 
     # define NM_PAGE_TABLES (3)
-	# define PGLEVEL_BITS (9)
-	# define PMD_PAGE_SIZE ((uintptr_t)(PAGE_SIZE << PGLEVEL_BITS))
-	# define PGD_PAGE_SIZE (PMD_PAGE_SIZE << PGLEVEL_BITS)
-	# define VA_SIZE_RANGE (PGD_PAGE_SIZE << PGLEVEL_BITS)
+    # define PGLEVEL_BITS (9)
+    # define PMD_PAGE_SIZE ((uintptr_t)(PAGE_SIZE << PGLEVEL_BITS))
+    # define PGD_PAGE_SIZE (PMD_PAGE_SIZE << PGLEVEL_BITS)
+    # define VA_SIZE_RANGE (PGD_PAGE_SIZE << PGLEVEL_BITS)
 
-	# define VA_BITS (NM_PAGE_TABLES*PGLEVEL_BITS + PAGE_SHIFT) /* 39 bits */
-	# define IS_UPPER_VA(va) (0x0 != ((va) & 1UL<<(VA_BITS-1)))
-	# define UPPER_VA_BITS_MASK ((~0UL)<<(VA_BITS-1))    /* [63:38] bits are set */
+    # define VA_BITS ((NM_PAGE_TABLES * PGLEVEL_BITS) + PAGE_SHIFT) /* 39 bits */
+    # define IS_UPPER_VA(va) (0x0 != ((va) & 1UL<<(VA_BITS-1)))
+    # define UPPER_VA_BITS_MASK ((~0UL)<<(VA_BITS-1))    /* [63:38] bits are set */
 
     # define KERNEL_ASPACE_BASE  UPPER_VA_BITS_MASK   /* 0xffffffC000000000UL # -256GB */
     # define KERNEL_ASPACE_SIZE  (1UL<<(VA_BITS-1))   /* 0x0000004000000000UL # 256GB */
@@ -34,5 +34,5 @@
     # define USER_ASPACE_SIZE ((1UL<<(VA_BITS-1)) - 0x1000)
 
 #else
-	# error "32 bit RISC-V is not supported"
+    # error "32 bit RISC-V is not supported"
 #endif
