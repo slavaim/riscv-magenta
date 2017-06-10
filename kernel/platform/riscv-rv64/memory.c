@@ -43,7 +43,9 @@ struct mmu_initial_mapping mmu_initial_mappings[] = {
     // #4  0xffffffff80001528 in _riscv_start () at kernel/arch/riscv/rv64/start.S:42
     //
     {
-        .phys = MEMBASE,
+        // the default DRAM base and size, changed to real value on boot
+        // by a query to SBI
+        .phys = 0x0,
         .virt = KERNEL_BASE,
         .size = -KERNEL_BASE,
         .flags = 0,

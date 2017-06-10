@@ -58,10 +58,10 @@ SUBARCH_BUILDDIR := $(call TOBUILDDIR,$(SUBARCH_DIR))
 
 $(info LINKER_SCRIPT = $(LINKER_SCRIPT))
 
-# the default DRAM base, changed to real value on boot
-# by a query to SBI
-MEMBASE ?= 0
-# kernel base is the same as mapped by BBL
+# kernel base is the same as mapped by BBL,
+# the kernel load va should be defined here
+# as it is used for kernel.ld generation, it
+# can't be moved to a header file
 KERNEL_BASE ?= 0xffffffff80000000 # -2GB
 
 # The following two definitions are not required for RISC-V
@@ -71,7 +71,6 @@ KERNEL_LOAD_OFFSET ?= 0
 KERNEL_DEFINES += \
 	ARCH_$(SUBARCH)=1 \
 	BITS_PER_LONG=$(BITS_PER_LONG) \
-	MEMBASE=$(MEMBASE) \
 	KERNEL_BASE=$(KERNEL_BASE) \
 	KERNEL_LOAD_OFFSET=$(KERNEL_LOAD_OFFSET) \
 
@@ -86,7 +85,7 @@ endif
 
 GLOBAL_DEFINES += \
 	PLATFORM_HAS_DYNAMIC_TIMER=1 \
-	#KERNEL_BASE=$(KERNEL_BASE) \
+	KERNEL_BASE=$(KERNEL_BASE) \
 
 WITH_SMP ?= 1
 SMP_MAX_CPUS ?= 8
