@@ -10,5 +10,6 @@
 
 void platform_dputs(const char* str, size_t len)
 {
-    PANIC_UNIMPLEMENTED;
+    // TO_DO_RISCV
+    // PANIC_UNIMPLEMENTED;
 }
