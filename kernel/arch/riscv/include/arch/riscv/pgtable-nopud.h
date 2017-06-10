@@ -6,6 +6,7 @@ The code has been borrowed from the Linux kernel which is under GPLv2 license.
 #pragma once
 
 #include <magenta/compiler.h>
+#include <arch/riscv/asm/pgtable.h>
 
 __BEGIN_CDECLS
 

@@ -18,7 +18,11 @@ __BEGIN_CDECLS
  * | 31 10 | 9             7 | 6 | 5 | 4  1 | 0
  *    PFN    reserved for SW   D   R   TYPE   V
  *
- * RV64Sv39 / RV64Sv48 page table entry:
+ * RV64Sv39 page table entry:
+ * | 63           39 | 38 10 | 9             7 | 6 | 5 | 4  1 | 0
+ *   reserved for HW    PFN    reserved for SW   D   R   TYPE   V
+ *
+ * RV64Sv48 page table entry:
  * | 63           48 | 47 10 | 9             7 | 6 | 5 | 4  1 | 0
  *   reserved for HW    PFN    reserved for SW   D   R   TYPE   V
  */
@@ -56,10 +60,11 @@ __BEGIN_CDECLS
 
 	//
 	// converts a VA_BITS wide VA to a canonical 64 bit VA
+    // e.g. 0x0000004000000000 => 0xffffffC000000000
 	//
 	static inline vaddr_t get_canonical_va(vaddr_t va) {
-		if (IS_UPPER_VA(va))
-			va = va | UPPER_VA_BITS_MASK;
+		if (0x0 != (va & KERNEL_VA_BITS_MASK))
+			va = va | KERNEL_VA_BITS_MASK;
 		return va;
 	}
 

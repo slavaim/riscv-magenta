@@ -6,6 +6,7 @@ Some code has been borrowed from the Linux kernel which is under GPLv2 license.
 
 #include <magenta/compiler.h>
 #include <arch/riscv/asm/constant.h>
+#include <arch/riscv/asm/va-space-layout.h>
 #include <arch/riscv/pgtable-bits.h>
 
 __BEGIN_CDECLS

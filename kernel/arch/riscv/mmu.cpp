@@ -84,9 +84,10 @@ status_t arch_mmu_map(
     paddr_t paddr,
     size_t count,
     uint mmu_flags,
-    size_t* mapped)
+    size_t* mapped
+    )
 {
-    #if 0
+#if 0
     DEBUG_ASSERT(aspace);
     DEBUG_ASSERT(aspace->magic == ARCH_ASPACE_MAGIC);
     DEBUG_ASSERT(aspace->tt_virt);
