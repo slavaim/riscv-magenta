@@ -12,16 +12,20 @@
  * leave it unchanged in asm.
  */
 
-/*
-the Linux kernel uses __ASSEMBLY__ which had been introduced before
-they knew about GCC __ASSEMBLER__ definition, to print out
-GCC assembler definitions run the command
+//
+// the Linux kernel uses __ASSEMBLY__ which had been introduced
+// before they knew about GCC __ASSEMBLER__ definition, Magenta
+// sometimes use ASSEMBLY definitions, to print out GCC assembler
+// definitions run the command
+//
+// $ echo > empty.S; gcc -dM -E empty.S
+//
+#if defined(__ASSEMBLER__) || defined(ASSEMBLY) || defined(__ASSEMBLY__)
 
-$ echo > empty.S; gcc -dM -E empty.S
+    #ifndef __ASSEMBLY__
+        #define __ASSEMBLY__ 1
+    #endif
 
-*/
-#if defined(__ASSEMBLER__) || defined(ASSEMBLY)
-    #define __ASSEMBLY__ 1
     #define _AC(X,Y)	X
     #define _AT(T,X)	X
 #else

@@ -32,6 +32,12 @@
        USER_ASPACE_SIZE below */
     # define USER_ASPACE_SIZE ((1UL<<(VA_BITS-1)) - 0x1000)
 
+    //
+    // the membase is supposed to be a DRAM base but it is not known until
+    // boot, the real base is retrieved by a call to SBI
+    //
+    # define MEMBASE   (0x0)
+
 #else
     # error "32 bit RISC-V is not supported"
 #endif
