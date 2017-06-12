@@ -244,7 +244,12 @@ void platform_mem_init(void)
         panic("setup_memory_info");
 
 	//
-	// fix the initial mappings physical address
+	// Fix the initial mappings for physical address,
+    // this will be an area for direct(identical) mapping 
+    // which paddr_to_kvaddr uses to map pages from SDRAM
+    // arena.
+    // The same mapping can be done with the help of
+    // va_pa_offset value, see __pa and __va macros.
 	//
 	mmu_initial_mappings[0].phys = mbi->base;
 	mmu_initial_mappings[0].virt = KERNEL_BASE;

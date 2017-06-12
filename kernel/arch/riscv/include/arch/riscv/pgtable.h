@@ -29,7 +29,7 @@ __BEGIN_CDECLS
 #define PTRS_PER_PTE    (PAGE_SIZE / sizeof(pte_t))
 
 /* Number of PGD entries that a user-mode program can use */
-#define USER_PTRS_PER_PGD   (TASK_SIZE / PGDIR_SIZE)
+#define USER_PTRS_PER_PGD   (USER_TASK_SIZE / PGDIR_SIZE)
 #define FIRST_USER_ADDRESS  0
 
 /*number of kernel space entries in pgd*/
@@ -366,18 +366,19 @@ static inline pte_t pte_modify_access(pte_t pte, pgprot_t newprot)
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val })
 
 /* Task size is 0x40000000000(256GB) for RV64 or 0xb800000 for RV32.
-   Note that PGDIR_SIZE must evenly divide TASK_SIZE. */
+   Note that PGDIR_SIZE must evenly divide USER_TASK_SIZE. */
 #ifdef CONFIG_64BIT
-	#define TASK_SIZE (PGDIR_SIZE * PTRS_PER_PGD / 2)
+	#define USER_TASK_SIZE (PGDIR_SIZE * PTRS_PER_PGD / 2)
 #else
 	#error "32 bit CPU not supported in the current release"
-	#define TASK_SIZE 0xb800000
+	#define USER_TASK_SIZE 0xb800000
 #endif
 
 //
-// a theoretical maximum user space address
+// check that the highest user VA fits in the bottom
+// half of the GDP
 //
-#define HIGHEST_UA (-1UL >> 1)
+static_assert(USER_ASPACE_SIZE <= USER_TASK_SIZE, "USER_ASPACE_SIZE <= USER_TASK_SIZE");
 
 //
 // returns current CPU sptbr register value translated to virtual address

@@ -26,7 +26,8 @@
        docs/magenta/sysret_problem.md for why we subtract 4k here.
        Subtracting USER_ASPACE_BASE from that value gives the value for
        USER_ASPACE_SIZE below */
-    #define USER_ASPACE_SIZE ((_AC(1,UL) << VA_SHIFT) - 0x1000)
+    #define USER_ASPACE_MAXADDR ((_AC(1,UL) << VA_SHIFT) - 0x1000 - 0x1)
+    #define USER_ASPACE_SIZE (USER_ASPACE_MAXADDR - USER_ASPACE_BASE + 0x1)
 
     //
     // the membase is supposed to be a DRAM base but it is not known until
