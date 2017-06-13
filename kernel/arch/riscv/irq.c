@@ -30,7 +30,7 @@ typedef struct plic_context {
 
 //static plic_context_t  cpu_plic_context[SMP_MAX_CPUS];
 //static int             cpu_irq_in_progress[SMP_MAX_CPUS];
-static unsigned long   cpu_in_int_handler[SMP_MAX_CPUS];
+static long            cpu_in_int_handler[SMP_MAX_CPUS];
 static struct pt_regs* cpu_pt_regs[SMP_MAX_CPUS];
 
 bool arch_cpu_in_int_handler(uint cpu)

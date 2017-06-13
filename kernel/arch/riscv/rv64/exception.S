@@ -237,6 +237,14 @@ _resume_userspace:
     csrw sscratch, tp
 
 _restore_all:
+
+    /* 
+    * Interrupts are still being disabled
+    * as the exception handler has been called
+    * with interrupts being disabled so the saved
+    * sstatus doesn't have SR_IE set, sret will
+    * restore the interrupt state from SR_PIE
+    */
     REG_L a0, PT_SSTATUS(sp)
     REG_L a2, PT_SEPC(sp)
     csrw sstatus, a0
@@ -330,6 +338,7 @@ FUNCTION(__switch_to)
     REG_L s10, THREAD_S10(a1)
     REG_L s11, THREAD_S11(a1)
     REG_L tp,  THREAD_TI(a1) /* Next thread_info pointer */
+    /*return to $ra, the new $sp has been set*/
     ret
 END(__switch_to)
 

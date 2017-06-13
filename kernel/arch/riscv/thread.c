@@ -42,6 +42,7 @@ void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
     //
     t->arch.state.ra = entry_point;
     t->arch.state.sp = t->stack_top;
+    //t->arch.state.sstatus = SR_PIE /* User mode, irqs on */ | SR_FS_INITIAL;
 
     //
     // let gdb know that there is no stack frame above
@@ -49,10 +50,7 @@ void arch_thread_initialize(struct thread * t, vaddr_t entry_point)
     t->arch.state.s[0] = 0;
 
     //
-    // init a thread_info on the stack bottom,
-    // use the stack top as t->stack might cross
-    // the page boundary because of a stack padding,
-    // searchook THREAD_STACK_BOUNDS_CHECK for details
+    // set the thread info
     //
     ti = &t->arch.ti;
     init_thread_info(t, ti);
