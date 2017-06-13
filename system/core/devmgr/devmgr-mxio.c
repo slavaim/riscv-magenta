@@ -68,6 +68,7 @@ static void callback(void* arg, const char* path, size_t off, size_t len) {
 
 #define USER_MAX_HANDLES 4
 #define MAX_ENVP 16
+#define CHILD_JOB_RIGHTS (MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE)
 
 mx_status_t devmgr_launch(mx_handle_t job, const char* name,
                           int argc, const char* const* argv,
@@ -86,7 +87,7 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
     envp[envn++] = NULL;
 
     mx_handle_t job_copy = MX_HANDLE_INVALID;;
-    mx_handle_duplicate(job, MX_RIGHT_SAME_RIGHTS, &job_copy);
+    mx_handle_duplicate(job, CHILD_JOB_RIGHTS, &job_copy);
 
     launchpad_t* lp;
     launchpad_create(job_copy, name, &lp);
@@ -129,7 +130,7 @@ mx_status_t devmgr_launch(mx_handle_t job, const char* name,
 
 static void start_system_init(void) {
     thrd_t t;
-    int r = thrd_create_with_name(&t, devmgr_start_system_init, NULL, "system-init");
+    int r = thrd_create_with_name(&t, devmgr_start_appmgr, NULL, "system-init");
     if (r == thrd_success) {
         thrd_detach(t);
     }
@@ -139,13 +140,19 @@ static bool has_secondary_bootfs = false;
 static ssize_t setup_bootfs_vmo(uint32_t n, uint32_t type, mx_handle_t vmo) {
     uint64_t size;
     mx_status_t status = mx_vmo_get_size(vmo, &size);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         printf("devmgr: failed to get bootfs#%u size (%d)\n", n, status);
         return status;
     }
     if (size == 0) {
         return 0;
     }
+
+    // map the vmo so that ps will account for it
+    // NOTE: will leak the mapping in case the bootfs is thrown away later
+    uintptr_t address;
+    mx_vmar_map(mx_vmar_root_self(), 0, vmo, 0, size, MX_VM_FLAG_PERM_READ, &address);
+
     struct callback_data cd = {
         .vmo = vmo,
         .add_file = (type == BOOTDATA_BOOTFS_SYSTEM) ? systemfs_add_file : bootfs_add_file,
@@ -163,7 +170,7 @@ static ssize_t setup_bootfs_vmo(uint32_t n, uint32_t type, mx_handle_t vmo) {
 static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_handle_t* out_dest) {
     mx_handle_t dest;
     mx_status_t status = mx_vmo_create(length, 0, &dest);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
@@ -174,10 +181,10 @@ static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_
     while (length > 0) {
         size_t copy = (length > sizeof(buffer) ? sizeof(buffer) : length);
         size_t actual;
-        if ((status = mx_vmo_read(src, buffer, src_offset, copy, &actual)) != NO_ERROR) {
+        if ((status = mx_vmo_read(src, buffer, src_offset, copy, &actual)) != MX_OK) {
             goto fail;
         }
-        if ((status = mx_vmo_write(dest, buffer, dest_offset, actual, &actual)) != NO_ERROR) {
+        if ((status = mx_vmo_write(dest, buffer, dest_offset, actual, &actual)) != MX_OK) {
             goto fail;
         }
         src_offset += actual;
@@ -186,7 +193,7 @@ static mx_status_t copy_vmo(mx_handle_t src, mx_off_t offset, size_t length, mx_
     }
 
     *out_dest = dest;
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     mx_handle_close(dest);
@@ -196,7 +203,7 @@ fail:
 static void setup_last_crashlog(mx_handle_t vmo_in, uint64_t off_in, size_t sz) {
     printf("devmgr: last crashlog is %zu bytes\n", sz);
     mx_handle_t vmo;
-    if (copy_vmo(vmo_in, off_in, sz, &vmo) != NO_ERROR) {
+    if (copy_vmo(vmo_in, off_in, sz, &vmo) != MX_OK) {
         return;
     }
     bootfs_add_file("log/last-panic.txt", vmo, 0, sz);
@@ -205,13 +212,13 @@ static void setup_last_crashlog(mx_handle_t vmo_in, uint64_t off_in, size_t sz) 
 static mx_status_t devmgr_read_mdi(mx_handle_t vmo, mx_off_t offset, size_t length) {
     mx_handle_t mdi_handle;
     mx_status_t status = copy_vmo(vmo, offset, length, &mdi_handle);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         printf("devmgr_read_mdi failed to copy MDI data: %d\n", status);
         return status;
     }
 
     devmgr_set_mdi(mdi_handle);
-    return NO_ERROR;
+    return MX_OK;
 
 fail:
     printf("devmgr_read_mdi failed %d\n", status);

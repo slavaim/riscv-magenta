@@ -10,13 +10,10 @@
 
 #include <magenta/handle.h>
 #include <magenta/process_dispatcher.h>
+#include <magenta/rights.h>
 #include <mxalloc/new.h>
 
 #define LOCAL_TRACE 0
-
-constexpr mx_rights_t kDefaultThreadRights =
-    MX_RIGHT_READ | MX_RIGHT_WRITE | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER |
-    MX_RIGHT_DESTROY | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
 
 // static
 status_t ThreadDispatcher::Create(mxtl::RefPtr<UserThread> thread, mxtl::RefPtr<Dispatcher>* dispatcher,
@@ -24,13 +21,13 @@ status_t ThreadDispatcher::Create(mxtl::RefPtr<UserThread> thread, mxtl::RefPtr<
     AllocChecker ac;
     auto disp = mxtl::AdoptRef(new (&ac) ThreadDispatcher(thread));
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     thread->set_dispatcher(disp.get());
 
-    *rights = kDefaultThreadRights;
+    *rights = MX_DEFAULT_THREAD_RIGHTS;
     *dispatcher = mxtl::move(disp);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 ThreadDispatcher::ThreadDispatcher(mxtl::RefPtr<UserThread> thread)
@@ -50,14 +47,14 @@ status_t ThreadDispatcher::GetInfo(mx_info_thread_t* info) {
     canary_.Assert();
 
     thread_->GetInfoForUserspace(info);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t ThreadDispatcher::GetStats(mx_info_thread_stats_t* info) {
     canary_.Assert();
 
     thread_->GetStatsForUserspace(info);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t ThreadDispatcher::GetExceptionReport(mx_exception_report_t* report) {

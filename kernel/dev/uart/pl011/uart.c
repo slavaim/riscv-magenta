@@ -151,10 +151,10 @@ static void pl011_uart_init_early(mdi_node_ref_t* node, uint level) {
     mdi_node_ref_t child;
     mdi_each_child(node, &child) {
         switch (mdi_id(&child)) {
-        case MDI_KERNEL_DRIVERS_PL011_UART_BASE_VIRT:
+        case MDI_BASE_VIRT:
             got_uart_base_virt = !mdi_node_uint64(&child, &uart_base_virt);
             break;
-        case MDI_KERNEL_DRIVERS_PL011_UART_IRQ:
+        case MDI_IRQ:
             got_uart_irq = !mdi_node_uint32(&child, &uart_irq);
             break;
         }
@@ -174,5 +174,5 @@ static void pl011_uart_init_early(mdi_node_ref_t* node, uint level) {
     pdev_register_uart(&uart_ops);
 }
 
-LK_PDEV_INIT(pl011_uart_init_early, MDI_KERNEL_DRIVERS_PL011_UART, pl011_uart_init_early, LK_INIT_LEVEL_PLATFORM_EARLY);
-LK_PDEV_INIT(pl011_uart_init, MDI_KERNEL_DRIVERS_PL011_UART, pl011_uart_init, LK_INIT_LEVEL_PLATFORM);
+LK_PDEV_INIT(pl011_uart_init_early, MDI_ARM_PL011_UART, pl011_uart_init_early, LK_INIT_LEVEL_PLATFORM_EARLY);
+LK_PDEV_INIT(pl011_uart_init, MDI_ARM_PL011_UART, pl011_uart_init, LK_INIT_LEVEL_PLATFORM);

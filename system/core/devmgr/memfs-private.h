@@ -91,6 +91,7 @@ public:
     // Use the watcher container to implement a directory watcher
     void NotifyAdd(const char* name, size_t len) final;
     mx_status_t WatchDir(mx_handle_t* out) final;
+    mx_status_t WatchDirV2(const vfs_watch_dir_t* cmd) final;
 
     // The vnode is acting as a mount point for a remote filesystem or device.
     virtual bool IsRemote() const final;
@@ -103,7 +104,7 @@ private:
     mx_status_t Readdir(void* cookie, void* dirents, size_t len) final;
 
     // Resolves the question, "Can this directory create a child node with the name?"
-    // Returns "NO_ERROR" on success; otherwise explains failure with error message.
+    // Returns "MX_OK" on success; otherwise explains failure with error message.
     mx_status_t CanCreate(const char* name, size_t namelen) const;
 
     // Creates a dnode for the Vnode, attaches vnode to dnode, (if directory) attaches

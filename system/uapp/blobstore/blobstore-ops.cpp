@@ -107,6 +107,9 @@ mx_status_t VnodeBlob::Getattr(vnattr_t* a) {
     a->mode = IsDirectory() ? V_TYPE_DIR : V_TYPE_FILE;
     a->inode = 0;
     a->size = IsDirectory() ? 0 : SizeData();
+    a->blksize = kBlobstoreBlockSize;
+    a->blkcount = blobstore_->GetNode(map_index_)->num_blocks *
+                  (kBlobstoreBlockSize / VNATTR_BLKSIZE);
     a->nlink = 1;
     a->create_time = 0;
     a->modify_time = 0;
@@ -147,7 +150,7 @@ ssize_t VnodeBlob::Ioctl(uint32_t op, const void* in_buf, size_t in_len, void* o
         case IOCTL_VFS_UNMOUNT_FS: {
             mx_status_t status = Sync();
             if (status != NO_ERROR) {
-                error("blobstore unmount failed to sync; unmounting anyway: %d\n", status);
+                FS_TRACE_ERROR("blobstore unmount failed to sync; unmounting anyway: %d\n", status);
             }
             return blobstore_->Unmount();
         }

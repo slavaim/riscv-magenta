@@ -41,6 +41,9 @@ mx_handle_t get_service_root(void) {
 static mx_handle_t root_resource_handle;
 static mx_handle_t root_job_handle;
 static mx_handle_t svcs_job_handle;
+static mx_handle_t fuchsia_job_handle;
+
+mx_handle_t virtcon_open;
 
 mx_handle_t get_root_resource(void) {
     return root_resource_handle;
@@ -53,16 +56,6 @@ mx_handle_t get_sysinfo_job_root(void) {
     } else {
         return h;
     }
-}
-
-#define VC_DEVICE "/dev/class/console/vc"
-
-static bool switch_to_first_vc(void) {
-    char* v = getenv("startup.keep-log-visible");
-    if (!v) return true;
-    // If this flag is disabled, meaning any of the following strcmps returns 0,
-    // then we switch. Otherwise we stay on the kernel logs.
-    return !strcmp(v, "0") || !strcmp(v, "false") || !strcmp(v, "off");
 }
 
 static mx_status_t launch_blobstore(int argc, const char** argv, mx_handle_t* hnd,
@@ -88,9 +81,9 @@ static bool data_mounted = false;
 /*
  * Attempt to mount the device pointed to be the file descriptor at a known
  * location.
- * Returns ERR_ALREADY_BOUND if the device could be mounted, but something
- * is already mounted at that location. Returns ERR_INVALID_ARGS if the
- * GUID of the device does not match a known valid one. Returns NO_ERROR if an
+ * Returns MX_ERR_ALREADY_BOUND if the device could be mounted, but something
+ * is already mounted at that location. Returns MX_ERR_INVALID_ARGS if the
+ * GUID of the device does not match a known valid one. Returns MX_OK if an
  * attempt to mount is made, without checking mount success.
  */
 static mx_status_t mount_minfs(int fd, mount_options_t* options) {
@@ -106,7 +99,7 @@ static mx_status_t mount_minfs(int fd, mount_options_t* options) {
     if (read_sz == GPT_GUID_LEN) {
         if (!memcmp(type_guid, sys_guid, GPT_GUID_LEN)) {
             if (secondary_bootfs_ready()) {
-                return ERR_ALREADY_BOUND;
+                return MX_ERR_ALREADY_BOUND;
             }
 
             options->readonly = true;
@@ -114,30 +107,30 @@ static mx_status_t mount_minfs(int fd, mount_options_t* options) {
             options->create_mountpoint = true;
 
             mx_status_t st = mount(fd, "/system", DISK_FORMAT_MINFS, options, launch_minfs);
-            if (st != NO_ERROR) {
+            if (st != MX_OK) {
                 printf("devmgr: failed to mount /system, retcode = %d\n", st);
             } else {
-                devmgr_start_system_init(NULL);
+                devmgr_start_appmgr(NULL);
             }
 
-            return NO_ERROR;
+            return MX_OK;
         } else if (!memcmp(type_guid, data_guid, GPT_GUID_LEN)) {
             if (data_mounted) {
-                return ERR_ALREADY_BOUND;
+                return MX_ERR_ALREADY_BOUND;
             }
             data_mounted = true;
             options->wait_until_ready = true;
 
             mx_status_t st = mount(fd, "/data", DISK_FORMAT_MINFS, options, launch_minfs);
-            if (st != NO_ERROR) {
+            if (st != MX_OK) {
                 printf("devmgr: failed to mount /data, retcode = %d\n", st);
             }
 
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
-    return ERR_INVALID_ARGS;
+    return MX_ERR_INVALID_ARGS;
 }
 
 #define GPT_DRIVER_LIB "/boot/driver/gpt.so"
@@ -147,13 +140,13 @@ static mx_status_t mount_minfs(int fd, mount_options_t* options) {
 static mx_status_t block_device_added(int dirfd, int event, const char* name, void* cookie) {
     if (event != WATCH_EVENT_ADD_FILE) {
         printf("devmgr: block watch waiting...\n");
-        return NO_ERROR;
+        return MX_OK;
     }
 
     printf("devmgr: new block device: /dev/class/block/%s\n", name);
     int fd;
     if ((fd = openat(dirfd, name, O_RDWR)) < 0) {
-        return NO_ERROR;
+        return MX_OK;
     }
 
     disk_format_t df = detect_disk_format(fd);
@@ -164,29 +157,29 @@ static mx_status_t block_device_added(int dirfd, int event, const char* name, vo
         // probe for partition table
         ioctl_device_bind(fd, GPT_DRIVER_LIB, STRLEN(GPT_DRIVER_LIB));
         close(fd);
-        return NO_ERROR;
+        return MX_OK;
     }
     case DISK_FORMAT_MBR: {
         printf("devmgr: /dev/class/block/%s: MBR?\n", name);
         // probe for partition table
         ioctl_device_bind(fd, MBR_DRIVER_LIB, STRLEN(MBR_DRIVER_LIB));
         close(fd);
-        return NO_ERROR;
+        return MX_OK;
     }
     case DISK_FORMAT_BLOBFS: {
         mount_options_t options = default_mount_options;
         options.create_mountpoint = true;
         mount(fd, "/blobstore", DISK_FORMAT_BLOBFS, &options, launch_blobstore);
-        return NO_ERROR;
+        return MX_OK;
     }
     case DISK_FORMAT_MINFS: {
         mount_options_t options = default_mount_options;
         options.wait_until_ready = false;
         printf("devmgr: minfs\n");
-        if (mount_minfs(fd, &options) != NO_ERROR) {
+        if (mount_minfs(fd, &options) != MX_OK) {
             close(fd);
         }
-        return NO_ERROR;
+        return MX_OK;
     }
     case DISK_FORMAT_FAT: {
         // Use the GUID to avoid auto-mounting the EFI partition as writable
@@ -211,17 +204,17 @@ static mx_status_t block_device_added(int dirfd, int event, const char* name, vo
         options.wait_until_ready = false;
         printf("devmgr: fatfs\n");
         mount(fd, mountpath, df, &options, launch_fat);
-        return NO_ERROR;
+        return MX_OK;
     }
     default:
         close(fd);
-        return NO_ERROR;
+        return MX_OK;
     }
 }
 
 static const char* argv_sh[] = { "/boot/bin/sh" };
 static const char* argv_autorun0[] = { "/boot/bin/sh", "/boot/autorun" };
-static const char* argv_init[] = { "/system/bin/init" };
+static const char* argv_appmgr[] = { "/system/bin/appmgr" };
 
 void do_autorun(const char* name, const char* env) {
     char* bin = getenv(env);
@@ -233,26 +226,27 @@ void do_autorun(const char* name, const char* env) {
     }
 }
 
-int devmgr_start_system_init(void* arg) {
-    static bool init_started = false;
+int devmgr_start_appmgr(void* arg) {
+    static bool appmgr_started = false;
     static bool autorun_started = false;
     static mtx_t lock = MTX_INIT;
     mtx_lock(&lock);
     struct stat s;
-    if (!init_started && stat(argv_init[0], &s) == 0) {
-        unsigned int init_hnd_count = 0;
-        mx_handle_t init_hnds[2] = {};
-        uint32_t init_ids[2] = {};
+    if (!appmgr_started && stat(argv_appmgr[0], &s) == 0) {
+        unsigned int appmgr_hnd_count = 0;
+        mx_handle_t appmgr_hnds[2] = {};
+        uint32_t appmgr_ids[2] = {};
         if (svc_request_handle) {
-            assert(init_hnd_count < countof(init_hnds));
-            init_hnds[init_hnd_count] = svc_request_handle;
-            init_ids[init_hnd_count] = PA_SERVICE_REQUEST;
-            init_hnd_count++;
+            assert(appmgr_hnd_count < countof(appmgr_hnds));
+            appmgr_hnds[appmgr_hnd_count] = svc_request_handle;
+            appmgr_ids[appmgr_hnd_count] = PA_SERVICE_REQUEST;
+            appmgr_hnd_count++;
             svc_request_handle = 0;
         }
-        devmgr_launch(svcs_job_handle, "init", countof(argv_init), argv_init,
-                      NULL, -1, init_hnds, init_ids, init_hnd_count);
-        init_started = true;
+        devmgr_launch(fuchsia_job_handle, "appmgr", countof(argv_appmgr),
+                      argv_appmgr, NULL, -1, appmgr_hnds, appmgr_ids,
+                      appmgr_hnd_count);
+        appmgr_started = true;
     }
     if (!autorun_started) {
         do_autorun("autorun:system", "magenta.autorun.system");
@@ -266,10 +260,25 @@ int service_starter(void* arg) {
     // create a directory for sevice rendezvous
     mkdir("/svc", 0755);
 
-    {
-        const char* args[] = { "/boot/bin/gfxconsole", "--keep-log-active" };
-        devmgr_launch(svcs_job_handle, "virtual-console",
-                      switch_to_first_vc() ? 1 : 2, args, NULL, -1, NULL, NULL, 0);
+    if (getenv("virtcon.disable") == NULL) {
+        // pass virtcon.* options along
+        const char* envp[16];
+        unsigned envc = 0;
+        char** e = environ;
+        while (*e && (envc < countof(envp))) {
+            if (!strncmp(*e, "virtcon.", 8)) {
+                envp[envc++] = *e;
+            }
+            e++;
+        }
+        envp[envc] = NULL;
+
+        uint32_t type = PA_HND(PA_USER0, 0);
+        mx_handle_t h = MX_HANDLE_INVALID;
+        mx_channel_create(0, &h, &virtcon_open);
+        const char* args[] = { "/boot/bin/virtual-console" };
+        devmgr_launch(svcs_job_handle, "virtual-console", 1, args, envp, -1,
+                      &h, &type, (h == MX_HANDLE_INVALID) ? 0 : 1);
     }
 
     if (getenv("netsvc.disable") == NULL) {
@@ -340,46 +349,6 @@ static void start_console_shell(void) {
 static void start_console_shell(void) {}
 #endif
 
-static void start_vc_shell(int dirfd, const char* name, bool set_as_active) {
-    int fd;
-    if ((fd = openat(dirfd, name, O_RDWR)) >= 0) {
-        if (set_as_active) {
-            ioctl_console_set_active_vc(fd);
-        }
-        devmgr_launch(svcs_job_handle, "sh:vc",
-                      countof(argv_sh), argv_sh, NULL, fd, NULL, NULL, 0);
-    } else {
-        printf("devmgr: cannot open vc\n");
-    }
-}
-
-static mx_status_t console_device_added(int dirfd, int event, const char* name, void* cookie) {
-    if (event != WATCH_EVENT_ADD_FILE) {
-        return NO_ERROR;
-    }
-
-    if (strcmp(name, "vc")) {
-        return NO_ERROR;
-    }
-
-    // Start three shells on a virtual consoles
-    start_vc_shell(dirfd, name, switch_to_first_vc());
-    start_vc_shell(dirfd, name, false);
-    start_vc_shell(dirfd, name, false);
-
-    // stop polling
-    return 1;
-}
-
-int virtcon_starter(void* arg) {
-    int dirfd;
-    if ((dirfd = open("/dev/class/console", O_DIRECTORY|O_RDONLY)) >= 0) {
-        mxio_watch_directory(dirfd, console_device_added, NULL);
-    }
-    close(dirfd);
-    return 0;
-}
-
 static void fetch_vdsos(void) {
     for (uint_fast16_t i = 0; true; ++i) {
         mx_handle_t vdso_vmo = mx_get_startup_handle(PA_HND(PA_VMO_VDSO, i));
@@ -398,19 +367,19 @@ static void fetch_vdsos(void) {
         size_t size;
         mx_status_t status = mx_object_get_property(vdso_vmo, MX_PROP_NAME,
                                                     name, sizeof(name));
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             printf("devmgr: mx_object_get_property on PA_VMO_VDSO %u: %s\n",
                    i, mx_status_get_string(status));
             continue;
         }
         status = mx_vmo_get_size(vdso_vmo, &size);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             printf("devmgr: mx_vmo_get_size on PA_VMO_VDSO %u: %s\n",
                    i, mx_status_get_string(status));
             continue;
         }
         status = bootfs_add_file(name, vdso_vmo, 0, size);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             printf("devmgr: failed to add PA_VMO_VDSO %u to filesystem: %s\n",
                    i, mx_status_get_string(status));
         }
@@ -452,6 +421,12 @@ int main(int argc, char** argv) {
     }
     mx_object_set_property(svcs_job_handle, MX_PROP_NAME, "magenta-services", 16);
 
+    status = mx_job_create(root_job_handle, 0u, &fuchsia_job_handle);
+    if (status < 0) {
+        printf("unable to create service job\n");
+    }
+    mx_object_set_property(fuchsia_job_handle, MX_PROP_NAME, "fuchsia", 7);
+
     // Features like Intel Processor Trace need a dump of ld.so activity.
     // The output has a specific format, and will eventually be recorded
     // via a specific mechanism (magenta tracing support), so we use a specific
@@ -488,18 +463,12 @@ int main(int argc, char** argv) {
     start_console_shell();
 
     if (secondary_bootfs_ready()) {
-        devmgr_start_system_init(NULL);
+        devmgr_start_appmgr(NULL);
     }
 
     thrd_t t;
     if ((thrd_create_with_name(&t, service_starter, NULL, "service-starter")) == thrd_success) {
         thrd_detach(t);
-    }
-    if (getenv("virtcon.disable") == NULL) {
-        if ((thrd_create_with_name(&t, virtcon_starter, NULL,
-                                   "virtcon-starter")) == thrd_success) {
-            thrd_detach(t);
-        }
     }
 
     devmgr_handle_messages();

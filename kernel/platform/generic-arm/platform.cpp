@@ -32,6 +32,7 @@
 #include <arch/arm64.h>
 #include <arch/arm64/mmu.h>
 
+#include <kernel/vm/initial_map.h>
 #include <kernel/vm/vm_aspace.h>
 
 #include <lib/console.h>
@@ -228,7 +229,7 @@ void* platform_get_ramdisk(size_t *size) {
 static void platform_cpu_early_init(mdi_node_ref_t* cpu_map) {
     mdi_node_ref_t  clusters;
 
-    if (mdi_find_node(cpu_map, MDI_CPU_MAP_CLUSTERS, &clusters) != NO_ERROR) {
+    if (mdi_find_node(cpu_map, MDI_CPU_CLUSTERS, &clusters) != NO_ERROR) {
         panic("platform_cpu_early_init couldn't find clusters\n");
         return;
     }
@@ -239,7 +240,7 @@ static void platform_cpu_early_init(mdi_node_ref_t* cpu_map) {
         mdi_node_ref_t node;
         uint8_t cpu_count;
 
-        if (mdi_find_node(&cluster, MDI_CPU_MAP_CLUSTERS_CPU_COUNT, &node) != NO_ERROR) {
+        if (mdi_find_node(&cluster, MDI_CPU_COUNT, &node) != NO_ERROR) {
             panic("platform_cpu_early_init couldn't find cluster cpu-count\n");
             return;
         }
@@ -314,7 +315,7 @@ void platform_halt_cpu(void) {
         // the core after it halts.
         result = halt_aspace->AllocPhysical("halt_mapping", PAGE_SIZE,
                                             &base_of_ram, 0, pa,
-                                            VMM_FLAG_VALLOC_SPECIFIC,
+                                            VmAspace::VMM_FLAG_VALLOC_SPECIFIC,
                                             perm_flags_rwx);
 
         if (result != NO_ERROR) {
@@ -442,7 +443,7 @@ static void platform_mdi_init(const bootdata_t* section) {
     if (mdi_find_node(&root, MDI_CPU_MAP, &cpu_map) != NO_ERROR) {
         panic("platform_mdi_init couldn't find cpu-map\n");
     }
-    if (mdi_find_node(&root, MDI_KERNEL_DRIVERS, &kernel_drivers) != NO_ERROR) {
+    if (mdi_find_node(&root, MDI_KERNEL, &kernel_drivers) != NO_ERROR) {
         panic("platform_mdi_init couldn't find kernel-drivers\n");
     }
 

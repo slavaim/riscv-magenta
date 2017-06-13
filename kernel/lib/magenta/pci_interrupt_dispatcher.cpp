@@ -9,18 +9,15 @@
 #include <kernel/auto_lock.h>
 #include <magenta/pci_device_dispatcher.h>
 #include <magenta/pci_interrupt_dispatcher.h>
+#include <magenta/rights.h>
 #include <mxalloc/new.h>
-
-constexpr mx_rights_t kDefaultPciInterruptRights = MX_RIGHT_READ |
-                                                   MX_RIGHT_WRITE |
-                                                   MX_RIGHT_TRANSFER;
 
 PciInterruptDispatcher::~PciInterruptDispatcher() {
     if (device_) {
         // Unregister our handler.
         __UNUSED status_t ret;
-        ret = device_->device()->RegisterIrqHandler(irq_id_, nullptr, nullptr);
-        DEBUG_ASSERT(ret == NO_ERROR);  // This should never fail.
+        ret = device_->RegisterIrqHandler(irq_id_, nullptr, nullptr);
+        DEBUG_ASSERT(ret == MX_OK);  // This should never fail.
 
         // Release our reference to our device.
         device_ = nullptr;
@@ -43,30 +40,30 @@ pcie_irq_handler_retval_t PciInterruptDispatcher::IrqThunk(const PcieDevice& dev
 }
 
 status_t PciInterruptDispatcher::Create(
-        const mxtl::RefPtr<PciDeviceDispatcher::PciDeviceWrapper>& device,
+        const mxtl::RefPtr<PcieDevice>& device,
         uint32_t irq_id,
         bool maskable,
         mx_rights_t* out_rights,
         mxtl::RefPtr<Dispatcher>* out_interrupt) {
     // Sanity check our args
     if (!device || !out_rights || !out_interrupt)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     AllocChecker ac;
     // Attempt to allocate a new dispatcher wrapper.
     auto interrupt_dispatcher = new (&ac) PciInterruptDispatcher(irq_id, maskable);
     mxtl::RefPtr<Dispatcher> dispatcher = mxtl::AdoptRef<Dispatcher>(interrupt_dispatcher);
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     // Stash reference to the underlying device in the dispatcher we just
     // created, then attempt to register our dispatcher with the bus driver.
-    DEBUG_ASSERT(device->device());
+    DEBUG_ASSERT(device);
     interrupt_dispatcher->device_ = device;
-    status_t result = device->device()->RegisterIrqHandler(irq_id,
+    status_t result = device->RegisterIrqHandler(irq_id,
                                                            IrqThunk,
                                                            interrupt_dispatcher);
-    if (result != NO_ERROR) {
+    if (result != MX_OK) {
         interrupt_dispatcher->device_ = nullptr;
         return result;
     }
@@ -75,11 +72,11 @@ status_t PciInterruptDispatcher::Create(
     // (if it is maskable) then transfer our dispatcher refererence to the
     // caller.
     if (maskable) {
-        device->device()->UnmaskIrq(irq_id);
+        device->UnmaskIrq(irq_id);
     }
     *out_interrupt = mxtl::move(dispatcher);
-    *out_rights    = kDefaultPciInterruptRights;
-    return NO_ERROR;
+    *out_rights    = MX_DEFAULT_PCI_INTERRUPT_RIGHTS;
+    return MX_OK;
 }
 
 status_t PciInterruptDispatcher::InterruptComplete() {
@@ -87,20 +84,20 @@ status_t PciInterruptDispatcher::InterruptComplete() {
     unsignal();
 
     if (maskable_)
-        device_->device()->UnmaskIrq(irq_id_);
+        device_->UnmaskIrq(irq_id_);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t PciInterruptDispatcher::UserSignal() {
     DEBUG_ASSERT(device_ != nullptr);
 
     if (maskable_)
-        device_->device()->MaskIrq(irq_id_);
+        device_->MaskIrq(irq_id_);
 
     signal(true);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 #endif  // if WITH_DEV_PCIE

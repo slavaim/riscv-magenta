@@ -77,7 +77,7 @@ static const char* ObjectTypeToString(mx_obj_type_t type) {
     switch (type) {
         case MX_OBJ_TYPE_PROCESS: return "process";
         case MX_OBJ_TYPE_THREAD: return "thread";
-        case MX_OBJ_TYPE_VMEM: return "vmo";
+        case MX_OBJ_TYPE_VMO: return "vmo";
         case MX_OBJ_TYPE_CHANNEL: return "channel";
         case MX_OBJ_TYPE_EVENT: return "event";
         case MX_OBJ_TYPE_IOPORT: return "io-port";
@@ -134,7 +134,7 @@ static char* DumpHandleTypeCountLocked(const ProcessDispatcher& pd) {
              types[MX_OBJ_TYPE_JOB],
              types[MX_OBJ_TYPE_PROCESS],
              types[MX_OBJ_TYPE_THREAD],
-             types[MX_OBJ_TYPE_VMEM],
+             types[MX_OBJ_TYPE_VMO],
              types[MX_OBJ_TYPE_VMAR],
              types[MX_OBJ_TYPE_CHANNEL],
              // Events and event pairs:
@@ -231,7 +231,12 @@ static void DumpVmObject(
     format_size(size_str, sizeof(size_str), vmo.size());
 
     char alloc_str[MAX_FORMAT_SIZE_LEN];
-    format_size(alloc_str, sizeof(alloc_str), vmo.AllocatedPages() * PAGE_SIZE);
+    if (vmo.is_paged()) {
+        format_size(alloc_str, sizeof(alloc_str),
+                    vmo.AllocatedPages() * PAGE_SIZE);
+    } else {
+        strlcpy(alloc_str, "phys", sizeof(alloc_str));
+    }
 
     char clone_str[21];
     if (vmo.is_cow_clone()) {
@@ -269,6 +274,23 @@ static void DumpVmObject(
            size_str,
            alloc_str,
            name);
+}
+
+static void DumpAllVmObjects() {
+    printf("All VMOs, oldest to newest:\n");
+    PrintVmoDumpHeader(/* handles */ false);
+    VmObject::ForEach([](const VmObject& vmo) {
+        DumpVmObject(
+            vmo,
+            MX_HANDLE_INVALID,
+            /* rights */ 0u,
+            /* koid */ vmo.user_id());
+        // TODO(dbort): Dump the VmAspaces (processes) that map the VMO.
+        // TODO(dbort): Dump the processes that hold handles to the VMO.
+        //     This will be a lot harder to gather.
+        return MX_OK;
+    });
+    PrintVmoDumpHeader(/* handles */ false);
 }
 
 namespace {
@@ -451,10 +473,10 @@ status_t VmAspace::GetMemoryUsage(vm_usage_t* usage) {
     VmCounter vc;
     if (!EnumerateChildren(&vc)) {
         *usage = {};
-        return ERR_INTERNAL;
+        return MX_ERR_INTERNAL;
     }
     *usage = vc.usage;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 namespace {
@@ -492,7 +514,7 @@ public:
             entry.size = vmar->size();
             entry.depth = depth + 1; // The root aspace is depth 0.
             entry.type = MX_INFO_MAPS_TYPE_VMAR;
-            if (maps_.copy_array_to_user(&entry, 1, nelem_) != NO_ERROR) {
+            if (maps_.copy_array_to_user(&entry, 1, nelem_) != MX_OK) {
                 return false;
             }
             nelem_++;
@@ -505,7 +527,8 @@ public:
         available_++;
         if (nelem_ < max_) {
             mx_info_maps_t entry = {};
-            map->vmo()->get_name(entry.name, sizeof(entry.name));
+            auto vmo = map->vmo();
+            vmo->get_name(entry.name, sizeof(entry.name));
             entry.base = map->base();
             entry.size = map->size();
             entry.depth = depth + 1; // The root aspace is depth 0.
@@ -513,9 +536,10 @@ public:
             mx_info_maps_mapping_t* u = &entry.u.mapping;
             u->mmu_flags =
                 arch_mmu_flags_to_vm_flags(map->arch_mmu_flags());
-            u->committed_pages = map->vmo()->AllocatedPagesInRange(
+            u->vmo_koid = vmo->user_id();
+            u->committed_pages = vmo->AllocatedPagesInRange(
                 map->object_offset(), map->size());
-            if (maps_.copy_array_to_user(&entry, 1, nelem_) != NO_ERROR) {
+            if (maps_.copy_array_to_user(&entry, 1, nelem_) != MX_OK) {
                 return false;
             }
             nelem_++;
@@ -544,7 +568,7 @@ status_t GetVmAspaceMaps(mxtl::RefPtr<VmAspace> aspace,
     *actual = 0;
     *available = 0;
     if (aspace->is_destroyed()) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     if (max > 0) {
         mx_info_maps_t entry = {};
@@ -553,8 +577,8 @@ status_t GetVmAspaceMaps(mxtl::RefPtr<VmAspace> aspace,
         entry.size = aspace->size();
         entry.depth = 0;
         entry.type = MX_INFO_MAPS_TYPE_ASPACE;
-        if (maps.copy_array_to_user(&entry, 1, 0) != NO_ERROR) {
-            return ERR_INVALID_ARGS;
+        if (maps.copy_array_to_user(&entry, 1, 0) != MX_OK) {
+            return MX_ERR_INVALID_ARGS;
         }
     }
 
@@ -562,11 +586,11 @@ status_t GetVmAspaceMaps(mxtl::RefPtr<VmAspace> aspace,
     if (!aspace->EnumerateChildren(&b)) {
         // VmMapBuilder only returns false
         // when it can't copy to the user pointer.
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     *actual = max > 0 ? b.nelem() : 0;
     *available = b.available();
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void DumpProcessAddressSpace(mx_koid_t id) {
@@ -651,7 +675,7 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
         printf("%s mwd  <mb>         : memory watchdog\n", argv[0].str);
         printf("%s ht   <pid>        : dump process handles\n", argv[0].str);
         printf("%s hwd  <count>      : handle watchdog\n", argv[0].str);
-        printf("%s vmos <pid>        : dump process VMOs\n", argv[0].str);
+        printf("%s vmos <pid>|all    : dump process/all VMOs\n", argv[0].str);
         printf("%s jb   <pid>        : list job tree\n", argv[0].str);
         printf("%s kill <pid>        : kill process\n", argv[0].str);
         printf("%s asd  <pid>|kernel : dump process/kernel address space\n",
@@ -695,7 +719,11 @@ static int cmd_diagnostics(int argc, const cmd_args* argv, uint32_t flags) {
     } else if (strcmp(argv[1].str, "vmos") == 0) {
         if (argc < 3)
             goto usage;
-        DumpProcessVmObjects(argv[2].u);
+        if (strcmp(argv[2].str, "all") == 0) {
+            DumpAllVmObjects();
+        } else {
+            DumpProcessVmObjects(argv[2].u);
+        }
     } else if (strcmp(argv[1].str, "jb") == 0) {
         if (argc < 3)
             goto usage;

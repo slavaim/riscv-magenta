@@ -472,7 +472,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/misc/openpty.c \
     $(LOCAL_DIR)/src/misc/ptsname.c \
     $(LOCAL_DIR)/src/misc/pty.c \
-    $(LOCAL_DIR)/src/misc/realpath.c \
     $(LOCAL_DIR)/src/misc/setdomainname.c \
     $(LOCAL_DIR)/src/misc/setpriority.c \
     $(LOCAL_DIR)/src/misc/setrlimit.c \
@@ -1128,6 +1127,9 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/ldso/dlstart.c \
     $(LOCAL_DIR)/ldso/dynlink.c
 
+MODULE_SRCS += \
+    $(LOCAL_DIR)/sanitizers/__asan_early_init.c \
+    $(LOCAL_DIR)/sanitizers/asan-stubs.c \
 
 include make/module.mk
 

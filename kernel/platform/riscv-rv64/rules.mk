@@ -25,7 +25,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/debug.c \
     $(LOCAL_DIR)/timer.c \
     $(LOCAL_DIR)/platform.c \
-    $(LOCAL_DIR)/memory.c \
+    $(LOCAL_DIR)/memory.cpp \
     $(LOCAL_DIR)/interrupts.cpp \
 
 include make/module.mk

@@ -26,7 +26,7 @@ weak_alias(stub_write, write);
 
 static mx_status_t stub_mmap_file(size_t offset, size_t len, uint32_t mx_flags, int flags, int fd,
                                   off_t fd_off, uintptr_t* out) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 weak_alias(stub_mmap_file, _mmap_file);
 
@@ -131,6 +131,12 @@ static ssize_t stub_readlinkat(int fd, const char* restrict path, char* restrict
     return -1;
 }
 weak_alias(stub_readlinkat, readlinkat);
+
+static char* stub_realpath(const char* restrict filename, char* restrict resolved) {
+    errno = ENOSYS;
+    return NULL;
+}
+weak_alias(stub_realpath, realpath);
 
 static int stub_mkdir(const char* path, mode_t mode) {
     errno = ENOSYS;

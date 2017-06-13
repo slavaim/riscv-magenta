@@ -14,6 +14,7 @@
 #include <inttypes.h>
 #include <kernel/auto_lock.h>
 #include <kernel/vm.h>
+#include <kernel/vm/fault.h>
 #include <kernel/vm/vm_address_region.h>
 #include <lib/console.h>
 #include <lib/user_copy.h>
@@ -112,6 +113,9 @@ status_t VmObjectPaged::CloneCOW(uint64_t offset, uint64_t size, bool copy_name,
 void VmObjectPaged::Dump(uint depth, bool verbose) {
     canary_.Assert();
 
+    // This can grab our lock.
+    uint64_t parent_id = parent_user_id();
+
     AutoLock a(&lock_);
 
     size_t count = 0;
@@ -120,7 +124,9 @@ void VmObjectPaged::Dump(uint depth, bool verbose) {
     for (uint i = 0; i < depth; ++i) {
         printf("  ");
     }
-    printf("object %p size %#" PRIx64 " pages %zu ref %d\n", this, size_, count, ref_count_debug());
+    printf("vmo %p/k%" PRIu64 " size %#" PRIx64
+           " pages %zu ref %d parent k%" PRIu64 "\n",
+           this, user_id_, size_, count, ref_count_debug(), parent_id);
 
     if (verbose) {
         auto f = [depth](const auto p, uint64_t offset) {
@@ -513,7 +519,7 @@ status_t VmObjectPaged::DecommitRange(uint64_t offset, uint64_t len, uint64_t* d
         return NO_ERROR;
 
     // figure the starting and ending page offset
-    uint64_t start = PAGE_ALIGN(offset);
+    uint64_t start = ROUNDDOWN(offset, PAGE_SIZE);
     uint64_t end = ROUNDUP_PAGE_SIZE(offset + new_len);
     DEBUG_ASSERT(end > offset);
     DEBUG_ASSERT(end > start);

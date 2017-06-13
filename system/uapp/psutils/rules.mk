@@ -8,7 +8,9 @@ MODULE := $(LOCAL_DIR).ps
 
 MODULE_TYPE := userapp
 
-MODULE_SRCS += $(LOCAL_DIR)/ps.c
+MODULE_SRCS += \
+    $(LOCAL_DIR)/ps.c \
+    $(LOCAL_DIR)/resources.c
 
 MODULE_NAME := ps
 
@@ -94,5 +96,25 @@ MODULE_LIBS := \
 MODULE_STATIC_LIBS := \
     system/ulib/pretty \
     system/ulib/task-utils
+
+include make/module.mk
+
+MODULE := $(LOCAL_DIR).kstats
+
+MODULE_TYPE := userapp
+
+MODULE_SRCS += \
+    $(LOCAL_DIR)/kstats.c \
+    $(LOCAL_DIR)/resources.c
+
+MODULE_NAME := kstats
+
+MODULE_LIBS := \
+    system/ulib/mxio \
+    system/ulib/magenta \
+    system/ulib/c
+
+MODULE_STATIC_LIBS := \
+    system/ulib/pretty
 
 include make/module.mk

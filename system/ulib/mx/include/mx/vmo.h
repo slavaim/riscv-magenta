@@ -11,7 +11,7 @@ namespace mx {
 
 class vmo : public object<vmo> {
 public:
-    static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_VMEM;
+    static constexpr mx_obj_type_t TYPE = MX_OBJ_TYPE_VMO;
 
     vmo() = default;
 
@@ -46,7 +46,7 @@ public:
         return mx_vmo_set_size(get(), size);
     }
 
-    mx_status_t clone(uint32_t options, uint64_t offset, uint64_t size, vmo* result) {
+    mx_status_t clone(uint32_t options, uint64_t offset, uint64_t size, vmo* result) const {
         mx_handle_t h = MX_HANDLE_INVALID;
         mx_status_t status = mx_vmo_clone(get(), options, offset, size, &h);
         result->reset(h);
@@ -58,5 +58,7 @@ public:
         return mx_vmo_op_range(get(), op, offset, size, buffer, buffer_size);
     }
 };
+
+using unowned_vmo = const unowned<vmo>;
 
 } // namespace mx

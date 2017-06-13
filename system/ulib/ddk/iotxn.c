@@ -417,6 +417,7 @@ mx_status_t iotxn_alloc(iotxn_t** out, uint32_t alloc_flags, uint64_t data_size)
         } else {
             status = mx_vmo_create(data_size, 0, &txn->vmo_handle);
         }
+        mx_object_set_property(txn->vmo_handle, MX_PROP_NAME, "iotxn", 5);
         if (status != NO_ERROR) {
             xprintf("iotxn_alloc: error %d in mx_vmo_create, flags 0x%x\n", status, alloc_flags);
             free(txn);
@@ -443,9 +444,9 @@ void iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     // don't assert not queued here, since iotxns are allowed to be requeued
     txn->pflags |= IOTXN_PFLAG_QUEUED;
 
-    if (dev->ops->iotxn_queue) {
-        dev->ops->iotxn_queue(dev->ctx, txn);
-    } else {
+    // This can only fail if iotxn_queue() is not implemented by the
+    // device, in which case we fall back to calling the read or write op
+    if (device_op_iotxn_queue(dev, txn) != MX_OK) {
         mx_status_t status;
         size_t actual = 0;
         void* buf;

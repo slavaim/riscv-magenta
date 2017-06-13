@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "dynlink.h"
 #include "libc.h"
+#include "asan_impl.h"
 #include "magenta_impl.h"
 #include "pthread_impl.h"
 #include "stdio_impl.h"
@@ -34,12 +35,18 @@
 #include <runtime/processargs.h>
 #include <runtime/thread.h>
 
+static void early_init(void);
 static void error(const char*, ...);
 static void debugmsg(const char*, ...);
 static mx_status_t get_library_vmo(const char* name, mx_handle_t* vmo);
 
 #define MAXP2(a, b) (-(-(a) & -(b)))
 #define ALIGN(x, y) ((x) + (y)-1 & -(y))
+
+#define VMO_NAME_DL_ALLOC "ld.so.1-internal-heap"
+#define VMO_NAME_UNKNOWN "<unknown ELF file>"
+#define VMO_NAME_PREFIX_BSS "bss:"
+#define VMO_NAME_PREFIX_DATA "data:"
 
 // This matches struct r_debug in <link.h>.
 // TODO(mcgrathr): Use the type here.
@@ -138,7 +145,7 @@ __attribute__((__visibility__("hidden"))) extern void (*const __init_array_end)(
 weak_alias(__init_array_start, __init_array_end);
 weak_alias(__fini_array_start, __fini_array_end);
 
-static int dl_strcmp(const char* l, const char* r) {
+NO_ASAN static int dl_strcmp(const char* l, const char* r) {
     for (; *l == *r && *l; l++, r++)
         ;
     return *(unsigned char*)l - *(unsigned char*)r;
@@ -161,7 +168,8 @@ union allocated_types {
 
 static uintptr_t alloc_base, alloc_limit, alloc_ptr;
 
-__NO_SAFESTACK __attribute__((malloc)) static void* dl_alloc(size_t size) {
+__NO_SAFESTACK NO_ASAN __attribute__((malloc))
+static void* dl_alloc(size_t size) {
     // Round the size up so the allocation pointer always stays aligned.
     size = (size + DL_ALLOC_ALIGN - 1) & -DL_ALLOC_ALIGN;
 
@@ -171,14 +179,16 @@ __NO_SAFESTACK __attribute__((malloc)) static void* dl_alloc(size_t size) {
         size_t chunk_size = (size + PAGE_SIZE - 1) & -PAGE_SIZE;
         mx_handle_t vmo;
         mx_status_t status = _mx_vmo_create(chunk_size, 0, &vmo);
-        if (status != NO_ERROR)
+        if (status != MX_OK)
             return NULL;
+        _mx_object_set_property(vmo, MX_PROP_NAME,
+                                VMO_NAME_DL_ALLOC, sizeof(VMO_NAME_DL_ALLOC));
         uintptr_t chunk;
         status = _mx_vmar_map(_mx_vmar_root_self(), 0, vmo, 0, chunk_size,
                               MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE,
                               &chunk);
         _mx_handle_close(vmo);
-        if (status != NO_ERROR)
+        if (status != MX_OK)
             return NULL;
         if (chunk != alloc_limit)
             alloc_ptr = alloc_base = chunk;
@@ -218,7 +228,8 @@ static void dl_alloc_rollback(const struct dl_alloc_checkpoint *state) {
 #define laddr(p, v) (void*)((p)->base + (v))
 #define fpaddr(p, v) ((void (*)(void))laddr(p, v))
 
-__NO_SAFESTACK static void decode_vec(ElfW(Dyn)* v, size_t* a, size_t cnt) {
+__NO_SAFESTACK NO_ASAN
+ static void decode_vec(ElfW(Dyn)* v, size_t* a, size_t cnt) {
     size_t i;
     for (i = 0; i < cnt; i++)
         a[i] = 0;
@@ -229,7 +240,8 @@ __NO_SAFESTACK static void decode_vec(ElfW(Dyn)* v, size_t* a, size_t cnt) {
         }
 }
 
-__NO_SAFESTACK static int search_vec(ElfW(Dyn)* v, size_t* r, size_t key) {
+__NO_SAFESTACK NO_ASAN
+ static int search_vec(ElfW(Dyn)* v, size_t* r, size_t key) {
     for (; v->d_tag != key; v++)
         if (!v->d_tag)
             return 0;
@@ -237,7 +249,7 @@ __NO_SAFESTACK static int search_vec(ElfW(Dyn)* v, size_t* r, size_t key) {
     return 1;
 }
 
-__NO_SAFESTACK static uint32_t sysv_hash(const char* s0) {
+__NO_SAFESTACK NO_ASAN static uint32_t sysv_hash(const char* s0) {
     const unsigned char* s = (void*)s0;
     uint_fast32_t h = 0;
     while (*s) {
@@ -247,7 +259,7 @@ __NO_SAFESTACK static uint32_t sysv_hash(const char* s0) {
     return h & 0xfffffff;
 }
 
-__NO_SAFESTACK static uint32_t gnu_hash(const char* s0) {
+__NO_SAFESTACK NO_ASAN static uint32_t gnu_hash(const char* s0) {
     const unsigned char* s = (void*)s0;
     uint_fast32_t h = 5381;
     for (; *s; s++)
@@ -255,8 +267,8 @@ __NO_SAFESTACK static uint32_t gnu_hash(const char* s0) {
     return h;
 }
 
-__NO_SAFESTACK static Sym* sysv_lookup(const char* s, uint32_t h,
-                                       struct dso* dso) {
+__NO_SAFESTACK NO_ASAN static Sym* sysv_lookup(const char* s, uint32_t h,
+                                               struct dso* dso) {
     size_t i;
     Sym* syms = dso->syms;
     uint32_t* hashtab = dso->hashtab;
@@ -268,8 +280,8 @@ __NO_SAFESTACK static Sym* sysv_lookup(const char* s, uint32_t h,
     return 0;
 }
 
-__NO_SAFESTACK static Sym* gnu_lookup(uint32_t h1, uint32_t* hashtab,
-                                      struct dso* dso, const char* s) {
+__NO_SAFESTACK NO_ASAN static Sym* gnu_lookup(uint32_t h1, uint32_t* hashtab,
+                                              struct dso* dso, const char* s) {
     uint32_t nbuckets = hashtab[0];
     uint32_t* buckets = hashtab + 4 + hashtab[2] * (sizeof(size_t) / 4);
     uint32_t i = buckets[h1 % nbuckets];
@@ -291,9 +303,10 @@ __NO_SAFESTACK static Sym* gnu_lookup(uint32_t h1, uint32_t* hashtab,
     return 0;
 }
 
-__NO_SAFESTACK static Sym* gnu_lookup_filtered(uint32_t h1, uint32_t* hashtab,
-                                               struct dso* dso, const char* s,
-                                               uint32_t fofs, size_t fmask) {
+__NO_SAFESTACK NO_ASAN
+static Sym* gnu_lookup_filtered(uint32_t h1, uint32_t* hashtab,
+                                struct dso* dso, const char* s,
+                                uint32_t fofs, size_t fmask) {
     const size_t* bloomwords = (const void*)(hashtab + 4);
     size_t f = bloomwords[fofs & (hashtab[2] - 1)];
     if (!(f & fmask))
@@ -314,8 +327,8 @@ __NO_SAFESTACK static Sym* gnu_lookup_filtered(uint32_t h1, uint32_t* hashtab,
 #define ARCH_SYM_REJECT_UND(s) 0
 #endif
 
-__NO_SAFESTACK static struct symdef find_sym(struct dso* dso,
-                                             const char* s, int need_def) {
+__NO_SAFESTACK NO_ASAN
+static struct symdef find_sym(struct dso* dso, const char* s, int need_def) {
     uint32_t h = 0, gh, gho, *ght;
     size_t ghm = 0;
     struct symdef def = {};
@@ -361,8 +374,8 @@ __NO_SAFESTACK static struct symdef find_sym(struct dso* dso,
 
 __attribute__((__visibility__("hidden"))) ptrdiff_t __tlsdesc_static(void), __tlsdesc_dynamic(void);
 
-__NO_SAFESTACK static void do_relocs(struct dso* dso, size_t* rel,
-                                     size_t rel_size, size_t stride) {
+__NO_SAFESTACK NO_ASAN static void do_relocs(struct dso* dso, size_t* rel,
+                                             size_t rel_size, size_t stride) {
     unsigned char* base = dso->base;
     Sym* syms = dso->syms;
     char* strings = dso->strings;
@@ -525,8 +538,8 @@ __NO_SAFESTACK static void unmap_library(struct dso* dso) {
     }
 }
 
-__NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
-                                              struct dso* dso) {
+__NO_SAFESTACK NO_ASAN static mx_status_t map_library(mx_handle_t vmo,
+                                                      struct dso* dso) {
     struct {
         Ehdr ehdr;
         // A typical ELF file has 7 or 8 phdrs, so in practice
@@ -547,7 +560,7 @@ __NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
 
     size_t l;
     mx_status_t status = _mx_vmo_read(vmo, &buf, 0, sizeof(buf), &l);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
     // We cannot support ET_EXEC in the general case, because its fixed
     // addresses might conflict with where the dynamic linker has already
@@ -561,7 +574,7 @@ __NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
         goto noexec;
     if (eh->e_phoff + phsize > l) {
         status = _mx_vmo_read(vmo, buf.phdrs, eh->e_phoff, phsize, &l);
-        if (status != NO_ERROR)
+        if (status != MX_OK)
             goto error;
         if (l != phsize)
             goto noexec;
@@ -608,11 +621,17 @@ __NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
                                    MX_VM_FLAG_CAN_MAP_EXECUTE |
                                    MX_VM_FLAG_CAN_MAP_SPECIFIC,
                                &dso->vmar, &vmar_base);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         error("failed to reserve %zu bytes of address space: %d\n",
               map_len, status);
         goto error;
     }
+
+    char vmo_name[MX_MAX_NAME_LEN];
+    if (mx_object_get_property(vmo, MX_PROP_NAME,
+                               vmo_name, sizeof(vmo_name)) != MX_OK ||
+        vmo_name[0] == '\0')
+        memcpy(vmo_name, VMO_NAME_UNKNOWN, sizeof(VMO_NAME_UNKNOWN));
 
     dso->map = map = (void*)vmar_base;
     dso->map_len = map_len;
@@ -653,22 +672,36 @@ __NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
             if (data_size == 0) {
                 // This segment is purely zero-fill.
                 status = _mx_vmo_create(map_size, 0, &map_vmo);
+                if (status == MX_OK) {
+                    char name[MX_MAX_NAME_LEN] = VMO_NAME_PREFIX_BSS;
+                    memcpy(&name[sizeof(VMO_NAME_PREFIX_BSS) - 1], vmo_name,
+                           MX_MAX_NAME_LEN - sizeof(VMO_NAME_PREFIX_BSS));
+                    _mx_object_set_property(map_vmo, MX_PROP_NAME,
+                                            name, strlen(name));
+                }
             } else {
                 // Get a writable (lazy) copy of the portion of the file VMO.
                 status = _mx_vmo_clone(vmo, MX_VMO_CLONE_COPY_ON_WRITE,
                                        off_start, data_size, &map_vmo);
-                if (status == NO_ERROR && map_size > data_size) {
+                if (status == MX_OK && map_size > data_size) {
                     // Extend the writable VMO to cover the .bss pages too.
                     // These pages will be zero-filled, not copied from the
                     // file VMO.
                     status = _mx_vmo_set_size(map_vmo, map_size);
-                    if (status != NO_ERROR) {
+                    if (status != MX_OK) {
                         _mx_handle_close(map_vmo);
                         goto error;
                     }
                 }
+                if (status == MX_OK) {
+                    char name[MX_MAX_NAME_LEN] = VMO_NAME_PREFIX_DATA;
+                    memcpy(&name[sizeof(VMO_NAME_PREFIX_DATA) - 1], vmo_name,
+                           MX_MAX_NAME_LEN - sizeof(VMO_NAME_PREFIX_DATA));
+                    _mx_object_set_property(map_vmo, MX_PROP_NAME,
+                                            name, strlen(name));
+                }
             }
-            if (status != NO_ERROR)
+            if (status != MX_OK)
                 goto error;
             off_start = 0;
         } else if (ph->p_memsz > ph->p_filesz) {
@@ -680,7 +713,7 @@ __NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
                               off_start, map_size, mx_flags, &mapaddr);
         if (map_vmo != vmo)
             _mx_handle_close(map_vmo);
-        if (status != NO_ERROR)
+        if (status != MX_OK)
             goto error;
 
         if (ph->p_memsz > ph->p_filesz) {
@@ -698,10 +731,10 @@ __NO_SAFESTACK static mx_status_t map_library(mx_handle_t vmo,
     dso->dynv = laddr(dso, dyn);
     if (dso->tls.size)
         dso->tls.image = laddr(dso, tls_image);
-    return NO_ERROR;
+    return MX_OK;
 noexec:
     // We overload this to translate into ENOEXEC later.
-    status = ERR_WRONG_TYPE;
+    status = MX_ERR_WRONG_TYPE;
 error:
     if (map != MAP_FAILED)
         unmap_library(dso);
@@ -710,7 +743,7 @@ error:
     return status;
 }
 
-__NO_SAFESTACK static void decode_dyn(struct dso* p) {
+__NO_SAFESTACK NO_ASAN static void decode_dyn(struct dso* p) {
     size_t dyn[DYN_CNT];
     decode_vec(p->dynv, dyn, DYN_CNT);
     p->syms = laddr(p, dyn[DT_SYMTAB]);
@@ -892,7 +925,7 @@ __NO_SAFESTACK static void trace_load(struct dso* p) {
         if (_mx_object_get_info(__magenta_process_self,
                                 MX_INFO_HANDLE_BASIC,
                                 &process_info, sizeof(process_info),
-                                NULL, NULL) == NO_ERROR) {
+                                NULL, NULL) == MX_OK) {
             pid = process_info.koid;
         } else {
             // No point in continually calling mx_object_get_info.
@@ -934,11 +967,11 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
 
     if (rtld_mode & RTLD_NOLOAD) {
         *loaded = NULL;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     mx_status_t status = map_library(vmo, &temp_dso);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     decode_dyn(&temp_dso);
@@ -949,7 +982,7 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
         if (p != NULL) {
             unmap_library(&temp_dso);
             *loaded = p;
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
@@ -959,7 +992,7 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
         name = temp_dso.soname;
         if (name == NULL) {
             unmap_library(&temp_dso);
-            return ERR_WRONG_TYPE;
+            return MX_ERR_WRONG_TYPE;
         }
     }
 
@@ -990,7 +1023,7 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
     p = dl_alloc(alloc_size);
     if (!p) {
         unmap_library(&temp_dso);
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     *p = temp_dso;
     p->refcnt = 1;
@@ -1026,22 +1059,22 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
         debugmsg("\t%s => %s (%p)\n", p->soname, name, p->base);
 
     *loaded = p;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 __NO_SAFESTACK static mx_status_t load_library(const char* name, int rtld_mode,
                                                struct dso* needed_by,
                                                struct dso** loaded) {
     if (!*name)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     *loaded = find_library(name);
     if (*loaded != NULL)
-        return NO_ERROR;
+        return MX_OK;
 
     mx_handle_t vmo;
     mx_status_t status = get_library_vmo(name, &vmo);
-    if (status == NO_ERROR) {
+    if (status == MX_OK) {
         status = load_library_vmo(vmo, name, rtld_mode, needed_by, loaded);
         _mx_handle_close(vmo);
     }
@@ -1063,7 +1096,7 @@ __NO_SAFESTACK static void load_deps(struct dso* p) {
             const char* name = p->strings + p->dynv[i].d_un.d_val;
             struct dso* dep;
             mx_status_t status = load_library(name, 0, p, &dep);
-            if (status != NO_ERROR) {
+            if (status != MX_OK) {
                 error("Error loading shared library %s: %s (needed by %s)",
                       name, _mx_status_get_string(status), p->name);
                 if (runtime)
@@ -1096,7 +1129,7 @@ __NO_SAFESTACK static void make_global(struct dso* p) {
         p->global = 1;
 }
 
-__NO_SAFESTACK static void do_mips_relocs(struct dso* p, size_t* got) {
+__NO_SAFESTACK NO_ASAN static void do_mips_relocs(struct dso* p, size_t* got) {
     size_t i, j, rel[2];
     unsigned char* base = p->base;
     i = 0;
@@ -1119,7 +1152,7 @@ __NO_SAFESTACK static void do_mips_relocs(struct dso* p, size_t* got) {
     }
 }
 
-__NO_SAFESTACK static void reloc_all(struct dso* p) {
+__NO_SAFESTACK NO_ASAN static void reloc_all(struct dso* p) {
     size_t dyn[DYN_CNT];
     for (; p; p = p->next) {
         if (p->relocated)
@@ -1137,12 +1170,12 @@ __NO_SAFESTACK static void reloc_all(struct dso* p) {
                                  (uintptr_t)laddr(p, p->relro_start),
                                  p->relro_end - p->relro_start,
                                  MX_VM_FLAG_PERM_READ);
-            if (status == ERR_BAD_HANDLE &&
+            if (status == MX_ERR_BAD_HANDLE &&
                 p == &ldso && p->vmar == MX_HANDLE_INVALID) {
                 debugmsg("No VMAR_LOADED handle received;"
                          " cannot protect RELRO for %s\n",
                          p->name);
-            } else if (status != NO_ERROR) {
+            } else if (status != MX_OK) {
                 error("Error relocating %s: RELRO protection"
                       " %p+%#zx failed: %s",
                       p->name,
@@ -1163,7 +1196,7 @@ __NO_SAFESTACK static void reloc_all(struct dso* p) {
     }
 }
 
-__NO_SAFESTACK static void kernel_mapped_dso(struct dso* p) {
+__NO_SAFESTACK NO_ASAN static void kernel_mapped_dso(struct dso* p) {
     size_t min_addr = -1, max_addr = 0, cnt;
     Phdr* ph = p->phdr;
     for (cnt = p->phnum; cnt--; ph = (void*)((char*)ph + p->phentsize)) {
@@ -1285,7 +1318,11 @@ __NO_SAFESTACK struct pthread* __init_main_thread(mx_handle_t thread_self) {
     pthread_attr_t attr = DEFAULT_PTHREAD_ATTR;
     attr._a_stacksize = libc.stack_size;
 
-    pthread_t td = __allocate_thread(&attr);
+    char thread_self_name[MX_MAX_NAME_LEN];
+    if (_mx_object_get_property(thread_self, MX_PROP_NAME, thread_self_name,
+                                sizeof(thread_self_name)) != MX_OK)
+        strcpy(thread_self_name, "(initial-thread)");
+    pthread_t td = __allocate_thread(&attr, thread_self_name, NULL);
     if (td == NULL) {
         debugmsg("No memory for %zu bytes thread-local storage.\n",
                  libc.tls_size);
@@ -1293,7 +1330,7 @@ __NO_SAFESTACK struct pthread* __init_main_thread(mx_handle_t thread_self) {
     }
 
     mx_status_t status = mxr_thread_adopt(thread_self, &td->mxr_thread);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         __builtin_trap();
 
     mxr_tp_set(thread_self, pthread_to_tp(td));
@@ -1324,7 +1361,7 @@ __NO_SAFESTACK static void update_tls_size(void) {
 
 static dl_start_return_t __dls3(void* start_arg);
 
-__NO_SAFESTACK __attribute__((__visibility__("hidden")))
+__NO_SAFESTACK NO_ASAN __attribute__((__visibility__("hidden")))
 dl_start_return_t __dls2(
     void* start_arg, void* vdso_map) {
     ldso.base = (unsigned char*)__ehdr_start;
@@ -1455,7 +1492,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
         ldso.name = ldname;
 
         mx_status_t status = get_library_vmo(argv[0], &exec_vmo);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             debugmsg("%s: cannot load %s: %d\n", ldname, argv[0], status);
             _exit(1);
         }
@@ -1463,7 +1500,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
 
     mx_status_t status = map_library(exec_vmo, &app);
     _mx_handle_close(exec_vmo);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         debugmsg("%s: %s: Not a valid dynamic program (%s)\n",
                  ldso.name, argv[0], _mx_status_get_string(status));
         _exit(1);
@@ -1544,7 +1581,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     status = _mx_object_set_property(__magenta_process_self,
                                      MX_PROP_PROCESS_DEBUG_ADDR,
                                      &_dl_debug_addr, sizeof(_dl_debug_addr));
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         // Bummer. Crashlogger backtraces, debugger sessions, etc. will be
         // problematic, but this isn't fatal.
         // TODO(dje): Is there a way to detect we're here because of being
@@ -1599,12 +1636,12 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     return laddr(&app, ehdr->e_entry);
 }
 
-__NO_SAFESTACK static dl_start_return_t __dls3(void* start_arg) {
+__NO_SAFESTACK NO_ASAN static dl_start_return_t __dls3(void* start_arg) {
     mx_handle_t bootstrap = (uintptr_t)start_arg;
 
     uint32_t nbytes, nhandles;
     mx_status_t status = mxr_message_size(bootstrap, &nbytes, &nhandles);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         error("mxr_message_size bootstrap handle %#x failed: %d (%s)",
               bootstrap, status, _mx_status_get_string(status));
         nbytes = nhandles = 0;
@@ -1614,11 +1651,11 @@ __NO_SAFESTACK static dl_start_return_t __dls3(void* start_arg) {
     mx_handle_t handles[nhandles];
     mx_proc_args_t* procargs;
     uint32_t* handle_info;
-    if (status == NO_ERROR)
+    if (status == MX_OK)
         status = mxr_processargs_read(bootstrap, buffer, nbytes,
                                       handles, nhandles,
                                       &procargs, &handle_info);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         error("bad message of %u bytes, %u handles"
               " from bootstrap handle %#x: %d (%s)",
               nbytes, nhandles, bootstrap, status,
@@ -1682,8 +1719,12 @@ __NO_SAFESTACK static dl_start_return_t __dls3(void* start_arg) {
     char* argv[procargs->args_num + 1];
     char* envp[procargs->environ_num + 1];
     status = mxr_processargs_strings(buffer, nbytes, argv, envp, NULL);
-    if (status == NO_ERROR)
+    if (status == MX_OK)
         __environ = envp;
+
+    // At this point we can make system calls and have our essential
+    // handles, so things are somewhat normal.
+    early_init();
 
     void* entry = dls3(exec_vmo, procargs->args_num, argv);
 
@@ -1717,6 +1758,13 @@ __NO_SAFESTACK static dl_start_return_t __dls3(void* start_arg) {
    return DL_START_RETURN(entry, start_arg);
 }
 
+// Do sanitizer setup and whatever else must be done before dls3.
+__NO_SAFESTACK NO_ASAN static void early_init(void) {
+#if __has_feature(address_sanitizer)
+    __asan_early_init();
+#endif
+}
+
 static void* dlopen_internal(mx_handle_t vmo, const char* file, int mode) {
     pthread_rwlock_wrlock(&lock);
     __thread_allocation_inhibit();
@@ -1728,7 +1776,7 @@ static void* dlopen_internal(mx_handle_t vmo, const char* file, int mode) {
                           load_library_vmo(vmo, file, mode, head, &p) :
                           load_library(file, mode, head, &p));
 
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         error("Error loading shared library %s: %s",
               file, _mx_status_get_string(status));
     fail:
@@ -1940,19 +1988,18 @@ int dladdr(const void* addr, Dl_info* info) {
     strings = p->strings;
     nsym = count_syms(p);
 
-    if (!best)
-        for (; nsym; nsym--, sym++) {
-            if (sym->st_value && (1 << (sym->st_info & 0xf) & OK_TYPES) &&
-                (1 << (sym->st_info >> 4) & OK_BINDS)) {
-                void* symaddr = laddr(p, sym->st_value);
-                if (symaddr > addr || symaddr < best)
-                    continue;
-                best = symaddr;
-                bestsym = sym;
-                if (addr == symaddr)
-                    break;
-            }
+    for (; nsym; nsym--, sym++) {
+        if (sym->st_value && (1 << (sym->st_info & 0xf) & OK_TYPES) &&
+            (1 << (sym->st_info >> 4) & OK_BINDS)) {
+            void* symaddr = laddr(p, sym->st_value);
+            if (symaddr > addr || symaddr < best)
+                continue;
+            best = symaddr;
+            bestsym = sym;
+            if (addr == symaddr)
+                break;
         }
+    }
 
     if (!best)
         return 0;
@@ -2022,7 +2069,7 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
     if (len >= sizeof msg.data) {
         error("message of %zu bytes too large for loader service protocol",
               len);
-        status = ERR_OUT_OF_RANGE;
+        status = MX_ERR_OUT_OF_RANGE;
         goto out;
     }
 
@@ -2048,16 +2095,16 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
 
     uint32_t reply_size;
     uint32_t handle_count;
-    mx_status_t read_status = NO_ERROR;
+    mx_status_t read_status = MX_OK;
     status = _mx_channel_call(loader_svc, 0, MX_TIME_INFINITE,
                               &call, &reply_size, &handle_count,
                               &read_status);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         error("_mx_channel_call of %u bytes to loader service: "
               "%d (%s), read %d (%s)",
               call.wr_num_bytes, status, _mx_status_get_string(status),
               read_status, _mx_status_get_string(read_status));
-        if (status == ERR_CALL_FAILED && read_status != NO_ERROR)
+        if (status == MX_ERR_CALL_FAILED && read_status != MX_OK)
             status = read_status;
         goto out;
     }
@@ -2065,22 +2112,22 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
     if (reply_size != sizeof(msg.header)) {
         error("loader service reply %u bytes != %u",
               reply_size, sizeof(msg.header));
-        status = ERR_INVALID_ARGS;
+        status = MX_ERR_INVALID_ARGS;
         goto out;
     }
     if (msg.header.opcode != LOADER_SVC_OP_STATUS) {
         error("loader service reply opcode %u != %u",
               msg.header.opcode, LOADER_SVC_OP_STATUS);
-        status = ERR_INVALID_ARGS;
+        status = MX_ERR_INVALID_ARGS;
         goto out;
     }
-    if (msg.header.arg != NO_ERROR) {
+    if (msg.header.arg != MX_OK) {
         // |result| is non-null if |handle_count| > 0, because
         // |handle_count| <= |rd_num_handles|.
         if (handle_count > 0 && *result != MX_HANDLE_INVALID) {
             error("loader service error %d reply contains handle %#x",
                   msg.header.arg, *result);
-            status = ERR_INVALID_ARGS;
+            status = MX_ERR_INVALID_ARGS;
             goto out;
         }
         status = msg.header.arg;
@@ -2095,7 +2142,7 @@ __NO_SAFESTACK static mx_status_t get_library_vmo(const char* name,
                                                   mx_handle_t* result) {
     if (loader_svc == MX_HANDLE_INVALID) {
         error("cannot look up \"%s\" with no loader service", name);
-        return ERR_UNAVAILABLE;
+        return MX_ERR_UNAVAILABLE;
     }
     return loader_svc_rpc(LOADER_SVC_OP_LOAD_OBJECT, name, strlen(name),
                           result);
@@ -2114,9 +2161,9 @@ __NO_SAFESTACK static void log_write(const void* buf, size_t len) {
         status = loader_svc_rpc(LOADER_SVC_OP_DEBUG_PRINT, buf, len, NULL);
     else {
         int n = _mx_debug_write(buf, len);
-        status = n < 0 ? n : NO_ERROR;
+        status = n < 0 ? n : MX_OK;
     }
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         __builtin_trap();
 }
 

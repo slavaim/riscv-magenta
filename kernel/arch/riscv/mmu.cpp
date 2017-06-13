@@ -9,6 +9,7 @@
 #include <magenta/errors.h>
 #include <arch/mmu.h>
 #include <kernel/vm.h>
+#include <kernel/vm/pmm.h>
 #include <debug.h>
 #include <assert.h>
 #include <lib/lib.h>

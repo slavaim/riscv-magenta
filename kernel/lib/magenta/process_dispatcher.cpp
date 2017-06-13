@@ -30,6 +30,7 @@
 #include <magenta/handle_reaper.h>
 #include <magenta/job_dispatcher.h>
 #include <magenta/magenta.h>
+#include <magenta/rights.h>
 #include <magenta/thread_dispatcher.h>
 #include <magenta/user_copy.h>
 #include <magenta/vm_address_region_dispatcher.h>
@@ -38,11 +39,6 @@
 #include <mxalloc/new.h>
 
 #define LOCAL_TRACE 0
-
-static constexpr mx_rights_t kDefaultProcessRights =
-        MX_RIGHT_READ  | MX_RIGHT_WRITE | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER |
-        MX_RIGHT_ENUMERATE | MX_RIGHT_DESTROY | MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
-
 
 static mx_handle_t map_handle_to_value(const Handle* handle, mx_handle_t mixer) {
     // Ensure that the last bit of the result is not zero, and make sure
@@ -68,24 +64,24 @@ mx_status_t ProcessDispatcher::Create(
     AllocChecker ac;
     mxtl::unique_ptr<ProcessDispatcher> process(new (&ac) ProcessDispatcher(job, name, flags));
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     if (!job->AddChildProcess(process.get()))
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
     status_t result = process->Initialize();
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         return result;
 
     mxtl::RefPtr<VmAddressRegion> vmar(process->aspace()->RootVmar());
 
-    *rights = kDefaultProcessRights;
+    *rights = MX_DEFAULT_PROCESS_RIGHTS;
     *dispatcher = mxtl::AdoptRef<Dispatcher>(process.release());
 
     // Create a dispatcher for the root VMAR.
     mxtl::RefPtr<Dispatcher> new_vmar_dispatcher;
     result = VmAddressRegionDispatcher::Create(vmar, &new_vmar_dispatcher, root_vmar_rights);
-    if (result == NO_ERROR) {
+    if (result == MX_OK) {
         *root_vmar_disp = DownCastDispatcher<VmAddressRegionDispatcher>(
                 &new_vmar_dispatcher);
     } else {
@@ -143,14 +139,16 @@ status_t ProcessDispatcher::Initialize() {
 
     DEBUG_ASSERT(state_ == State::INITIAL);
 
-    // create an address space for this process.
-    aspace_ = VmAspace::Create(VmAspace::TYPE_USER, nullptr);
+    // create an address space for this process, named after the process's koid.
+    char aspace_name[MX_MAX_NAME_LEN];
+    snprintf(aspace_name, sizeof(aspace_name), "proc:%" PRIu64, get_koid());
+    aspace_ = VmAspace::Create(VmAspace::TYPE_USER, aspace_name);
     if (!aspace_) {
         TRACEF("error creating address space\n");
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void ProcessDispatcher::Exit(int retcode) {
@@ -219,12 +217,12 @@ status_t ProcessDispatcher::AddThread(UserThread* t, bool initial_thread) {
 
     if (initial_thread) {
         if (state_ != State::INITIAL)
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
     } else {
         // We must not add a thread when in the DYING or DEAD states.
         // Also, we want to ensure that this is not the first thread.
         if (state_ != State::RUNNING)
-            return ERR_BAD_STATE;
+            return MX_ERR_BAD_STATE;
     }
 
     // add the thread to our list
@@ -236,7 +234,7 @@ status_t ProcessDispatcher::AddThread(UserThread* t, bool initial_thread) {
     if (initial_thread)
         SetStateLocked(State::RUNNING);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // This is called within thread T's context when it is exiting.
@@ -429,12 +427,12 @@ mx_status_t ProcessDispatcher::GetDispatcherInternal(mx_handle_t handle_value,
     AutoLock lock(&handle_table_lock_);
     Handle* handle = GetHandleLocked(handle_value);
     if (!handle)
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
 
     *dispatcher = handle->dispatcher();
     if (rights)
         *rights = handle->rights();
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t ProcessDispatcher::GetDispatcherWithRightsInternal(mx_handle_t handle_value,
@@ -444,15 +442,15 @@ mx_status_t ProcessDispatcher::GetDispatcherWithRightsInternal(mx_handle_t handl
     AutoLock lock(&handle_table_lock_);
     Handle* handle = GetHandleLocked(handle_value);
     if (!handle)
-        return ERR_BAD_HANDLE;
+        return MX_ERR_BAD_HANDLE;
 
     if (!magenta_rights_check(handle, desired_rights))
-        return ERR_ACCESS_DENIED;
+        return MX_ERR_ACCESS_DENIED;
 
     *dispatcher_out = handle->dispatcher();
     if (out_rights)
         *out_rights = handle->rights();
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t ProcessDispatcher::GetInfo(mx_info_process_t* info) {
@@ -482,25 +480,25 @@ status_t ProcessDispatcher::GetInfo(mx_info_process_t* info) {
             info->debugger_attached = true;
         }
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t ProcessDispatcher::GetStats(mx_info_task_stats_t* stats) {
     DEBUG_ASSERT(stats != nullptr);
     AutoLock lock(&state_lock_);
     if (state_ != State::RUNNING) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     VmAspace::vm_usage_t usage;
     status_t s = aspace_->GetMemoryUsage(&usage);
-    if (s != NO_ERROR) {
+    if (s != MX_OK) {
         return s;
     }
     stats->mem_mapped_bytes = usage.mapped_pages * PAGE_SIZE;
     stats->mem_private_bytes = usage.private_pages * PAGE_SIZE;
     stats->mem_shared_bytes = usage.shared_pages * PAGE_SIZE;
     stats->mem_scaled_shared_bytes = usage.scaled_shared_bytes;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t ProcessDispatcher::GetAspaceMaps(
@@ -508,7 +506,7 @@ status_t ProcessDispatcher::GetAspaceMaps(
     size_t* actual, size_t* available) {
     AutoLock lock(&state_lock_);
     if (state_ != State::RUNNING) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
     return GetVmAspaceMaps(aspace_, maps, max, actual, available);
 }
@@ -520,21 +518,21 @@ status_t ProcessDispatcher::CreateUserThread(mxtl::StringPiece name, uint32_t fl
     auto ut = mxtl::AdoptRef(new (&ac) UserThread(mxtl::WrapRefPtr(this),
                                                   flags));
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     status_t result = ut->Initialize(name.data(), name.length());
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         return result;
 
     mxtl::RefPtr<Dispatcher> dispatcher;
     mx_rights_t rights;
     result = ThreadDispatcher::Create(mxtl::move(ut), &dispatcher, &rights);
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         return result;
 
     *out_thread = mxtl::move(dispatcher);
     *out_rights = rights;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 // Fill in |info| with the current set of threads.
@@ -548,7 +546,7 @@ status_t ProcessDispatcher::GetThreads(mxtl::Array<mx_koid_t>* out_threads) {
     AllocChecker ac;
     threads.reset(new (&ac) mx_koid_t[n], n);
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     size_t i = 0;
     for (auto& thread : thread_list_) {
         threads[i] = thread.get_koid();
@@ -556,7 +554,7 @@ status_t ProcessDispatcher::GetThreads(mxtl::Array<mx_koid_t>* out_threads) {
     }
     DEBUG_ASSERT(i == n);
     *out_threads = mxtl::move(threads);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t ProcessDispatcher::SetExceptionPort(mxtl::RefPtr<ExceptionPort> eport) {
@@ -579,18 +577,18 @@ status_t ProcessDispatcher::SetExceptionPort(mxtl::RefPtr<ExceptionPort> eport) 
     AutoLock state_lock(&state_lock_);
     AutoLock excp_lock(&exception_lock_);
     if (state_ == State::DEAD)
-        return ERR_NOT_FOUND; // TODO(dje): ?
+        return MX_ERR_NOT_FOUND; // TODO(dje): ?
     if (debugger) {
         if (debugger_exception_port_)
-            return ERR_BAD_STATE; // TODO(dje): ?
+            return MX_ERR_BAD_STATE; // TODO(dje): ?
         debugger_exception_port_ = eport;
     } else {
         if (exception_port_)
-            return ERR_BAD_STATE; // TODO(dje): ?
+            return MX_ERR_BAD_STATE; // TODO(dje): ?
         exception_port_ = eport;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 bool ProcessDispatcher::ResetExceptionPort(bool debugger, bool quietly) {
@@ -696,13 +694,13 @@ uintptr_t ProcessDispatcher::get_debug_addr() const {
 
 mx_status_t ProcessDispatcher::set_debug_addr(uintptr_t addr) {
     if (addr == 0u)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     AutoLock lock(&state_lock_);
     // Only allow the value to be set once: Once ld.so has set it that's it.
     if (debug_addr_ != 0u)
-        return ERR_ACCESS_DENIED;
+        return MX_ERR_ACCESS_DENIED;
     debug_addr_ = addr;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t ProcessDispatcher::QueryPolicy(uint32_t condition) const {
@@ -714,7 +712,7 @@ mx_status_t ProcessDispatcher::QueryPolicy(uint32_t condition) const {
     }
     // TODO(cpu): check for the MX_POL_KILL bit and return an error code
     // that sysgen understands as termination.
-    return (action & MX_POL_ACTION_DENY) ? ERR_ACCESS_DENIED : NO_ERROR;
+    return (action & MX_POL_ACTION_DENY) ? MX_ERR_ACCESS_DENIED : MX_OK;
 }
 
 uintptr_t ProcessDispatcher::cache_vdso_code_address() {

@@ -10,11 +10,9 @@
 #include <err.h>
 
 #include <kernel/auto_lock.h>
+#include <magenta/rights.h>
 #include <magenta/state_tracker.h>
 #include <mxalloc/new.h>
-
-constexpr mx_rights_t kDefaultEventPairRights =
-    MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE;
 
 constexpr uint32_t kUserSignalMask = MX_EVENT_SIGNALED | MX_USER_SIGNAL_ALL;
 
@@ -24,22 +22,22 @@ status_t EventPairDispatcher::Create(mxtl::RefPtr<Dispatcher>* dispatcher0,
     AllocChecker ac;
     auto disp0 = new (&ac) EventPairDispatcher();
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     auto disp1 = new (&ac) EventPairDispatcher();
     if (!ac.check()) {
         delete disp0;
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
 
-    *rights = kDefaultEventPairRights;
+    *rights = MX_DEFAULT_EVENT_PAIR_RIGHTS;
     *dispatcher0 = mxtl::AdoptRef<Dispatcher>(disp0);
     *dispatcher1 = mxtl::AdoptRef<Dispatcher>(disp1);
 
     disp0->Init(disp1);
     disp1->Init(disp0);
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 EventPairDispatcher::~EventPairDispatcher() {}
@@ -59,19 +57,19 @@ status_t EventPairDispatcher::user_signal(uint32_t clear_mask, uint32_t set_mask
     canary_.Assert();
 
     if ((set_mask & ~kUserSignalMask) || (clear_mask & ~kUserSignalMask))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if (!peer) {
         state_tracker_.UpdateState(clear_mask, set_mask);
-        return NO_ERROR;
+        return MX_OK;
     }
 
     AutoLock locker(&lock_);
     // object_signal() may race with handle_close() on another thread.
     if (!other_)
-        return ERR_PEER_CLOSED;
+        return MX_ERR_PEER_CLOSED;
     other_->state_tracker_.UpdateState(clear_mask, set_mask);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 EventPairDispatcher::EventPairDispatcher()

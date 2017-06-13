@@ -22,6 +22,7 @@ ENABLE_BUILD_LISTFILES ?= false
 ENABLE_BUILD_SYSROOT ?= false
 ENABLE_BUILD_LISTFILES := $(call TOBOOL,$(ENABLE_BUILD_LISTFILES))
 ENABLE_BUILD_SYSROOT := $(call TOBOOL,$(ENABLE_BUILD_SYSROOT))
+ENABLE_NEW_FB := true
 USE_CLANG ?= false
 USE_LLD ?= $(USE_CLANG)
 ifeq ($(call TOBOOL,$(USE_LLD)),true)
@@ -311,6 +312,9 @@ ALLUSER_LIBS :=
 # host apps to build
 ALLHOST_APPS :=
 
+# host libs to build
+ALLHOST_LIBS :=
+
 # sysroot (exported libraries and headers)
 SYSROOT_DEPS :=
 
@@ -318,7 +322,7 @@ SYSROOT_DEPS :=
 MDI_SRCS :=
 
 # MDI source files used to generate the mdi-defs.h header file
-MDI_INCLUDES :=
+MDI_INCLUDES := system/public/magenta/mdi/magenta.mdi
 
 # For now always enable frame pointers so kernel backtraces
 # can work and define WITH_PANIC_BACKTRACE to enable them in panics
@@ -468,9 +472,9 @@ EXTRA_BUILDDEPS += $(SYSROOT_DEPS)
 all:: $(foreach app,$(ALLUSER_APPS),$(app) $(app).strip)
 
 # and all host tools
-all:: $(ALLHOST_APPS)
+all:: $(ALLHOST_APPS) $(ALLHOST_LIBS)
 
-tools:: $(ALLHOST_APPS)
+tools:: $(ALLHOST_APPS) $(ALLHOST_LIBS)
 
 # add some automatic configuration defines
 KERNEL_DEFINES += \

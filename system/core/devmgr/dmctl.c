@@ -9,6 +9,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 
+#include "device-internal.h"
 #include "devcoordinator.h"
 
 #include <magenta/device/dmctl.h>
@@ -22,11 +23,13 @@ static mx_status_t dmctl_cmd(const char* cmd, size_t cmdlen, mx_handle_t h) {
     dc_msg_t msg;
     uint32_t msglen;
     if (dc_msg_pack(&msg, &msglen, cmd, cmdlen, NULL, NULL) < 0) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
-    msg.op = DC_OP_DM_COMMAND;
+    msg.op = cmd ? DC_OP_DM_COMMAND : DC_OP_DM_OPEN_VIRTCON;
+    dc_status_t rsp;
     return dc_msg_rpc(dmctl_dev->rpc, &msg, msglen,
-                      &h, (h != MX_HANDLE_INVALID) ? 1 : 0);
+                      &h, (h != MX_HANDLE_INVALID) ? 1 : 0,
+                      &rsp, sizeof(rsp));
 }
 
 static mx_status_t dmctl_write(void* ctx, const void* buf, size_t count, mx_off_t off,
@@ -34,7 +37,7 @@ static mx_status_t dmctl_write(void* ctx, const void* buf, size_t count, mx_off_
     mx_status_t status = dmctl_cmd(buf, count, MX_HANDLE_INVALID);
     if (status >= 0) {
         *actual = status;
-        status = NO_ERROR;
+        status = MX_OK;
     }
     return status;
 }
@@ -45,11 +48,11 @@ static mx_status_t dmctl_ioctl(void* ctx, uint32_t op,
     switch (op) {
     case IOCTL_DMCTL_GET_LOADER_SERVICE_CHANNEL:
         if (in_len != 0 || out_buf == NULL || out_len != sizeof(mx_handle_t)) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         if (multiloader == NULL) {
             // The allocation in dmctl_init() failed.
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
         // Create a new channel on the multiloader.
         mx_handle_t out_channel = mxio_multiloader_new_service(multiloader);
@@ -58,18 +61,23 @@ static mx_status_t dmctl_ioctl(void* ctx, uint32_t op,
         }
         memcpy(out_buf, &out_channel, sizeof(mx_handle_t));
         *out_actual = sizeof(mx_handle_t);
-        return NO_ERROR;
+        return MX_OK;
     case IOCTL_DMCTL_COMMAND:
         if (in_len != sizeof(dmctl_cmd_t)) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         dmctl_cmd_t cmd;
         memcpy(&cmd, in_buf, sizeof(cmd));
         cmd.name[sizeof(cmd.name) - 1] = 0;
         *out_actual = 0;
         return dmctl_cmd(cmd.name, strlen(cmd.name), cmd.h);
+    case IOCTL_DMCTL_OPEN_VIRTCON:
+        if (in_len != sizeof(mx_handle_t)) {
+            return MX_ERR_INVALID_ARGS;
+        }
+        return dmctl_cmd(NULL, 0, *((mx_handle_t*) in_buf));
     default:
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 }
 
@@ -105,7 +113,7 @@ mx_status_t dmctl_bind(void* ctx, mx_device_t* parent, void** cookie) {
         printf("dmctl: cannot create multiloader context: %d\n", status);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 static mx_driver_ops_t dmctl_driver_ops = {

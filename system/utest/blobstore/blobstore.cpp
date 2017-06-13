@@ -77,7 +77,7 @@ static int StartBlobstoreTest(uint64_t blk_size, uint64_t blk_count, char* ramdi
         close(dirfd);
     }
 
-    if (create_ramdisk("blobstore", ramdisk_path_out, blk_size, blk_count)) {
+    if (create_ramdisk(blk_size, blk_count, ramdisk_path_out)) {
         fprintf(stderr, "Blobstore: Could not create ramdisk\n");
         return -1;
     }
@@ -197,8 +197,7 @@ static bool GenerateBlob(size_t size_data, mxtl::unique_ptr<blob_info_t>* out) {
     info->size_data = size_data;
 
     // Generate the Merkle Tree
-    merkle::Tree tree;
-    info->size_merkle = tree.GetTreeLength(size_data);
+    info->size_merkle = merkle::Tree::GetTreeLength(size_data);
     if (info->size_merkle == 0) {
         info->merkle = nullptr;
     } else {
@@ -206,16 +205,16 @@ static bool GenerateBlob(size_t size_data, mxtl::unique_ptr<blob_info_t>* out) {
         ASSERT_EQ(ac.check(), true, "");
     }
     merkle::Digest digest;
-    ASSERT_EQ(tree.Create(&info->data[0], info->size_data, &info->merkle[0],
-                          info->size_merkle, &digest), NO_ERROR,
-              "Couldn't create Merkle Tree");
+    ASSERT_EQ(merkle::Tree::Create(&info->data[0], info->size_data, &info->merkle[0],
+                                   info->size_merkle, &digest),
+              NO_ERROR, "Couldn't create Merkle Tree");
     strcpy(info->path, MOUNT_PATH "/");
     size_t prefix_len = strlen(info->path);
     digest.ToString(info->path + prefix_len, sizeof(info->path) - prefix_len);
 
     // Sanity-check the merkle tree
-    ASSERT_EQ(tree.Verify(&info->data[0], info->size_data, &info->merkle[0],
-                          info->size_merkle, 0, info->size_data, digest),
+    ASSERT_EQ(merkle::Tree::Verify(&info->data[0], info->size_data, &info->merkle[0],
+                                   info->size_merkle, 0, info->size_data, digest),
               NO_ERROR, "Failed to validate Merkle Tree");
 
     *out = mxtl::move(info);
@@ -396,6 +395,47 @@ static bool WriteAfterRead(void) {
                   "After being written, the blob should refuse writes");
         ASSERT_LT(ftruncate(fd, rand() % info->size_data), 0,
                   "The blob should always refuse to be truncated");
+
+        // We should be able to unlink the blob
+        ASSERT_EQ(close(fd), 0, "");
+        ASSERT_EQ(unlink(info->path), 0, "Failed to unlink");
+    }
+
+    ASSERT_EQ(EndBlobstoreTest(ramdisk_path), 0, "unmounting blobstore");
+    END_TEST;
+}
+
+static bool ReadTooLarge(void) {
+    BEGIN_TEST;
+    char ramdisk_path[PATH_MAX];
+    ASSERT_EQ(StartBlobstoreTest(512, 1 << 20, ramdisk_path), 0, "Mounting Blobstore");
+
+    for (size_t i = 0; i < 16; i++) {
+        mxtl::unique_ptr<blob_info_t> info;
+        ASSERT_TRUE(GenerateBlob(1 << i, &info), "");
+
+        int fd;
+        ASSERT_TRUE(MakeBlob(info->path, info->merkle.get(), info->size_merkle,
+                             info->data.get(), info->size_data, &fd), "");
+
+        // Verify the contents of the Blob
+        AllocChecker ac;
+        mxtl::unique_ptr<char[]> buf(new (&ac) char[info->size_data]);
+        EXPECT_EQ(ac.check(), true, "");
+
+        // Try read beyond end of blob
+        off_t end_off = info->size_data;
+        ASSERT_EQ(lseek(fd, end_off, SEEK_SET), end_off, "");
+        ASSERT_EQ(read(fd, &buf[0], 1), 0, "Expected empty read beyond end of file");
+
+        // Try some reads which straddle the end of the blob
+        for (ssize_t j = 1; j < static_cast<ssize_t>(info->size_data); j *= 2) {
+            end_off = info->size_data - j;
+            ASSERT_EQ(lseek(fd, end_off, SEEK_SET), end_off, "");
+            ASSERT_EQ(read(fd, &buf[0], j * 2), j, "Expected to only read one byte at end of file");
+            ASSERT_EQ(memcmp(buf.get(), &info->data[info->size_data - j], j),
+                      0, "Read data, but it was bad");
+        }
 
         // We should be able to unlink the blob
         ASSERT_EQ(close(fd), 0, "");
@@ -809,7 +849,7 @@ static bool CreateUmountRemountLargeMultithreaded(void) {
 static bool NoSpace(void) {
     BEGIN_TEST;
     char ramdisk_path[PATH_MAX];
-    ASSERT_EQ(StartBlobstoreTest(512, 1 << 20, ramdisk_path), 0, "Mounting Blobstore");
+    ASSERT_EQ(StartBlobstoreTest(512, 1 << 16, ramdisk_path), 0, "Mounting Blobstore");
 
     mxtl::unique_ptr<blob_info_t> last_info = nullptr;
 
@@ -838,7 +878,7 @@ static bool NoSpace(void) {
         ASSERT_EQ(close(fd), 0, "");
         last_info = mxtl::move(info);
 
-        if (++count % 100 == 0) {
+        if (++count % 50 == 0) {
             printf("Allocated %lu blobs\n", count);
         }
     }
@@ -1108,6 +1148,7 @@ RUN_TEST_MEDIUM(TestMmap)
 RUN_TEST_MEDIUM(TestReaddir)
 RUN_TEST_MEDIUM(UseAfterUnlink)
 RUN_TEST_MEDIUM(WriteAfterRead)
+RUN_TEST_MEDIUM(ReadTooLarge)
 RUN_TEST_MEDIUM(BadAllocation)
 RUN_TEST_MEDIUM(CorruptedBlob)
 RUN_TEST_MEDIUM(CorruptedDigest)

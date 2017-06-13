@@ -205,9 +205,9 @@ static mxio_t* mxio_iodir(const char** path, int dirfd) {
 // Checks that if we increment this index forward, we'll
 // still have enough space for a null terminator within
 // PATH_MAX bytes.
-#define CHECK_CAN_INCREMENT(i)               \
-    if (unlikely((i) + 1 >= PATH_MAX - 1)) { \
-        return ERR_BAD_PATH;                 \
+#define CHECK_CAN_INCREMENT(i)           \
+    if (unlikely((i) + 1 >= PATH_MAX)) { \
+        return ERR_BAD_PATH;             \
     }
 
 // Cleans an input path, transforming it to out, according to the
@@ -704,6 +704,8 @@ int mxio_stat(mxio_t* io, struct stat* s) {
     s->st_mode = attr.mode;
     s->st_ino = attr.inode;
     s->st_size = attr.size;
+    s->st_blksize = attr.blksize;
+    s->st_blocks = attr.blkcount;
     s->st_nlink = attr.nlink;
     s->st_ctim.tv_sec = attr.create_time / MX_SEC(1);
     s->st_ctim.tv_nsec = attr.create_time % MX_SEC(1);
@@ -1146,7 +1148,7 @@ static int truncateat(int dirfd, const char* path, off_t len) {
     if ((r = __mxio_open_at(&io, dirfd, path, O_WRONLY, 0)) < 0) {
         return ERROR(r);
     }
-    r = STATUS(io->ops->misc(io, MXRIO_TRUNCATE, len, 0, NULL, 0));
+    r = io->ops->misc(io, MXRIO_TRUNCATE, len, 0, NULL, 0);
     mxio_close(io);
     mxio_release(io);
     return STATUS(r);
@@ -1186,16 +1188,14 @@ static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
                           int newdirfd, const char* newpath) {
     char oldname[NAME_MAX + 1];
     mxio_t* io_oldparent;
-    mx_status_t status;
+    mx_status_t status = NO_ERROR;
     if ((status = __mxio_opendir_containing_at(&io_oldparent, olddirfd, oldpath, oldname)) < 0) {
         return ERROR(status);
     }
 
-    int r;
     char newname[NAME_MAX + 1];
     mxio_t* io_newparent;
     if ((status = __mxio_opendir_containing_at(&io_newparent, newdirfd, newpath, newname)) < 0) {
-        r = ERROR(status);
         goto oldparent_open;
     }
 
@@ -1203,7 +1203,6 @@ static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
     status = io_newparent->ops->ioctl(io_newparent, IOCTL_VFS_GET_TOKEN,
                                       NULL, 0, &token, sizeof(token));
     if (status < 0) {
-        r = ERROR(status);
         goto newparent_open;
     }
 
@@ -1218,7 +1217,6 @@ static int two_path_op_at(uint32_t op, int olddirfd, const char* oldpath,
     name[oldlen + newlen + 1] = '\0';
     status = io_oldparent->ops->misc(io_oldparent, op, token, 0,
                                      (void*)name, oldlen + newlen + 2);
-    r = STATUS(status);
     goto newparent_open;
 newparent_open:
     io_newparent->ops->close(io_newparent);
@@ -1226,7 +1224,7 @@ newparent_open:
 oldparent_open:
     io_oldparent->ops->close(io_oldparent);
     mxio_release(io_oldparent);
-    return r;
+    return STATUS(status);
 }
 
 int renameat(int olddirfd, const char* oldpath, int newdirfd, const char* newpath) {
@@ -1350,6 +1348,54 @@ int fstatat(int dirfd, const char* fn, struct stat* s, int flags) {
 
 int stat(const char* fn, struct stat* s) {
     return fstatat(AT_FDCWD, fn, s, 0);
+}
+
+char* realpath(const char* restrict filename, char* restrict resolved) {
+    ssize_t r;
+    struct stat st;
+    char tmp[PATH_MAX];
+    size_t outlen;
+    bool is_dir;
+
+    if (!filename) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    if (filename[0] != '/') {
+        // Convert 'filename' from a relative path to an absolute path.
+        size_t file_len = strlen(filename);
+        mtx_lock(&mxio_cwd_lock);
+        size_t cwd_len = strlen(mxio_cwd_path);
+        if (cwd_len + 1 + file_len >= PATH_MAX) {
+            mtx_unlock(&mxio_cwd_lock);
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        char tmp2[PATH_MAX];
+        memcpy(tmp2, mxio_cwd_path, cwd_len);
+        mtx_unlock(&mxio_cwd_lock);
+        tmp2[cwd_len] = '/';
+        strcpy(tmp2 + cwd_len + 1, filename);
+        mx_status_t status = __mxio_cleanpath(tmp2, tmp, &outlen, &is_dir);
+        if (status != NO_ERROR) {
+            errno = EINVAL;
+            return NULL;
+        }
+    } else {
+        // Clean the provided absolute path
+        mx_status_t status = __mxio_cleanpath(filename, tmp, &outlen, &is_dir);
+        if (status != NO_ERROR) {
+            errno = EINVAL;
+            return NULL;
+        }
+
+        r = stat(tmp, &st);
+        if (r < 0) {
+            return NULL;
+        }
+    }
+    return resolved ? strcpy(resolved, tmp) : strdup(tmp);
 }
 
 static int mx_utimens(mxio_t* io, const struct timespec times[2], int flags) {

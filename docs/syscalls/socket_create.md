@@ -22,24 +22,22 @@ have a maximum capacity.
 
 Data written to one handle may be read from the opposite.
 
-The *options* must currently be 0.
+The *options* must currently be either **MX_SOCKET_STREAM** or
+**MX_SOCKET_DATAGRAM**.
 
 ## RETURN VALUE
 
-**socket_create**() returns **NO_ERROR** on success. In the event of
+**socket_create**() returns **MX_OK** on success. In the event of
 failure, one of the following values is returned.
 
 ## ERRORS
 
-**ERR_INVALID_ARGS**  *out0* or *out1* is an invalid pointer or NULL or
+**MX_ERR_INVALID_ARGS**  *out0* or *out1* is an invalid pointer or NULL or
 *options* is any value other than 0.
 
-**ERR_NO_MEMORY**  (Temporary) Failure due to lack of memory.
+**MX_ERR_NO_MEMORY**  (Temporary) Failure due to lack of memory.
 
 ## LIMITATIONS
-
-Sockets currently only support byte streams.  An option to support
-datagrams is likely in the future.
 
 The maximum capacity is not currently set-able or get-able.
 

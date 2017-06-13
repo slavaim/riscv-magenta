@@ -166,7 +166,7 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/user_copy.c \
 	$(LOCAL_DIR)/page.c \
 	$(LOCAL_DIR)/pgtable.c \
-	$(LOCAL_DIR)/faults.c \
+	$(LOCAL_DIR)/faults.cpp \
 	$(LOCAL_DIR)/traps.c \
 	$(LOCAL_DIR)/irq.c \
 	$(LOCAL_DIR)/lib/memset.S \

@@ -11,16 +11,12 @@
 #include <kernel/auto_lock.h>
 
 #include <magenta/process_dispatcher.h>
+#include <magenta/rights.h>
 #include <magenta/syscalls/policy.h>
 #include <mxalloc/new.h>
 
 // The starting max_height value of the root job.
 static const uint32_t kRootJobMaxHeight = 32;
-
-constexpr mx_rights_t kDefaultJobRights =
-    MX_RIGHT_TRANSFER | MX_RIGHT_DUPLICATE | MX_RIGHT_READ | MX_RIGHT_WRITE |
-    MX_RIGHT_ENUMERATE | MX_RIGHT_DESTROY | MX_RIGHT_GET_PROPERTY |
-    MX_RIGHT_SET_PROPERTY | MX_RIGHT_SET_POLICY | MX_RIGHT_GET_POLICY;
 
 mxtl::RefPtr<JobDispatcher> JobDispatcher::CreateRootJob() {
     AllocChecker ac;
@@ -34,22 +30,22 @@ status_t JobDispatcher::Create(uint32_t flags,
                                mx_rights_t* rights) {
     if (parent != nullptr && parent->max_height() == 0) {
         // The parent job cannot have children.
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
     }
 
     AllocChecker ac;
     auto job = new (&ac) JobDispatcher(flags, parent, parent->GetPolicy());
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     if (!parent->AddChildJob(job)) {
         delete job;
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
-    *rights = kDefaultJobRights;
+    *rights = MX_DEFAULT_JOB_RIGHTS;
     *dispatcher = mxtl::AdoptRef<Dispatcher>(job);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 JobDispatcher::JobDispatcher(uint32_t /*flags*/,
@@ -218,7 +214,7 @@ status_t JobDispatcher::SetPolicy(
     AutoLock lock(&lock_);
 
     if (!procs_.is_empty() || !jobs_.is_empty())
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
     pol_cookie_t new_policy;
     auto status = GetSystemPolicyManager()->AddPolicy(
@@ -228,7 +224,7 @@ status_t JobDispatcher::SetPolicy(
         return status;
 
     policy_ = new_policy;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 bool JobDispatcher::EnumerateChildren(JobEnumerator* je, bool recurse) {

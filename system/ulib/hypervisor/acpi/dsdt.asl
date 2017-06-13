@@ -11,8 +11,27 @@
 DefinitionBlock ("dsdt.aml", "DSDT", 2, "MX", "MX DSDT", 0x0)
 {
     Name (PICM, Zero)
-    Method (_PIC, 1, NotSerialized)  // _PIC: Interrupt Model
+    Method (_PIC, 1, NotSerialized)                                 // _PIC: Interrupt Model
     {
         PICM = Arg0
+    }
+
+    Scope (_SB)
+    {
+        Device (PCI0)
+        {
+            Name (_HID, EisaId ("PNP0A08") /* PCI Express Bus */)   // _HID: Hardware ID
+            Name (_CID, EisaId ("PNP0A03") /* PCI Bus */)           // _CID: Compatible ID
+            Name (_UID, 0)                                          // _UID: Unique ID
+
+            Name(_PRT, Package()
+            {
+                // Device 0.
+                Package() { 0x0000ffff, 0, Zero, 32 },
+
+                // Device 1.
+                Package() { 0x0001ffff, 0, Zero, 33 },
+            })
+        }
     }
 }

@@ -30,11 +30,11 @@ mx_status_t WaitStateObserver::Begin(WaitEvent* event,
     wakeup_reasons_ = 0u;
 
     auto status = dispatcher_->add_observer(this);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         dispatcher_.reset();
         return status;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_signals_t WaitStateObserver::End() {
@@ -87,7 +87,8 @@ bool WaitStateObserver::OnCancel(Handle* handle) {
 
     if (handle == handle_) {
         wakeup_reasons_ |= MX_SIGNAL_HANDLE_CLOSED;
-        return event_->Signal(ERR_CANCELED) > 0;
+        event_->Signal(MX_ERR_CANCELED);
+        return true;
     } else {
         return false;
     }

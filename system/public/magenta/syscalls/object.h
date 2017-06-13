@@ -28,6 +28,8 @@ typedef enum {
     MX_INFO_TASK_STATS                 = 12, // mx_info_task_stats_t[1]
     MX_INFO_PROCESS_MAPS               = 13, // mx_info_maps_t[n]
     MX_INFO_THREAD_STATS               = 14, // mx_info_thread_stats_t[1]
+    MX_INFO_CPU_STATS                  = 15, // mx_info_cpu_stats_t[n]
+    MX_INFO_KMEM_STATS                 = 16, // mx_info_kmem_stats_t[1]
     MX_INFO_LAST
 } mx_object_info_topic_t;
 
@@ -35,7 +37,7 @@ typedef enum {
     MX_OBJ_TYPE_NONE                = 0,
     MX_OBJ_TYPE_PROCESS             = 1,
     MX_OBJ_TYPE_THREAD              = 2,
-    MX_OBJ_TYPE_VMEM                = 3,
+    MX_OBJ_TYPE_VMO                 = 3,
     MX_OBJ_TYPE_CHANNEL             = 4,
     MX_OBJ_TYPE_EVENT               = 5,
     MX_OBJ_TYPE_IOPORT              = 6,
@@ -159,6 +161,8 @@ typedef struct mx_info_maps_mapping {
     // MMU flags for the mapping.
     // Bitwise OR of MX_VM_FLAG_PERM_{READ,WRITE,EXECUTE} values.
     uint32_t mmu_flags;
+    // koid of the mapped VMO.
+    mx_koid_t vmo_koid;
     // The number of PAGE_SIZE pages in the mapped region of the VMO
     // that are backed by physical memory.
     size_t committed_pages;
@@ -196,6 +200,71 @@ typedef struct mx_info_maps {
     } u;
 } mx_info_maps_t;
 
+// kernel statistics per cpu
+typedef struct mx_info_cpu_stats {
+    uint32_t cpu_number;
+    uint32_t flags;
+
+    mx_time_t idle_time;
+
+    // kernel scheduler counters
+    uint64_t reschedules;
+    uint64_t context_switches;
+    uint64_t irq_preempts;
+    uint64_t preempts;
+    uint64_t yields;
+
+    // cpu level interrupts and exceptions
+    uint64_t ints;          // hardware interrupts, minus timer interrupts or inter-processor interrupts
+    uint64_t timer_ints;    // timer interrupts
+    uint64_t timers;        // timer callbacks
+    uint64_t page_faults;   // page faults
+    uint64_t exceptions;    // exceptions such as undefined opcode
+    uint64_t syscalls;
+
+    // inter-processor interrupts
+    uint64_t reschedule_ipis;
+    uint64_t generic_ipis;
+} mx_info_cpu_stats_t;
+
+// Information about kernel memory usage.
+// Can be expensive to gather.
+typedef struct mx_info_kmem_stats {
+    // The total amount of physical memory available to the system.
+    uint64_t total_bytes;
+
+    // The amount of unallocated memory.
+    uint64_t free_bytes;
+
+    // The amount of memory reserved by and mapped into the kernel for reasons
+    // not covered by other fields in this struct. Typically for readonly data
+    // like the ram disk and kernel image, and for early-boot dynamic memory.
+    uint64_t wired_bytes;
+
+    // The amount of memory allocated to the kernel heap.
+    uint64_t total_heap_bytes;
+
+    // The portion of |total_heap_bytes| that is not in use.
+    uint64_t free_heap_bytes;
+
+    // The amount of memory committed to VMOs, both kernel and user.
+    // A superset of all userspace memory.
+    // Does not include certain VMOs that fall under |wired_bytes|.
+    //
+    // TODO(dbort): Break this into at least two pieces: userspace VMOs that
+    // have koids, and kernel VMOs that don't. Or maybe look at VMOs
+    // mapped into the kernel aspace vs. everything else.
+    uint64_t vmo_bytes;
+
+    // The amount of memory used for architecture-specific MMU metadata
+    // like page tables.
+    uint64_t mmu_overhead_bytes;
+
+    // Non-free memory that isn't accounted for in any other field.
+    uint64_t other_bytes;
+} mx_info_kmem_stats_t;
+
+#define MX_INFO_CPU_STATS_FLAG_ONLINE       (1u<<0)
 
 // Object properties.
 
@@ -214,17 +283,6 @@ typedef struct mx_info_maps {
 
 // Argument is the base address of the vDSO mapping (or zero), a uintptr_t.
 #define MX_PROP_PROCESS_VDSO_BASE_ADDRESS   6u
-
-// Argument is the number of descendant generations that a job is allowed to
-// have, as a uint32_t.
-//
-// A job has a MAX_HEIGHT value equal to one less than its parent's MAX_HEIGHT
-// value.
-//
-// A job with MAX_HEIGHT equal to zero may not have any child jobs, and calling
-// mx_job_create() on such a job will fail with ERR_OUT_OF_RANGE. MAX_HEIGHT
-// does not affect the creation of processes.
-#define MX_PROP_JOB_MAX_HEIGHT              7u
 
 // Values for mx_info_thread_t.state.
 #define MX_THREAD_STATE_NEW                 0u

@@ -5,7 +5,8 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include "vm_priv.h"
+#include <kernel/vm/pmm.h>
+
 #include <assert.h>
 #include <err.h>
 #include <inttypes.h>
@@ -23,6 +24,7 @@
 #include <trace.h>
 
 #include "pmm_arena.h"
+#include "vm_priv.h"
 
 #include <magenta/thread_annotations.h>
 #include <mxcpp/new.h>
@@ -349,6 +351,15 @@ static size_t pmm_count_total_bytes_locked() TA_REQ(arena_lock) {
 size_t pmm_count_total_bytes() {
     AutoLock al(&arena_lock);
     return pmm_count_total_bytes_locked();
+}
+
+void pmm_count_total_states(size_t state_count[_VM_PAGE_STATE_COUNT]) {
+    // TODO(MG-833): This is extremely expensive, holding a global lock
+    // and touching every page/arena. We should keep a running count instead.
+    AutoLock al(&arena_lock);
+    for (auto& a : arena_list) {
+        a.CountStates(state_count);
+    }
 }
 
 extern "C" enum handler_return pmm_dump_timer(struct timer* t, lk_time_t, void*) TA_REQ(arena_lock) {

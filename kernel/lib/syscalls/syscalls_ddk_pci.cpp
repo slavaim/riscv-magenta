@@ -75,10 +75,10 @@ public:
             (dev_id >= countof(lut_)) ||
             (func_id >= countof(lut_[dev_id])) ||
             (pin >= countof(lut_[dev_id][func_id])))
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
 
         *irq = lut_[dev_id][func_id][pin];
-        return (*irq == MX_PCI_NO_IRQ_MAPPING) ? ERR_NOT_FOUND : NO_ERROR;
+        return (*irq == MX_PCI_NO_IRQ_MAPPING) ? MX_ERR_NOT_FOUND : MX_OK;
     }
 
 private:
@@ -105,7 +105,7 @@ mx_status_t sys_pci_add_subtract_io_range(mx_handle_t handle, bool mmio, uint64_
 
     auto pcie = PcieBusDriver::GetDriver();
     if (pcie == nullptr) {
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     PciAddrSpace addr_space = mmio ? PciAddrSpace::MMIO : PciAddrSpace::PIO;
@@ -128,33 +128,33 @@ mx_status_t sys_pci_init(mx_handle_t handle, user_ptr<const mx_pci_init_arg_t> _
     mxtl::unique_free_ptr<mx_pci_init_arg_t> arg;
 
     if (len < sizeof(*arg) || len > MX_PCI_INIT_ARG_MAX_SIZE) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     auto pcie = PcieBusDriver::GetDriver();
     if (pcie == nullptr)
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
 
     // we have to malloc instead of new since this is a variable-sized structure
     arg.reset(static_cast<mx_pci_init_arg_t*>(malloc(len)));
     if (!arg) {
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
     }
     {
         status = _init_buf.reinterpret<const void>().copy_array_from_user(
             arg.get(), len);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             return status;
         }
     }
 
     const uint32_t win_count = arg->ecam_window_count;
     if (len != sizeof(*arg) + sizeof(arg->ecam_windows[0]) * win_count) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (arg->num_irqs > countof(arg->irqs)) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // Configure interrupts
@@ -170,20 +170,20 @@ mx_status_t sys_pci_init(mx_handle_t handle, user_ptr<const mx_pci_init_arg_t> _
         }
 
         status_t status = configure_interrupt(irq, tm, pol);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             return status;
         }
     }
     // TODO(teisenbe): For now assume there is only one ECAM
     if (win_count != 1) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if (arg->ecam_windows[0].bus_start != 0) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     if (arg->ecam_windows[0].bus_start > arg->ecam_windows[0].bus_end) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
 #if ARCH_X86
@@ -198,26 +198,26 @@ mx_status_t sys_pci_init(mx_handle_t handle, user_ptr<const mx_pci_init_arg_t> _
         TRACEF("PCIe config space collides with arch devices, truncating\n");
         end = high_limit;
         if (end < arg->ecam_windows[0].base) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         arg->ecam_windows[0].size = ROUNDDOWN(end - arg->ecam_windows[0].base,
                                               PCIE_ECAM_BYTE_PER_BUS);
         uint64_t new_bus_end = (arg->ecam_windows[0].size / PCIE_ECAM_BYTE_PER_BUS) +
                                arg->ecam_windows[0].bus_start - 1;
         if (new_bus_end >= PCIE_MAX_BUSSES) {
-            return ERR_INVALID_ARGS;
+            return MX_ERR_INVALID_ARGS;
         }
         arg->ecam_windows[0].bus_end = static_cast<uint8_t>(new_bus_end);
     }
 #endif
 
     if (arg->ecam_windows[0].size < PCIE_ECAM_BYTE_PER_BUS) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
     if (arg->ecam_windows[0].size / PCIE_ECAM_BYTE_PER_BUS >
         PCIE_MAX_BUSSES - arg->ecam_windows[0].bus_start) {
 
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // TODO(johngro): Update the syscall to pass a paddr_t for base instead of a uint64_t
@@ -235,7 +235,7 @@ mx_status_t sys_pci_init(mx_handle_t handle, user_ptr<const mx_pci_init_arg_t> _
     };
 
     ret = pcie->AddEcamRegion(ecam);
-    if (ret != NO_ERROR) {
+    if (ret != MX_OK) {
         TRACEF("Failed to add ECAM region to PCIe bus driver! (ret %d)\n", ret);
         return ret;
     }
@@ -245,22 +245,22 @@ mx_status_t sys_pci_init(mx_handle_t handle, user_ptr<const mx_pci_init_arg_t> _
     // it manages bus ID 0.
     auto root = PcieRootLUTSwizzle::Create(*pcie, 0, arg->dev_pin_to_global_irq);
     if (root == nullptr)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     ret = pcie->AddRoot(mxtl::move(root));
-    if (ret != NO_ERROR) {
+    if (ret != MX_OK) {
         TRACEF("Failed to add root complex to PCIe bus driver! (ret %d)\n", ret);
         return ret;
     }
 
     ret = pcie->StartBusDriver();
-    if (ret != NO_ERROR) {
+    if (ret != MX_OK) {
         TRACEF("Failed to start PCIe bus driver! (ret %d)\n", ret);
         return ret;
     }
 
     shutdown_early_init_console();
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_handle_t sys_pci_get_nth_device(mx_handle_t hrsrc,
@@ -280,26 +280,26 @@ mx_handle_t sys_pci_get_nth_device(mx_handle_t hrsrc,
     }
 
     if (!out_info)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     mxtl::RefPtr<Dispatcher> dispatcher;
     mx_rights_t rights;
     mx_pcie_device_info_t info;
     status_t result = PciDeviceDispatcher::Create(index, &info, &dispatcher, &rights);
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         return result;
 
     HandleOwner handle(MakeHandle(mxtl::move(dispatcher), rights));
     if (!handle)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     auto up = ProcessDispatcher::GetCurrent();
     mx_handle_t handle_value = up->MapHandleToValue(handle);
 
     // TODO(andymutton): Change to use user_ptr copy
     if (copy_to_user_unsafe(reinterpret_cast<uint8_t*>(out_info.get()),
-                            &info, sizeof(mx_pcie_device_info_t)) != NO_ERROR)
-        return ERR_INVALID_ARGS;
+                            &info, sizeof(mx_pcie_device_info_t)) != MX_OK)
+        return MX_ERR_INVALID_ARGS;
 
     up->AddHandle(mxtl::move(handle));
     return handle_value;
@@ -317,7 +317,7 @@ mx_status_t sys_pci_claim_device(mx_handle_t dev_handle) {
 
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     return pci_device->ClaimDevice();
@@ -335,7 +335,7 @@ mx_status_t sys_pci_enable_bus_master(mx_handle_t dev_handle, bool enable) {
 
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     return pci_device->EnableBusMaster(enable);
@@ -353,7 +353,7 @@ mx_status_t sys_pci_enable_pio(mx_handle_t dev_handle, bool enable) {
 
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     return pci_device->EnablePio(enable);
@@ -370,54 +370,10 @@ mx_status_t sys_pci_reset_device(mx_handle_t dev_handle) {
 
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     return pci_device->ResetDevice();
-}
-
-mx_status_t sys_pci_map_mmio(mx_handle_t dev_handle, uint32_t bar_num,
-                             mx_cache_policy_t cache_policy, user_ptr<mx_handle_t> out_handle) {
-    /**
-     * Performs MMIO mapping for the PCI device associated with the handle.
-     * @param handle Handle associated with a PCI device
-     * @param bar_num BAR number
-     * @param cache_policy cache policy to use for mapping
-     * @param out_handle pointer to a handle to store the mapping
-     */
-    LTRACEF("handle %d\n", dev_handle);
-    if (!out_handle) {
-        return ERR_INVALID_ARGS;
-    }
-
-    // Caller only gets to control the cache policy, nothing else.
-    if (cache_policy & ~ARCH_MMU_FLAG_CACHE_MASK)
-        return ERR_INVALID_ARGS;
-
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
-    mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR)
-        return status;
-
-    mx_rights_t mmio_rights;
-    mxtl::RefPtr<Dispatcher> mmio_io_mapping;
-    status_t result = pci_device->MapMmio(bar_num, cache_policy, &mmio_io_mapping, &mmio_rights);
-    if (result != NO_ERROR)
-        return result;
-
-    HandleOwner mmio_handle(MakeHandle(mxtl::move(mmio_io_mapping), mmio_rights));
-    if (!mmio_handle)
-        return ERR_NO_MEMORY;
-
-    status = out_handle.copy_to_user(up->MapHandleToValue(mmio_handle));
-    if (status != NO_ERROR) {
-        return status;
-    }
-    up->AddHandle(mxtl::move(mmio_handle));
-
-    return NO_ERROR;
 }
 
 mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<mx_pci_resource_t> out_bar) {
@@ -429,21 +385,21 @@ mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<m
 
     LTRACEF("handle %d\n", dev_handle);
     if (!dev_handle || !out_bar || bar_num >= PCIE_MAX_BAR_REGS) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     auto up = ProcessDispatcher::GetCurrent();
 
     // Grab the PCI device object
     status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_READ | MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
 
     // Get bar info from the device via the dispatcher and make sure it makes sense
     const pcie_bar_info_t* info = pci_device->GetBar(bar_num);
     if (info == nullptr || info->size == 0 || info->vmo == nullptr) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // A bar can be MMIO, PIO, or unused. In the MMIO case it can be passed
@@ -459,13 +415,13 @@ mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<m
         // We have a VMO, time to prep a handle to it for the caller
         mx_rights_t rights;
         status = VmObjectDispatcher::Create(info->vmo, &dispatcher, &rights);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             return status;
         }
 
         mmio_handle = HandleOwner(MakeHandle(mxtl::move(dispatcher), rights));
         if (!mmio_handle) {
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
 
         bar.mmio_handle = up->MapHandleToValue(mmio_handle);
@@ -475,8 +431,8 @@ mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<m
     }
 
     /* Success so far, copy everything back to usersapce */
-    if (out_bar.copy_to_user(bar) != NO_ERROR) {
-        return ERR_INVALID_ARGS;
+    if (out_bar.copy_to_user(bar) != MX_OK) {
+        return MX_ERR_INVALID_ARGS;
     }
 
     /* If the bar is an mmio the VMO handle still needs to be accounted for */
@@ -487,7 +443,7 @@ mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<m
         pci_device->EnablePio(true);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_t> out_config) {
@@ -499,21 +455,21 @@ mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_
     mx_status_t status;
 
     if (!out_config) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     // Get the process context and device dispatcher from the caller device handle
     auto up = ProcessDispatcher::GetCurrent();
-    status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_READ|MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR) {
+    status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_READ | MX_RIGHT_WRITE, &pci_device);
+    if (status != MX_OK) {
         return status;
     }
 
     // Get the config metadata from the device dispatcher. This contains either
     // a size/addr tuple for pio, or a size and vmo for mmio.
     status = pci_device->GetConfig(&pci_config);
-    if (status != NO_ERROR) {
-        printf("failed to get config\n");
+    if (status != MX_OK) {
+        printf("failed to get config: %d\n", status);
         return status;
     }
 
@@ -532,14 +488,16 @@ mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_
         // writes and provide a syscall to do so.
         mx_rights_t rights;
         status = VmObjectDispatcher::Create(pci_config.vmo, &dispatcher, &rights);
-        if (status != NO_ERROR) {
+        if (status != MX_OK) {
             return status;
         }
 
+        // Drivers are not granted access to write to their own config space. It is
+        // restricted to the bus driver.
         rights &= ~MX_RIGHT_WRITE;
         mmio_handle = HandleOwner(MakeHandle(mxtl::move(dispatcher), rights));
         if (!mmio_handle) {
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
         }
 
         config.mmio_handle = up->MapHandleToValue(mmio_handle);
@@ -549,16 +507,17 @@ mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_
     }
 
     // Success so far, copy everything back to the usersapce out_config pointer.
-    if (out_config.copy_to_user(config) != NO_ERROR) {
-        return ERR_INVALID_ARGS;
+    if (out_config.copy_to_user(config) != MX_OK) {
+        return MX_ERR_INVALID_ARGS;
     }
 
     // If we created an MMIO handle it needs to be held by the process
     if (pci_config.is_mmio) {
+        pci_device->EnableMmio(true);
         up->AddHandle(mxtl::move(mmio_handle));
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t sys_pci_io_write(mx_handle_t handle, uint32_t bar_num, uint32_t offset, uint32_t len,
@@ -571,7 +530,7 @@ mx_status_t sys_pci_io_write(mx_handle_t handle, uint32_t bar_num, uint32_t offs
      * @param len Length of the operation in bytes
      * @param value_ptr Pointer to the value to write
      */
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_io_read(mx_handle_t handle, uint32_t bar_num, uint32_t offset, uint32_t len,
@@ -584,7 +543,7 @@ mx_status_t sys_pci_io_read(mx_handle_t handle, uint32_t bar_num, uint32_t offse
      * @param len Length of the operation in bytes
      * @param out_value_ptr Pointer to read the value into
      */
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_map_interrupt(mx_handle_t dev_handle,
@@ -599,7 +558,7 @@ mx_status_t sys_pci_map_interrupt(mx_handle_t dev_handle,
      */
     LTRACEF("handle %d\n", dev_handle);
     if (!out_handle) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     auto up = ProcessDispatcher::GetCurrent();
@@ -607,62 +566,26 @@ mx_status_t sys_pci_map_interrupt(mx_handle_t dev_handle,
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status =
         up->GetDispatcherWithRights(dev_handle, MX_RIGHT_READ, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     mxtl::RefPtr<Dispatcher> interrupt_dispatcher;
     mx_rights_t rights;
     status_t result = pci_device->MapInterrupt(which_irq, &interrupt_dispatcher, &rights);
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         return result;
 
     HandleOwner handle(MakeHandle(mxtl::move(interrupt_dispatcher), rights));
     if (!handle)
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
     status = out_handle.copy_to_user(up->MapHandleToValue(handle));
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         return status;
     }
     up->AddHandle(mxtl::move(handle));
 
-    return NO_ERROR;
-}
-
-mx_status_t sys_pci_map_config(mx_handle_t dev_handle, user_ptr<mx_handle_t> out_handle) {
-    /**
-     * Fetch an I/O Mapping object which maps the PCI device's mmaped config
-     * into the caller's address space (read only)
-     *
-     * @param handle Handle associated with a PCI device
-     * @param out_handle pointer to a handle to associate with the config mapping
-     */
-    LTRACEF("handle %d\n", dev_handle);
-
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
-    mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_READ, &pci_device);
-    if (status != NO_ERROR)
-        return status;
-
-    mx_rights_t config_rights;
-    mxtl::RefPtr<Dispatcher> config_io_mapping;
-    status_t result = pci_device->MapConfig(&config_io_mapping, &config_rights);
-    if (result != NO_ERROR)
-        return result;
-
-    HandleOwner config_handle(MakeHandle(mxtl::move(config_io_mapping), config_rights));
-    if (!config_handle)
-        return ERR_NO_MEMORY;
-
-    status = out_handle.copy_to_user(up->MapHandleToValue(config_handle));
-    if (status != NO_ERROR) {
-        return status;
-    }
-    up->AddHandle(mxtl::move(config_handle));
-
-    return NO_ERROR;
+    return MX_OK;
 }
 
 /**
@@ -680,18 +603,18 @@ mx_status_t sys_pci_query_irq_mode_caps(mx_handle_t dev_handle,
 
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_READ, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     uint32_t max_irqs;
     status_t result = pci_device->QueryIrqModeCaps((mx_pci_irq_mode_t)mode, &max_irqs);
-    if (result != NO_ERROR)
+    if (result != MX_OK)
         return result;
 
     // TODO(andymutton): Change to use user_ptr copy
     if (copy_to_user_unsafe(out_max_irqs.reinterpret<uint8_t>().get(),
-                            &max_irqs, sizeof(*(out_max_irqs).get())) != NO_ERROR)
-        return ERR_INVALID_ARGS;
+                            &max_irqs, sizeof(*(out_max_irqs).get())) != MX_OK)
+        return MX_ERR_INVALID_ARGS;
 
     return result;
 }
@@ -711,7 +634,7 @@ mx_status_t sys_pci_set_irq_mode(mx_handle_t dev_handle,
 
     mxtl::RefPtr<PciDeviceDispatcher> pci_device;
     mx_status_t status = up->GetDispatcherWithRights(dev_handle, MX_RIGHT_WRITE, &pci_device);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     return pci_device->SetIrqMode((mx_pci_irq_mode_t)mode, requested_irq_count);
@@ -719,66 +642,58 @@ mx_status_t sys_pci_set_irq_mode(mx_handle_t dev_handle,
 #else  // WITH_DEV_PCIE
 mx_status_t sys_pci_init(mx_handle_t, user_ptr<const mx_pci_init_arg_t>, uint32_t) {
     shutdown_early_init_console();
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_add_subtract_io_range(mx_handle_t handle, bool mmio, uint64_t base, uint64_t len, bool add) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_handle_t sys_pci_get_nth_device(mx_handle_t, uint32_t, user_ptr<mx_pcie_device_info_t>) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_claim_device(mx_handle_t) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_enable_bus_master(mx_handle_t, bool) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_enable_pio(mx_handle_t, bool) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_reset_device(mx_handle_t) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
-mx_status_t sys_pci_map_mmio(mx_handle_t, uint32_t, mx_cache_policy_t, user_ptr<mx_handle_t>) {
-    return ERR_NOT_SUPPORTED;
+mx_status_t sys_pci_get_bar(mx_handle_t, uint32_t, user_ptr<mx_pci_resource_t>) {
+    return MX_ERR_NOT_SUPPORTED;
 }
 
-mx_status_t sys_pci_get_bar(mx_handle_t dev_handle, uint32_t bar_num, user_ptr<mx_pci_resource_t> out_bar) {
-    return ERR_NOT_SUPPORTED;
-}
-
-mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_t> out_config) {
-    return ERR_NOT_SUPPORTED;
+mx_status_t sys_pci_get_config(mx_handle_t dev_handle, user_ptr<mx_pci_resource_t>) {
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_io_write(mx_handle_t, uint32_t, uint32_t, uint32_t, uint32_t) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_io_read(mx_handle_t, uint32_t, uint32_t, uint32_t, user_ptr<uint32_t>) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_map_interrupt(mx_handle_t, int32_t, user_ptr<mx_handle_t>) {
-    return ERR_NOT_SUPPORTED;
-}
-
-mx_status_t sys_pci_map_config(mx_handle_t, user_ptr<mx_handle_t>) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_query_irq_mode_caps(mx_handle_t, uint32_t, user_ptr<uint32_t>) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 mx_status_t sys_pci_set_irq_mode(mx_handle_t, uint32_t, uint32_t) {
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 #endif // WITH_DEV_PCIE

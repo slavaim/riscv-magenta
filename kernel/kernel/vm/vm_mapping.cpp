@@ -11,6 +11,7 @@
 #include <err.h>
 #include <inttypes.h>
 #include <kernel/vm.h>
+#include <kernel/vm/fault.h>
 #include <kernel/vm/vm_aspace.h>
 #include <kernel/vm/vm_object.h>
 #include <mxalloc/new.h>
@@ -55,11 +56,11 @@ void VmMapping::Dump(uint depth, bool verbose) const {
     char vmo_name[32];
     object_->get_name(vmo_name, sizeof(vmo_name));
     printf("map %p [%#" PRIxPTR " %#" PRIxPTR
-           "] sz %#zx mmufl %#x vmo %p off %#" PRIx64
+           "] sz %#zx mmufl %#x vmo %p/k%" PRIu64 " off %#" PRIx64
            " pages %zu ref %d '%s'\n",
            this, base_, base_ + size_ - 1, size_, arch_mmu_flags_,
-           object_.get(), object_offset_,
-           // TODO: Use AllocatePagesLocked() when Dump() is locked
+           object_.get(), object_->user_id(), object_offset_,
+           // TODO(dbort): Use AllocatePagesLocked() once Dump() is locked
            // consistently. Currently, Dump() may be called without the aspace
            // lock.
            object_->AllocatedPagesInRange(object_offset_, size_),

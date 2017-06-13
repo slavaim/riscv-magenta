@@ -79,19 +79,19 @@ __NO_SAFESTACK static bool map_block(mx_handle_t parent_vmar,
                                            MX_VM_FLAG_CAN_MAP_WRITE |
                                            MX_VM_FLAG_CAN_MAP_SPECIFIC,
                                            &vmar, &addr);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return true;
     region->iov_base = (void*)addr;
     status = _mx_vmar_map(vmar, before, vmo, vmo_offset, size,
                           MX_VM_FLAG_PERM_READ |
                           MX_VM_FLAG_PERM_WRITE |
                           MX_VM_FLAG_SPECIFIC, &addr);
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         _mx_vmar_destroy(vmar);
     _mx_handle_close(vmar);
     mapping->iov_base = (void*)addr;
     mapping->iov_len = size;
-    return status != NO_ERROR;
+    return status != MX_OK;
 }
 
 // This allocates all the per-thread memory for a new thread about to
@@ -114,23 +114,26 @@ __NO_SAFESTACK static bool map_block(mx_handle_t parent_vmar,
 // It initializes the basic thread descriptor fields.
 // Everything else is zero-initialized.
 
-__NO_SAFESTACK pthread_t __allocate_thread(const pthread_attr_t* attr) {
+__NO_SAFESTACK pthread_t __allocate_thread(
+    const pthread_attr_t* attr,
+    const char* thread_name,
+    char vmo_name[MX_MAX_NAME_LEN]) {
     thread_allocation_acquire();
 
     const size_t guard_size =
         attr->_a_guardsize == 0 ? 0 : round_up_to_page(attr->_a_guardsize);
     const size_t stack_size = round_up_to_page(attr->_a_stacksize);
 
-    const size_t tcb_size = round_up_to_page(libc.tls_size);
+    const size_t tls_size = libc.tls_size;
+    const size_t tcb_size = round_up_to_page(tls_size);
 
     const size_t vmo_size = tcb_size + stack_size * 2;
     mx_handle_t vmo;
     mx_status_t status = _mx_vmo_create(vmo_size, 0, &vmo);
-    if (status != NO_ERROR) {
+    if (status != MX_OK) {
         __thread_allocation_release();
         return NULL;
     }
-
     struct iovec tcb, tcb_region;
     if (map_block(_mx_vmar_root_self(), vmo, 0, tcb_size, PAGE_SIZE, PAGE_SIZE,
                   &tcb, &tcb_region)) {
@@ -144,6 +147,22 @@ __NO_SAFESTACK pthread_t __allocate_thread(const pthread_attr_t* attr) {
     // At this point all our access to global TLS state is done, so we
     // can allow dlopen again.
     __thread_allocation_release();
+
+    // For the initial thread, it's too early to call snprintf because
+    // it's not __NO_SAFESTACK.
+    if (vmo_name != NULL) {
+        // For other threads, try to give the VMO a name that includes
+        // the pthread_t value (and the TLS size if that fits too), but
+        // don't use a truncated value since that would be confusing to
+        // interpret.
+        if (snprintf(vmo_name, MX_MAX_NAME_LEN, "%s:%p/TLS=%#zx",
+                     thread_name, td, tls_size) < MX_MAX_NAME_LEN ||
+            snprintf(vmo_name, MX_MAX_NAME_LEN, "%s:%p",
+                     thread_name, td) < MX_MAX_NAME_LEN)
+            thread_name = vmo_name;
+    }
+    _mx_object_set_property(vmo, MX_PROP_NAME,
+                            thread_name, strlen(thread_name));
 
     if (map_block(_mx_vmar_root_self(), vmo,
                   tcb_size, stack_size, guard_size, 0,

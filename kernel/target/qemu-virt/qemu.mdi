@@ -1,4 +1,4 @@
-include "kernel/include/mdi/kernel-defs.mdi"
+include "system/public/magenta/mdi/magenta.mdi"
 
 cpu-map = {
     clusters = {
@@ -8,8 +8,8 @@ cpu-map = {
     }
 }
 
-kernel-drivers = {
-    pl011-uart = {
+kernel = {
+    arm-pl011-uart = {
         base-virt = 0xffffffffc9000000
         base-phys = 0x09000000
         irq = 33
@@ -21,11 +21,12 @@ kernel-drivers = {
         gicc-offset = 0x10000
         ipi-base = 13
         msi-frame-phys = 0x08020000
+        msi-frame-virt = 0xffffffffc8020000
     }
     arm-psci = {
         use-hvc = true
     }
-    arm-generic-timer = {
+    arm-timer = {
         irq-virt = 27
     }
     qemu-pcie = {}

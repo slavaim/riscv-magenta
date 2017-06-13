@@ -8,11 +8,9 @@
 
 #include <err.h>
 
+#include <magenta/rights.h>
 #include <magenta/state_tracker.h>
 #include <mxalloc/new.h>
-
-constexpr mx_rights_t kDefaultEventRights =
-    MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER | MX_RIGHT_READ | MX_RIGHT_WRITE;
 
 constexpr uint32_t kUserSignalMask = MX_EVENT_SIGNALED | MX_USER_SIGNAL_ALL;
 
@@ -21,11 +19,11 @@ status_t EventDispatcher::Create(uint32_t options, mxtl::RefPtr<Dispatcher>* dis
     AllocChecker ac;
     auto disp = new (&ac) EventDispatcher(options);
     if (!ac.check())
-        return ERR_NO_MEMORY;
+        return MX_ERR_NO_MEMORY;
 
-    *rights = kDefaultEventRights;
+    *rights = MX_DEFAULT_EVENT_RIGHTS;
     *dispatcher = mxtl::AdoptRef<Dispatcher>(disp);
-    return NO_ERROR;
+    return MX_OK;
 }
 
 EventDispatcher::EventDispatcher(uint32_t options)
@@ -37,11 +35,11 @@ status_t EventDispatcher::user_signal(uint32_t clear_mask, uint32_t set_mask, bo
     canary_.Assert();
 
     if (peer)
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
 
     if ((set_mask & ~kUserSignalMask) || (clear_mask & ~kUserSignalMask))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     state_tracker_.UpdateState(clear_mask, set_mask);
-    return NO_ERROR;
+    return MX_OK;
 }

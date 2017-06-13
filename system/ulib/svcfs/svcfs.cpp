@@ -129,6 +129,7 @@ mx_status_t VnodeDir::Getattr(vnattr_t* attr) {
 
 void VnodeDir::NotifyAdd(const char* name, size_t len) { watcher_.NotifyAdd(name, len); }
 mx_status_t VnodeDir::WatchDir(mx_handle_t* out) { return watcher_.WatchDir(out); }
+mx_status_t VnodeDir::WatchDirV2(const vfs_watch_dir_t* cmd) { return watcher_.WatchDirV2(cmd); }
 
 mx_status_t VnodeDir::Readdir(void* cookie, void* data, size_t len) {
     dircookie_t* c = static_cast<dircookie_t*>(cookie);
@@ -176,6 +177,17 @@ bool VnodeDir::AddService(const char* name, size_t len, ServiceProvider* provide
     services_.push_back(mxtl::move(vn));
     NotifyAdd(name, len);
     return true;
+}
+
+bool VnodeDir::RemoveService(const char* name, size_t len) {
+    for (auto& child : services_) {
+        if (child.NameMatch(name, len)) {
+            child.ClearProvider();
+            services_.erase(child);
+            return true;
+        }
+    }
+    return false;
 }
 
 void VnodeDir::RemoveAllServices() {
