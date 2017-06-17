@@ -49,7 +49,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
         int index;
 
         //
-        // Synchronize this task's top level page-table
+        // Synchronize this process' top level page-table
         // with the 'reference' page table.
         //
         index = pgd_index(addr);
@@ -57,7 +57,8 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
         pgd_k = kernel_init_pgd + index;
 
         //
-        // we have done if the current pgd is the kernel pgd
+        // If the current pgd is the kernel pgd
+        // then go to a general page fault handling
         //
         if (pgd_k == pgd)
             goto page_in;
@@ -66,9 +67,18 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
             goto page_in;
         
         //
-        // copy from the kernel PGD
+        // Copy from the kernel PGD to the
+        // current process' PGD
         //
         set_pgd(pgd, *pgd_k);
+
+        //
+        // Since the kernel is global, it is unnecessary
+        // to copy individual PTEs in PUD, PMD, PTE tables.
+        // Nevertheless we need to traverse up to the PTE
+        // to cheeck that the above PGD patching made the
+        // address valid
+        //
 
         pud = pud_offset(pgd, addr);
         pud_k = pud_offset(pgd_k, addr);
@@ -76,8 +86,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
             goto page_in;
 
         //
-        // we have done if the puds are equal,
-        // and the should be equal here as
+        // PUDs should be equal here as
         // pud, pmd and ptes are shared for
         // the kernel space
         //
@@ -86,15 +95,16 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
             set_pud(pud, *pud_k);
         }
 
-        //
-        // Since the kernel is global, it is unnecessary
-        // to copy individual PTEs
-        //
         pmd = pmd_offset(pud, addr);
         pmd_k = pmd_offset(pud_k, addr);
         if (!pmd_present(*pmd_k))
             goto page_in;
 
+        //
+        // PMDs should be equal here as
+        // pud, pmd and ptes are shared for
+        // the kernel space
+        //
         if (pmd_k != pmd){
             panic("we should not be here as only PGD is unique");
             set_pmd(pmd, *pmd_k);
