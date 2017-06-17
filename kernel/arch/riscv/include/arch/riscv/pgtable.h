@@ -217,6 +217,11 @@ static inline bool pte_present(pte_t pte)
 	return pte_all_flags(pte, _PAGE_PRESENT);
 }
 
+static inline void pte_set_none(pte_t *ptep)
+{
+    set_pte(ptep, __pte(0x0));
+}
+
 static inline bool pte_none(pte_t pte)
 {
 	return (pte_val(pte) == 0);

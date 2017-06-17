@@ -18,13 +18,18 @@
 #include <arch/riscv/pgtable-walk.h>
 #include <arch/ops.h>
 
+#define min(a, b)   (a) < (b) ? a : b
+
 //
 // if the page table entry doesn point to a leaf
 // it doesn't have protection bits set
 //
 pgprot_t TABLE_PROT = {.pgprot = 0};
 
-/* allocates a page table of any level - pgd, pud, pmt, pte */
+//
+// allocates a page table of any level - pgd, pud, pmt, pte
+// a counterpart is free_pt
+//
 static
 inline
 void* allocate_pt(paddr_t* _pa)
@@ -42,6 +47,13 @@ void* allocate_pt(paddr_t* _pa)
     DEBUG_ASSERT(va && paddr_to_kvaddr(*_pa) == __va(*_pa));
 
     return va;
+}
+
+static
+inline
+void free_pt(void* va, size_t count)
+{
+    pmm_free_kpages(va, count);
 }
 
 /* initialize per address space */
@@ -105,7 +117,7 @@ pgprot_t
 mmu_flags_to_pte_attr(uint flags) {
 
     pgprot_t prot;
-    prot.pgprot = _PAGE_READ | _PAGE_PRESENT;
+    prot.pgprot = _PAGE_PRESENT;
 
     switch (flags & ARCH_MMU_FLAG_CACHE_MASK) {
     case ARCH_MMU_FLAG_CACHED:
@@ -121,27 +133,22 @@ mmu_flags_to_pte_attr(uint flags) {
         break;
     }
 
-    switch (flags & (ARCH_MMU_FLAG_PERM_USER | ARCH_MMU_FLAG_PERM_WRITE)) {
-    case 0:
-        break;
-    case ARCH_MMU_FLAG_PERM_WRITE:
-        prot.pgprot |= _PAGE_WRITE;
-        break;
-    case ARCH_MMU_FLAG_PERM_USER:
-        prot.pgprot |= _PAGE_USER;
-        break;
-    case ARCH_MMU_FLAG_PERM_USER | ARCH_MMU_FLAG_PERM_WRITE:
-        prot.pgprot |= _PAGE_WRITE | _PAGE_USER;
-        break;
-    default:
-        /* invalid user-supplied flag */
-        DEBUG_ASSERT(!"mmu_flags_to_pte_attr 2");
-        break;
-    }
+    DEBUG_ASSERT(flags & (ARCH_MMU_FLAG_PERM_WRITE |
+                          ARCH_MMU_FLAG_PERM_READ |
+                          ARCH_MMU_FLAG_PERM_USER |
+                          ARCH_MMU_FLAG_PERM_EXECUTE));
 
-    if (!(flags & ARCH_MMU_FLAG_PERM_EXECUTE)) {
+    if (flags & ARCH_MMU_FLAG_PERM_WRITE)
+        prot.pgprot |= _PAGE_WRITE;
+
+    if (flags & ARCH_MMU_FLAG_PERM_READ)
+        prot.pgprot |= _PAGE_READ;
+
+    if (flags & ARCH_MMU_FLAG_PERM_USER)
+        prot.pgprot |= _PAGE_USER;
+
+    if (flags & ARCH_MMU_FLAG_PERM_EXECUTE)
         prot.pgprot |= _PAGE_EXEC;
-    }
 
     if (flags & ARCH_MMU_FLAG_NS) {
     }
@@ -326,10 +333,149 @@ arch_mmu_map(
     return (bmp < 0) ? (status_t)bmp : NO_ERROR;
 }
 
-status_t arch_mmu_unmap(arch_aspace_t* aspace, vaddr_t vaddr, size_t count, size_t* unmapped)
+static
+ssize_t
+riscv64_mmu_unmap(
+    vaddr_t vaddr_in,
+    size_t  size_in,
+    pgd_t*  top_table
+)
 {
-    PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    vaddr_t  vaddr = vaddr_in;
+    size_t   size  = size_in;
+    size_t   chunk_size;
+    size_t   unmapped_size;
+
+    if ((vaddr & PAGE_MASK_LOW) ||
+        (size & PAGE_MASK_LOW)) {
+        return ERR_INVALID_ARGS;
+    }
+
+    unmapped_size = 0;
+    chunk_size = PAGE_SIZE;
+
+    while (size) {
+
+        //
+        // get a PGD entry
+        //
+        pgd_t *pgd = pgd_offset(top_table, vaddr);
+        DEBUG_ASSERT(!pgd_bad(*pgd));
+        if (unlikely(pgd_bad(*pgd)))
+            break;
+        
+        DEBUG_ASSERT(pgd_present(*pgd));
+        if (pgd_present(*pgd)) {
+
+            //
+            // get a PUD entry
+            //
+            pud_t *pud = pud_offset(pgd, vaddr);
+            DEBUG_ASSERT(!pud_huge(*pud));
+            if (pud_huge(*pud))
+                panic("pdu_huge(*pud) in riscv64_mmu_map");
+
+            if (pud_present(*pud)) {
+
+                //
+                // get a PMD entry
+                //
+                pmd_t *pmd = pmd_offset(pud, vaddr);
+                DEBUG_ASSERT(!pmd_huge(*pmd));
+                if (pmd_huge(*pmd))
+                    panic("pmd_huge(*pmd) in riscv64_mmu_map");
+
+                if (pmd_present(*pmd)) {
+
+                    //
+                    // get a PTE entry
+                    //
+                    pte_t *pte = pte_offset(pmd, vaddr);
+
+                    //
+                    // invalidate the pte
+                    //
+                    if (pte_present(*pte))
+                        pte_set_none(pte);
+                    
+                    chunk_size = PAGE_SIZE;
+
+                } else {
+                     chunk_size = min(size, PMD_PAGE_SIZE);
+                }
+            } else {
+                 chunk_size = min(size, PUD_PAGE_SIZE);
+            }
+        } else {
+            chunk_size = min(size, PGD_PAGE_SIZE);
+        }
+
+        //
+        // move to the next page
+        //
+        vaddr += chunk_size;
+        size  -= chunk_size;
+        unmapped_size += chunk_size;
+    } // end while
+
+    //
+    // Free the page tables, for the kernel keep
+    // the page tables. In case of the kernel at least
+    // PMD ( or PUD if exist ) should be keept
+    // as it is not possible to invalidate PGD
+    // entries for all processes
+    //
+    if (kernel_init_pgd != top_table && unmapped_size > 0) {
+
+        //
+        // an exhaustive search is a very ugly solution,
+        // the better one is to keep the number of valid PTEs
+        // in the corresponding vm_page_t , TO_DO_RISCV
+        //
+        PANIC_UNIMPLEMENTED;
+    }
+
+    return unmapped_size;
+}
+
+status_t
+arch_mmu_unmap(
+    arch_aspace_t* aspace,
+    vaddr_t vaddr,
+    size_t count,
+    size_t* unmapped
+    )
+{
+    DEBUG_ASSERT(aspace);
+    DEBUG_ASSERT(aspace->magic == ARCH_ASPACE_MAGIC);
+    DEBUG_ASSERT(aspace->pt_virt);
+
+    DEBUG_ASSERT(is_valid_vaddr(aspace, vaddr));
+
+    if (!is_valid_vaddr(aspace, vaddr))
+        return ERR_OUT_OF_RANGE;
+
+    DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
+    if (!IS_PAGE_ALIGNED(vaddr))
+        return ERR_INVALID_ARGS;
+
+    ssize_t ret;
+    if (aspace->flags & ARCH_ASPACE_FLAG_KERNEL) {
+        ret = riscv64_mmu_unmap(vaddr,
+                                count * PAGE_SIZE,
+                                kernel_init_pgd);
+    } else {
+        ret = riscv64_mmu_unmap(vaddr,
+                                count * PAGE_SIZE,
+                                aspace->pt_virt);
+    }
+
+    if (unmapped) {
+        *unmapped = (ret > 0) ? (ret / PAGE_SIZE) : 0u;
+        DEBUG_ASSERT(*unmapped <= count);
+    }
+
+    return (ret < 0) ? (status_t)ret : 0;
 }
 
 static inline void set_pte_mmu_flags(pte_t pte, uint mmu_flags)

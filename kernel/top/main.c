@@ -98,7 +98,7 @@ void lk_main(void)
     thread_set_pinned_cpu(t, 0);
     thread_detach(t);
     thread_resume(t);
-
+/*
     //
     // TEST TTTTTTTT
     //
@@ -114,7 +114,7 @@ void lk_main(void)
     //
     // end TEST
     //
-
+*/
     // become the idle thread and enable interrupts to start the scheduler
     thread_become_idle();
 }
