@@ -56,8 +56,18 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
         pgd = (pgd_t *)pfn_to_virt(csr_read(sptbr)) + index;
         pgd_k = kernel_init_pgd + index;
 
+        //
+        // we have done if the current pgd is the kernel pgd
+        //
+        if (pgd_k == pgd)
+            goto page_in;
+
         if (!pgd_present(*pgd_k))
             goto page_in;
+        
+        //
+        // copy from the kernel PGD
+        //
         set_pgd(pgd, *pgd_k);
 
         pud = pud_offset(pgd, addr);
@@ -66,37 +76,52 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
             goto page_in;
 
         //
-        // Since the kernel is global, it is unnecessary
-		// to copy individual PTEs
+        // we have done if the puds are equal,
+        // and the should be equal here as
+        // pud, pmd and ptes are shared for
+        // the kernel space
         //
-		pmd = pmd_offset(pud, addr);
-		pmd_k = pmd_offset(pud_k, addr);
-		if (!pmd_present(*pmd_k))
-			goto page_in;
-		set_pmd(pmd, *pmd_k);
+        if (pud_k != pud){
+            panic("we should not be here as only PGD is unique");
+            set_pud(pud, *pud_k);
+        }
 
-		//
+        //
+        // Since the kernel is global, it is unnecessary
+        // to copy individual PTEs
+        //
+        pmd = pmd_offset(pud, addr);
+        pmd_k = pmd_offset(pud_k, addr);
+        if (!pmd_present(*pmd_k))
+            goto page_in;
+
+        if (pmd_k != pmd){
+            panic("we should not be here as only PGD is unique");
+            set_pmd(pmd, *pmd_k);
+        }
+
+        //
         // Make sure the actual PTE exists as well to
-		// catch kernel area accesses to non-mapped
-		// addresses. If we don't do this, this will just
-		// silently loop forever.
-		//
-		pte_k = pte_offset_kernel(pmd_k, addr);
-		if (!pte_present(*pte_k))
-			goto page_in;
+        // catch kernel area accesses to non-mapped
+        // addresses. If we don't do this, this will just
+        // silently loop forever.
+        //
+        pte_k = pte_offset_kernel(pmd_k, addr);
+        if (!pte_present(*pte_k))
+            goto page_in;
 
         //
         // the page table has been fixed
         //
-		return;
+        return;
     }
 
 page_in:
 
-	//
+    //
     // If interrupts were enabled in the parent context?
     //
-	if (0x0 == (regs->sstatus & SR_PIE)) {
+    if (0x0 == (regs->sstatus & SR_PIE)) {
         //
         // a page fault when interrupts
         // are disabled that can't be fixed
