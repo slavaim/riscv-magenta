@@ -1,3 +1,4 @@
+
 // Copyright 2017 The Fuchsia Authors
 // Copyright (c) 2017 Slava Imameev
 //
@@ -5,10 +6,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-#include <stdint.h>
+#pragma once
+
+#include <kernel/thread.h>
 #include <magenta/compiler.h>
 #include <arch/riscv/current.h>
-#include <debug.h>
 
 __BEGIN_CDECLS
 

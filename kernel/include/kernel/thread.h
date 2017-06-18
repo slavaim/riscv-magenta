@@ -262,8 +262,6 @@ enum handler_return thread_timer_tick(void);
 
 /* the current thread */
 #include <arch/current_thread.h>
-thread_t *get_current_thread(void);
-void set_current_thread(thread_t *);
 
 /* scheduler lock */
 extern spin_lock_t thread_lock;

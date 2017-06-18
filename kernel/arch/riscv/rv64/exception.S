@@ -228,7 +228,7 @@ _ret_from_exception:
 
 _resume_userspace:
     /*
-     * Interrupts must be disabled here
+     * Interrupts must be disabled here.
      * Save unwound kernel stack pointer in 
      * the thread info and save the last in $sscratch
      */
@@ -293,6 +293,49 @@ _restore_all:
     /* return to the interrupted code */
     sret
 END(handle_exception)
+
+.section .text
+FUNCTION(riscv64_uspace_entry)
+    /*
+    * input parameters
+    * $a0 - arg1
+    * $a1 - arg2
+    * $a2 - pc
+    * $a3 - sp
+    * $a4 - kernel stack top
+    */
+
+    /*
+     * Interrupts must be disabled here.
+     * Build a fake exception entry with $sepc, $sp, $sstatus
+     */
+
+    /* User mode irqs on */
+    li   t1, SR_PIE
+    csrs sstatus, t1
+
+    /* User mode initial floating point state */
+    li   t1, SR_FS_INITIAL
+    csrs sstatus, t1
+
+    /* user mode $pc */
+    csrw sepc, a2
+
+    /* $a0 and $a1 are set by a caller */
+
+    /*
+     * Save unwound kernel stack pointer in 
+     * the thread info and save the last in $sscratch
+     */
+    REG_S a4, TI_KSP(tp)
+    csrw sscratch, tp
+
+    /* set user mode $sp */
+    move sp, a3
+
+    /* switch to the user code */
+    sret
+END(riscv64_uspace_entry)
 
 /*
  * Integer register context switch
