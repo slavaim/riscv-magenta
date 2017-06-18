@@ -16,6 +16,7 @@
 #include <arch/riscv/pgtable.h>
 #include <arch/riscv/pgalloc.h>
 #include <arch/riscv/pgtable-walk.h>
+#include <arch/riscv/tlbflush.h>
 #include <arch/ops.h>
 
 #define min(a, b)   (a) < (b) ? a : b
@@ -724,7 +725,10 @@ vaddr_t arch_mmu_pick_spot(const arch_aspace_t* aspace,
  */
 void arch_mmu_context_switch(arch_aspace_t* old_aspace, arch_aspace_t* aspace)
 {
-    PANIC_UNIMPLEMENTED;
+    if (likely(old_aspace != aspace)) {
+		csr_write(sptbr, virt_to_pfn(aspace->pt_virt));
+		local_flush_tlb_all();
+	};
 }
 
 void arch_disable_mmu(void)

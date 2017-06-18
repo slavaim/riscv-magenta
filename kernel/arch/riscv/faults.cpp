@@ -53,7 +53,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
         // with the 'reference' page table.
         //
         index = pgd_index(addr);
-        pgd = (pgd_t *)pfn_to_virt(csr_read(sptbr)) + index;
+        pgd = get_current_sptbr_va() + index;
         pgd_k = kernel_init_pgd + index;
 
         //
