@@ -29,7 +29,6 @@ static inline struct thread *get_current(void)
 static inline void set_current(struct thread* t)
 {
     register struct thread_info* ti = &t->arch.ti;
-    assert(t);
     
     __asm__ __volatile__ (
         "mv tp, %0"

@@ -129,9 +129,11 @@ asmlinkage void do_page_fault(struct pt_regs *regs)
 page_in:
 
     //
-    // If interrupts were enabled in the parent context?
+    // If interrupts were enabled in the parent supervisor context?
+    // if we come from the user mode SR_PIE might be zero as it is copied
+    // from UIE bit
     //
-    if (0x0 == (regs->sstatus & SR_PIE)) {
+    if (0x0 == (regs->sstatus & SR_PIE) && !user_mode(regs)) {
         //
         // a page fault when interrupts
         // are disabled that can't be fixed

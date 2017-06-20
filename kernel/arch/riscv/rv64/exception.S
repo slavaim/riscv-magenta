@@ -216,8 +216,9 @@ _ret_from_syscall:
 _ret_from_exception:
 
     /*
-     * disable interrupts enabled before executing syscall
-     * or inside an exception handler
+     * disable interrupts before exeting a syscall
+     * or inside an exception handler, sret will restore
+     * the callers SR_IE value from SR_PIE
      */
     csrc sstatus, SR_IE
 
@@ -306,22 +307,21 @@ FUNCTION(riscv64_uspace_entry)
     */
 
     /*
-     * Interrupts must be disabled here.
      * Build a fake exception entry with $sepc, $sp, $sstatus
      */
 
-    /* User mode irqs on */
-    li   t1, SR_PIE
-    csrs sstatus, t1
+    /*
+     * User mode irqs on, this also disables current
+     * mode interrupt as SR_IE is not set
+     */
+    li   t1, SR_PIE | SR_FS_INITIAL
+    csrw sstatus, t1
 
-    /* User mode initial floating point state */
-    li   t1, SR_FS_INITIAL
-    csrs sstatus, t1
+     /* let the GDB know there is no caller */
+    move s0, x0
 
     /* user mode $pc */
     csrw sepc, a2
-
-    /* $a0 and $a1 are set by a caller */
 
     /*
      * Save unwound kernel stack pointer in 
@@ -330,10 +330,44 @@ FUNCTION(riscv64_uspace_entry)
     REG_S a4, TI_KSP(tp)
     csrw sscratch, tp
 
+    /* $a0 and $a1 are set by a caller */
+
     /* set user mode $sp */
     move sp, a3
 
-    /* switch to the user code */
+    /*
+    * Zero the remaining registers so a user mode code
+    * can't use their content to infer kernel layout
+    */
+    move  ra, x0
+    move  gp, x0
+    move  tp, x0
+    move  t0, x0
+    move  t1, x0
+    move  t2, x0
+    move  s1, x0
+    move  a2, x0
+    move  a3, x0
+    move  a4, x0
+    move  a5, x0
+    move  a6, x0
+    move  a7, x0
+    move  s2, x0
+    move  s3, x0
+    move  s4, x0
+    move  s5, x0
+    move  s6, x0
+    move  s7, x0
+    move  s8, x0
+    move  s9, x0
+    move  s10, x0
+    move  s11, x0
+    move  t3, x0
+    move  t4, x0
+    move  t5, x0
+    move  t6, x0
+
+    /* switch to the user code */ 
     sret
 END(riscv64_uspace_entry)
 
@@ -380,7 +414,14 @@ FUNCTION(__switch_to)
     REG_L s9,  THREAD_S9(a1)
     REG_L s10, THREAD_S10(a1)
     REG_L s11, THREAD_S11(a1)
-    REG_L tp,  THREAD_TI(a1) /* Next thread_info pointer */
+    
+   /*
+    * Next thread_info pointer,
+    * usually already set by a call
+    * to set_current_thread
+    */
+    REG_L tp,  THREAD_TI(a1)
+
     /*return to $ra, the new $sp has been set*/
     ret
 END(__switch_to)

@@ -726,9 +726,15 @@ vaddr_t arch_mmu_pick_spot(const arch_aspace_t* aspace,
 void arch_mmu_context_switch(arch_aspace_t* old_aspace, arch_aspace_t* aspace)
 {
     if (likely(old_aspace != aspace)) {
-		csr_write(sptbr, virt_to_pfn(aspace->pt_virt));
-		local_flush_tlb_all();
-	};
+
+        if (aspace) {
+		    csr_write(sptbr, virt_to_pfn(aspace->pt_virt));
+        } else {
+            csr_write(sptbr, virt_to_pfn(kernel_init_pgd));
+        }
+
+        local_flush_tlb_all();
+	}
 }
 
 void arch_disable_mmu(void)
