@@ -8,6 +8,8 @@ Milestones:
   - 20 May 2017 the kernel is running in QEMU and switching between kernel threads
   - 02 June 2017 some syscall facilities are implemented
   - 14 June 2017 some pagefault facilities are implemented
+  
+Some notes on Magents RISC-V porting can be found here https://github.com/slavaim/riscv-notes/tree/master/magenta 
 
 Below is the original Magenta's README.md  
 
