@@ -142,7 +142,7 @@ static mx_status_t gpt_ioctl(void* ctx, uint32_t op, const void* cmd, size_t cmd
     }
     case IOCTL_DEVICE_SYNC: {
         // Propagate sync to parent device
-        return device_op_ioctl(device->parent, IOCTL_DEVICE_SYNC, NULL, 0, NULL, 0, NULL);
+        return device_ioctl(device->parent, IOCTL_DEVICE_SYNC, NULL, 0, NULL, 0, NULL);
     }
     default:
         return MX_ERR_NOT_SUPPORTED;
@@ -218,13 +218,13 @@ static mx_protocol_device_t gpt_proto = {
     .close = gpt_close,
 };
 
-static void gpt_block_set_callbacks(mx_device_t* dev, block_callbacks_t* cb) {
-    gptpart_device_t* device = dev->ctx;
+static void gpt_block_set_callbacks(void* ctx, block_callbacks_t* cb) {
+    gptpart_device_t* device = ctx;
     device->callbacks = cb;
 }
 
-static void gpt_block_get_info(mx_device_t* dev, block_info_t* info) {
-    gptpart_device_t* device = dev->ctx;
+static void gpt_block_get_info(void* ctx, block_info_t* info) {
+    gptpart_device_t* device = ctx;
     memcpy(info, &device->info, sizeof(*info));
 }
 
@@ -262,15 +262,15 @@ static void block_do_txn(gptpart_device_t* dev, uint32_t opcode, mx_handle_t vmo
     iotxn_queue(dev->parent, txn);
 }
 
-static void gpt_block_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    block_do_txn((gptpart_device_t*)dev->ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
+static void gpt_block_read(void* ctx, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn(ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
-static void gpt_block_write(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    block_do_txn((gptpart_device_t*)dev->ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
+static void gpt_block_write(void* ctx, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn(ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
-static block_ops_t gpt_block_ops = {
+static block_protocol_ops_t gpt_block_ops = {
     .set_callbacks = gpt_block_set_callbacks,
     .get_info = gpt_block_get_info,
     .read = gpt_block_read,
@@ -294,8 +294,8 @@ static int gpt_bind_thread(void* arg) {
     unsigned partitions = 0; // used to keep track of number of partitions found
     block_info_t block_info;
     size_t actual = 0;
-    ssize_t rc = device_op_ioctl(dev, IOCTL_BLOCK_GET_INFO, NULL, 0,
-                                 &block_info, sizeof(block_info), &actual);
+    ssize_t rc = device_ioctl(dev, IOCTL_BLOCK_GET_INFO, NULL, 0,
+                              &block_info, sizeof(block_info), &actual);
     if (rc < 0 || actual != sizeof(block_info)) {
         xprintf("gpt: Error %zd getting blksize for dev=%s\n", rc, device_get_name(dev));
         goto unbind;

@@ -29,10 +29,10 @@
 extern "C" mx_status_t virtio_bind(void* ctx, mx_device_t* device, void** cookie) {
     LTRACEF("device %p\n", device);
     mx_status_t status;
-    pci_protocol_t* pci;
+    pci_protocol_t pci;
 
     /* grab the pci device and configuration */
-    if (device_op_get_protocol(device, MX_PROTOCOL_PCI, (void**)&pci)) {
+    if (device_get_protocol(device, MX_PROTOCOL_PCI, &pci)) {
         TRACEF("no pci protocol\n");
         return -1;
     }
@@ -40,14 +40,14 @@ extern "C" mx_status_t virtio_bind(void* ctx, mx_device_t* device, void** cookie
     const pci_config_t* config;
     size_t config_size;
     mx_handle_t config_handle = MX_HANDLE_INVALID;
-    status = pci->map_resource(device, PCI_RESOURCE_CONFIG, MX_CACHE_POLICY_UNCACHED_DEVICE,
-                               (void**)&config, &config_size, &config_handle);
-    if (status != NO_ERROR) {
+    status = pci.ops->map_resource(pci.ctx, PCI_RESOURCE_CONFIG, MX_CACHE_POLICY_UNCACHED_DEVICE,
+                                   (void**)&config, &config_size, &config_handle);
+    if (status != MX_OK) {
         TRACEF("failed to grab config handle\n");
         return status;
     }
 
-    LTRACEF("pci %p\n", pci);
+    LTRACEF("pci %p\n", &pci);
     LTRACEF("0x%x:0x%x\n", config->vendor_id, config->device_id);
 
     mxtl::unique_ptr<virtio::Device> vd = nullptr;
@@ -67,12 +67,12 @@ extern "C" mx_status_t virtio_bind(void* ctx, mx_device_t* device, void** cookie
     }
 
     LTRACEF("calling Bind on driver\n");
-    status = vd->Bind(pci, config_handle, config);
-    if (status != NO_ERROR)
+    status = vd->Bind(&pci, config_handle, config);
+    if (status != MX_OK)
         return status;
 
     status = vd->Init();
-    if (status != NO_ERROR)
+    if (status != MX_OK)
         return status;
 
     // if we're here, we're successful so drop the unique ptr ref to the object and let it live on
@@ -80,5 +80,5 @@ extern "C" mx_status_t virtio_bind(void* ctx, mx_device_t* device, void** cookie
 
     LTRACE_EXIT;
 
-    return NO_ERROR;
+    return MX_OK;
 }

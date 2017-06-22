@@ -46,6 +46,8 @@ struct atomic {
     static_assert(!is_same<T, wchar_t>::value, "mxtl::atomic does not support wide characters");
     static_assert(!is_same<T, char16_t>::value, "mxtl::atomic does not support wide characters");
     static_assert(!is_same<T, char32_t>::value, "mxtl::atomic does not support wide characters");
+    static_assert(__atomic_always_lock_free(sizeof(T), nullptr),
+                  "The requested integer size is not statically guaranteed to be atomically modifiable");
 
     // The default constructor does not initialize the value! This is
     // the same as plain old integer types.
@@ -276,7 +278,6 @@ inline void atomic_signal_fence(memory_order order = memory_order_seq_cst) {
 }
 
 // Aliases for all integer type names.
-using atomic_bool = atomic<bool>;
 using atomic_char = atomic<char>;
 using atomic_schar = atomic<signed char>;
 using atomic_uchar = atomic<unsigned char>;

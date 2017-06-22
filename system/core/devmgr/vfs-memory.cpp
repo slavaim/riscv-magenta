@@ -510,11 +510,18 @@ ssize_t VnodeMemfs::Ioctl(uint32_t op, const void* in_buf, size_t in_len,
         return devmgr_add_systemfs_vmo(*vmo);
     }
     case IOCTL_VFS_QUERY_FS: {
-        if (out_len < strlen(kFsName) + 1) {
+        if (out_len < sizeof(vfs_query_info_t)) {
             return MX_ERR_INVALID_ARGS;
         }
-        strcpy(static_cast<char*>(out_buf), kFsName);
-        return strlen(kFsName);
+
+        vfs_query_info_t* info = static_cast<vfs_query_info_t*>(out_buf);
+        //TODO(planders): eventually report something besides 0.
+        info->total_bytes = 0;
+        info->used_bytes = 0;
+        info->total_nodes = 0;
+        info->used_nodes = 0;
+        strcpy(info->name, kFsName);
+        return sizeof(*info);
     }
     default:
         return MX_ERR_NOT_SUPPORTED;
@@ -574,10 +581,14 @@ mx_status_t VnodeDir::CreateFromVmo(const char* name, size_t namelen,
 mx_status_t VnodeDir::CanCreate(const char* name, size_t namelen) const {
     if (!IsDirectory()) {
         return MX_ERR_INVALID_ARGS;
-    } else if (dnode_->Lookup(name, namelen, nullptr) == MX_OK) {
+    }
+    mx_status_t status;
+    if ((status = dnode_->Lookup(name, namelen, nullptr)) == MX_ERR_NOT_FOUND) {
+        return MX_OK;
+    } else if (status == MX_OK) {
         return MX_ERR_ALREADY_EXISTS;
     }
-    return MX_OK;
+    return status;
 }
 
 mx_status_t VnodeDir::AttachVnode(mxtl::RefPtr<VnodeMemfs> vn, const char* name, size_t namelen,

@@ -40,12 +40,12 @@
 //         wlanmac_protocol_t* ops;
 //         auto status = get_device_protocol(parent_, MX_PROTOCOL_WLANMAC,
 //                                           reinterpret_cast<void**>(&ops));
-//         if (status != NO_ERROR) {
+//         if (status != MX_OK) {
 //             return status;
 //         }
 //        proxy_.reset(new ddk::WlanmacProtocolProxy(ops, parent_));
 //        status = proxy_->Start(this);
-//        if (status != NO_ERROR) {
+//        if (status != MX_OK) {
 //            return status;
 //        }
 //        return device_add(ddk_device(), parent_);
@@ -91,7 +91,7 @@
 //
 //     mx_status_t WlanmacQuery(uint32_t options, ethmac_info_t* info) {
 //         // Fill out the ethmac info
-//         return NO_ERROR;
+//         return MX_OK;
 //     }
 //
 //     void WlanmacStop() {
@@ -101,7 +101,7 @@
 //     mx_status_t WlanmacStart(mxtl::unique_ptr<ddk::WlanmacIfcProxy> proxy) {
 //         // Start wlanmac operation
 //         proxy_.swap(proxy);
-//         return NO_ERROR;
+//         return MX_OK;
 //     }
 //
 //     void WlanmacTx(uint32_t options, void* data, size_t length) {
@@ -110,7 +110,7 @@
 //
 //     mx_status_t WlanmacSetChannel(uint32_t options, wlan_channel_t* chan) {
 //         // Set the radio channel
-//         return NO_ERROR;
+//         return MX_OK;
 //     }
 //
 //   private:
@@ -180,63 +180,61 @@ class WlanmacProtocol : public internal::base_protocol {
     }
 
   private:
-    static mx_status_t Query(mx_device_t* dev, uint32_t options, ethmac_info_t* info) {
-        return static_cast<D*>(dev->ctx)->WlanmacQuery(options, info);
+    static mx_status_t Query(void* ctx, uint32_t options, ethmac_info_t* info) {
+        return static_cast<D*>(ctx)->WlanmacQuery(options, info);
     }
 
-    static void Stop(mx_device_t* dev) {
-        static_cast<D*>(dev->ctx)->WlanmacStop();
+    static void Stop(void* ctx) {
+        static_cast<D*>(ctx)->WlanmacStop();
     }
 
-    static mx_status_t Start(mx_device_t* dev, wlanmac_ifc_t* ifc, void* cookie) {
+    static mx_status_t Start(void* ctx, wlanmac_ifc_t* ifc, void* cookie) {
         auto ifc_proxy = mxtl::unique_ptr<WlanmacIfcProxy>(new WlanmacIfcProxy(ifc, cookie));
-        return static_cast<D*>(dev->ctx)->WlanmacStart(mxtl::move(ifc_proxy));
+        return static_cast<D*>(ctx)->WlanmacStart(mxtl::move(ifc_proxy));
     }
 
-    static void Tx(mx_device_t* dev, uint32_t options, const void* data, size_t length) {
-        static_cast<D*>(dev->ctx)->WlanmacTx(options, data, length);
+    static void Tx(void* ctx, uint32_t options, const void* data, size_t length) {
+        static_cast<D*>(ctx)->WlanmacTx(options, data, length);
     }
 
-    static mx_status_t SetChannel(mx_device_t* dev, uint32_t options, wlan_channel_t* chan) {
-        return static_cast<D*>(dev->ctx)->WlanmacSetChannel(options, chan);
+    static mx_status_t SetChannel(void* ctx, uint32_t options, wlan_channel_t* chan) {
+        return static_cast<D*>(ctx)->WlanmacSetChannel(options, chan);
     }
 
-    wlanmac_protocol_t ops_ = {};
+    wlanmac_protocol_ops_t ops_ = {};
 };
 
 class WlanmacProtocolProxy {
   public:
-    WlanmacProtocolProxy(wlanmac_protocol_t* ops, mx_device_t* dev)
-      : ops_(ops), dev_(dev) {}
+    WlanmacProtocolProxy(wlanmac_protocol_t* proto)
+      : ops_(proto->ops), ctx_(proto->ctx) {}
 
     mx_status_t Query(uint32_t options, ethmac_info_t* info) {
-        return ops_->query(dev_, options, info);
+        return ops_->query(ctx_, options, info);
     }
 
     template <typename D>
     mx_status_t Start(D* ifc) {
         static_assert(mxtl::is_base_of<WlanmacIfc<D>, D>::value,
                       "Start must be called with a subclass of WlanmacIfc");
-        return ops_->start(dev_, ifc->wlanmac_ifc(), ifc);
+        return ops_->start(ctx_, ifc->wlanmac_ifc(), ifc);
     }
 
     void Stop() {
-        ops_->stop(dev_);
+        ops_->stop(ctx_);
     }
 
     void Tx(uint32_t options, const void* data, size_t length) {
-        ops_->tx(dev_, options, data, length);
+        ops_->tx(ctx_, options, data, length);
     }
 
     mx_status_t SetChannel(uint32_t options, wlan_channel_t* chan) {
-        return ops_->set_channel(dev_, options, chan);
+        return ops_->set_channel(ctx_, options, chan);
     }
 
-    mx_device_t* device() { return dev_; }
-
   private:
-    wlanmac_protocol_t* ops_;
-    mx_device_t* dev_;
+    wlanmac_protocol_ops_t* ops_;
+    void* ctx_;
 };
 
 }  // namespace ddk

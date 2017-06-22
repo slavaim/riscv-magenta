@@ -224,7 +224,7 @@ status_t UserThread::Initialize(const char* name, size_t len) {
     process_->aspace()->AttachToThread(lkthread);
 
     // we've entered the initialized state
-    SetState(State::INITIALIZED);
+    SetStateLocked(State::INITIALIZED);
 
     return MX_OK;
 }
@@ -273,7 +273,7 @@ status_t UserThread::Start(uintptr_t entry, uintptr_t sp,
         return ret;
 
     // mark ourselves as running and resume the kernel thread
-    SetState(State::RUNNING);
+    SetStateLocked(State::RUNNING);
 
     thread_.user_tid = dispatcher_->get_koid();
     thread_.user_pid = process_->get_koid();
@@ -296,7 +296,7 @@ void UserThread::Exit() {
 
         DEBUG_ASSERT(state_ == State::RUNNING || state_ == State::DYING);
 
-        SetState(State::DYING);
+        SetStateLocked(State::DYING);
     }
 
     // exit here
@@ -313,35 +313,62 @@ void UserThread::Kill() {
 
     AutoLock lock(&state_lock_);
 
-    // see if we're already going down.
-    if (state_ == State::DYING || state_ == State::DEAD)
-        return;
-    // if we've never been started, then release ourselves.
-    if (state_ == State::INITIALIZED) {
-        // as we've been initialized previously, forget the LK thread.
-        thread_forget(&thread_);
-        // reset our state, so that the destructor will properly shut down.
-        SetState(State::INITIAL);
-        // drop the ref, as the LK thread will not own this object.
-        __UNUSED auto ret = Release();
-        return;
+    switch (state_) {
+        case State::INITIAL:
+            // initial state, thread was never initialized, leave in this state
+            break;
+        case State::INITIALIZED: {
+            // as we've been initialized previously, forget the LK thread.
+            thread_forget(&thread_);
+            // reset our state, so that the destructor will properly shut down.
+            SetStateLocked(State::INITIAL);
+            // drop the ref, as the LK thread will not own this object.
+            auto ret = Release();
+            // if this was the last ref, something is terribly wrong
+            DEBUG_ASSERT(!ret);
+            break;
+        }
+        case State::RUNNING:
+        case State::SUSPENDED:
+            // deliver a kernel kill signal to the thread
+            thread_kill(&thread_, false);
+
+            // enter the dying state
+            SetStateLocked(State::DYING);
+            break;
+        case State::DYING:
+        case State::DEAD:
+            // already going down
+            break;
     }
-
-    // deliver a kernel kill signal to the thread
-    thread_kill(&thread_, false);
-
-    // enter the dying state
-    SetState(State::DYING);
 }
 
 status_t UserThread::Suspend() {
+    canary_.Assert();
+
     LTRACE_ENTRY_OBJ;
+
+    AutoLock lock(&state_lock_);
+
+    LTRACEF("%p: state %s\n", this, StateToString(state_));
+
+    if (state_ != State::RUNNING && state_ != State::SUSPENDED)
+        return MX_ERR_BAD_STATE;
 
     return thread_suspend(&thread_);
 }
 
 status_t UserThread::Resume() {
+    canary_.Assert();
+
     LTRACE_ENTRY_OBJ;
+
+    AutoLock lock(&state_lock_);
+
+    LTRACEF("%p: state %s\n", this, StateToString(state_));
+
+    if (state_ != State::RUNNING && state_ != State::SUSPENDED)
+        return MX_ERR_BAD_STATE;
 
     return thread_resume(&thread_);
 }
@@ -405,7 +432,7 @@ void UserThread::Exiting() {
         DEBUG_ASSERT(state_ == State::DYING);
 
         // put ourselves into the dead state
-        SetState(State::DEAD);
+        SetStateLocked(State::DEAD);
     }
 
     // remove ourselves from our parent process's view
@@ -444,7 +471,7 @@ void UserThread::Suspending() {
 
         DEBUG_ASSERT(state_ == State::RUNNING || state_ == State::DYING);
         if (state_ == State::RUNNING) {
-            SetState(State::SUSPENDED);
+            SetStateLocked(State::SUSPENDED);
         }
     }
 
@@ -472,7 +499,7 @@ void UserThread::Resuming() {
 
         DEBUG_ASSERT(state_ == State::SUSPENDED || state_ == State::DYING);
         if (state_ == State::SUSPENDED) {
-            SetState(State::RUNNING);
+            SetStateLocked(State::RUNNING);
         }
     }
 
@@ -531,7 +558,7 @@ int UserThread::StartRoutine(void* arg) {
     __UNREACHABLE;
 }
 
-void UserThread::SetState(State state) {
+void UserThread::SetStateLocked(State state) {
     canary_.Assert();
 
     LTRACEF("thread %p: state %u (%s)\n", this, static_cast<unsigned int>(state), StateToString(state));
@@ -772,7 +799,11 @@ void UserThread::GetInfoForUserspace(mx_info_thread_t* info) {
             DEBUG_ASSERT(exception_wait_port_ != nullptr);
             excp_port_type = exception_wait_port_->type();
         } else {
-            DEBUG_ASSERT(exception_wait_port_ == nullptr);
+            // Either we're not in an exception, or we're in the window where
+            // event_wait_deadline has woken up but |exception_wait_lock_| has
+            // not been reacquired.
+            DEBUG_ASSERT(exception_wait_port_ == nullptr ||
+                         exception_status_ != ExceptionStatus::UNPROCESSED);
             excp_port_type = ExceptionPort::Type::NONE;
         }
     }

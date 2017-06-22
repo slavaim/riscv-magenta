@@ -154,10 +154,11 @@ void dev_ref_release(mx_device_t* dev) {
         mx_handle_close(dev->event);
         mx_handle_close(dev->resource);
         DM_UNLOCK();
-        device_op_release(dev);
+        dev_op_release(dev);
         DM_LOCK();
-        if (dev->flags & DEV_FLAG_INSTANCE) {
-            // instances don't support device_remove() so we decrement the parent ref count here
+
+        // At this point we can safely release the ref on our parent
+        if (dev->parent) {
             dev_ref_release(dev->parent);
         }
     }
@@ -396,7 +397,7 @@ static void devhost_unbind_child(mx_device_t* child) {
         // hold a reference so the child won't get released during its unbind callback.
         dev_ref_acquire(child);
         DM_UNLOCK();
-        device_op_unbind(child);
+        dev_op_unbind(child);
         DM_LOCK();
         dev_ref_release(child);
     }
@@ -442,10 +443,11 @@ mx_status_t devhost_device_remove(mx_device_t* dev) {
         dev_ref_release(dev);
     }
 
-    // detach from parent, downref parent
+    // detach from parent.  we do not downref the parent
+    // until after our refcount hits zero and our release()
+    // hook has been called.
     if (dev->parent) {
         list_delete(&dev->node);
-        dev_ref_release(dev->parent);
     }
 
     dev->flags |= DEV_FLAG_VERY_DEAD;
@@ -492,9 +494,9 @@ mx_status_t devhost_device_open_at(mx_device_t* dev, mx_device_t** out, const ch
     DM_UNLOCK();
     *out = dev;
     if (path) {
-        r = device_op_open_at(dev, out, path, flags);
+        r = dev_op_open_at(dev, out, path, flags);
     } else {
-        r = device_op_open(dev, out, flags);
+        r = dev_op_open(dev, out, flags);
     }
     DM_LOCK();
     if (r < 0) {
@@ -515,7 +517,7 @@ mx_status_t devhost_device_open_at(mx_device_t* dev, mx_device_t** out, const ch
 mx_status_t devhost_device_close(mx_device_t* dev, uint32_t flags) {
     mx_status_t r;
     DM_UNLOCK();
-    r = device_op_close(dev, flags);
+    r = dev_op_close(dev, flags);
     DM_LOCK();
     dev_ref_release(dev);
     return r;

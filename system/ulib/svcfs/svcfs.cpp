@@ -18,13 +18,16 @@ static void CopyToArray(const char* string, size_t len, mxtl::Array<char>* resul
     result->swap(array);
 }
 
-static bool IsDotOrDotDot(const char* name, size_t len) {
-    return ((len == 1) && (name[0] == '.')) ||
-           ((len == 2) && (name[0] == '.') && (name[1] == '.'));
+static bool IsDot(const char* name, size_t len) {
+    return (len == 1) && (name[0] == '.');
+}
+
+static bool IsDotDot(const char* name, size_t len) {
+    return (len == 2) && (name[0] == '.') && (name[1] == '.');
 }
 
 static bool IsValidServiceName(const char* name, size_t len) {
-    return name && len >= 1 && !IsDotOrDotDot(name, len) &&
+    return name && len >= 1 && !IsDot(name, len) && !IsDotDot(name, len) &&
         !memchr(name, '/', len) && !memchr(name, 0, len);
 }
 
@@ -62,15 +65,15 @@ VnodeSvc::~VnodeSvc() = default;
 
 mx_status_t VnodeSvc::Open(uint32_t flags) {
     if (flags & O_DIRECTORY) {
-        return ERR_NOT_DIR;
+        return MX_ERR_NOT_DIR;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t VnodeSvc::Serve(mx_handle_t h, uint32_t flags) {
     if (!provider_) {
         mx_handle_close(h);
-        return ERR_UNAVAILABLE;
+        return MX_ERR_UNAVAILABLE;
     }
 
     provider_->Connect(name_.get(), name_.size(), mx::channel(h));
@@ -81,7 +84,7 @@ mx_status_t VnodeSvc::Serve(mx_handle_t h, uint32_t flags) {
     if (!node_id_)
         provider_ = nullptr;
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 bool VnodeSvc::NameMatch(const char* name, size_t len) const {
@@ -100,31 +103,33 @@ VnodeDir::VnodeDir(fs::Dispatcher* dispatcher)
 VnodeDir::~VnodeDir() = default;
 
 mx_status_t VnodeDir::Open(uint32_t flags) {
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t VnodeDir::Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) {
-    if (IsDotOrDotDot(name, len)) {
+    if (IsDot(name, len)) {
         *out = mxtl::RefPtr<fs::Vnode>(this);
-        return NO_ERROR;
+        return MX_OK;
+    } else if (IsDotDot(name, len)) {
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     mxtl::RefPtr<VnodeSvc> vn = nullptr;
     for (auto& child : services_) {
         if (child.NameMatch(name, len)) {
             *out = mxtl::RefPtr<VnodeSvc>(&child);
-            return NO_ERROR;
+            return MX_OK;
         }
     }
 
-    return ERR_NOT_FOUND;
+    return MX_ERR_NOT_FOUND;
 }
 
 mx_status_t VnodeDir::Getattr(vnattr_t* attr) {
     memset(attr, 0, sizeof(vnattr_t));
     attr->mode = V_TYPE_DIR | V_IRUSR;
     attr->nlink = 1;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void VnodeDir::NotifyAdd(const char* name, size_t len) { watcher_.NotifyAdd(name, len); }
@@ -137,16 +142,10 @@ mx_status_t VnodeDir::Readdir(void* cookie, void* data, size_t len) {
 
     mx_status_t r = 0;
     if (c->last_id < 1) {
-        if ((r = df.Next(".", 1, VTYPE_TO_DTYPE(V_TYPE_DIR))) != NO_ERROR) {
+        if ((r = df.Next(".", 1, VTYPE_TO_DTYPE(V_TYPE_DIR))) != MX_OK) {
             return df.BytesFilled();
         }
         c->last_id = 1;
-    }
-    if (c->last_id < 2) {
-        if ((r = df.Next("..", 2, VTYPE_TO_DTYPE(V_TYPE_DIR))) != NO_ERROR) {
-            return df.BytesFilled();
-        }
-        c->last_id = 2;
     }
 
     for (const VnodeSvc& vn : services_) {
@@ -154,7 +153,7 @@ mx_status_t VnodeDir::Readdir(void* cookie, void* data, size_t len) {
             continue;
         }
         if ((r = df.Next(vn.name().get(), vn.name().size(),
-                         VTYPE_TO_DTYPE(V_TYPE_FILE))) != NO_ERROR) {
+                         VTYPE_TO_DTYPE(V_TYPE_FILE))) != MX_OK) {
             return df.BytesFilled();
         }
         c->last_id = vn.node_id();
@@ -205,31 +204,33 @@ VnodeProviderDir::VnodeProviderDir(fs::Dispatcher* dispatcher)
 VnodeProviderDir::~VnodeProviderDir() = default;
 
 mx_status_t VnodeProviderDir::Open(uint32_t flags) {
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t VnodeProviderDir::Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, size_t len) {
-    if (IsDotOrDotDot(name, len)) {
+    if (IsDot(name, len)) {
         *out = mxtl::RefPtr<fs::Vnode>(this);
-        return NO_ERROR;
+        return MX_OK;
+    } else if (IsDotDot(name, len)) {
+        return MX_ERR_NOT_SUPPORTED;
     }
 
     if (!IsValidServiceName(name, len)) {
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
 
     mxtl::Array<char> array;
     CopyToArray(name, len, &array);
 
     *out = mxtl::AdoptRef(new VnodeSvc(dispatcher_, 0, mxtl::move(array), provider_));
-    return NO_ERROR;
+    return MX_OK;
 }
 
 mx_status_t VnodeProviderDir::Getattr(vnattr_t* attr) {
     memset(attr, 0, sizeof(vnattr_t));
     attr->mode = V_TYPE_DIR | V_IRUSR;
     attr->nlink = 1;
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void VnodeProviderDir::SetServiceProvider(ServiceProvider* provider) {

@@ -94,17 +94,17 @@ mx_status_t BlockDevice::virtio_block_ioctl(void* ctx, uint32_t op, const void* 
     case IOCTL_BLOCK_GET_INFO: {
         block_info_t* info = reinterpret_cast<block_info_t*>(reply);
         if (max < sizeof(*info))
-            return ERR_BUFFER_TOO_SMALL;
+            return MX_ERR_BUFFER_TOO_SMALL;
         bd->GetInfo(info);
         *out_actual = sizeof(*info);
-        return NO_ERROR;
+        return MX_OK;
     }
     case IOCTL_BLOCK_RR_PART: {
         // rebind to reread the partition table
         return device_rebind(bd->device());
     }
     default:
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 }
 
@@ -118,13 +118,13 @@ BlockDevice::~BlockDevice() {
     // TODO: clean up allocated physical memory
 }
 
-void BlockDevice::virtio_block_set_callbacks(mx_device_t* dev, block_callbacks_t* cb) {
-    BlockDevice* device = static_cast<BlockDevice*>(dev->ctx);
+void BlockDevice::virtio_block_set_callbacks(void* ctx, block_callbacks_t* cb) {
+    BlockDevice* device = static_cast<BlockDevice*>(ctx);
     device->callbacks_ = cb;
 }
 
-void BlockDevice::virtio_block_get_info(mx_device_t* dev, block_info_t* info) {
-    BlockDevice* device = static_cast<BlockDevice*>(dev->ctx);
+void BlockDevice::virtio_block_get_info(void* ctx, block_info_t* info) {
+    BlockDevice* device = static_cast<BlockDevice*>(ctx);
     device->GetInfo(info);
 }
 
@@ -139,19 +139,19 @@ void BlockDevice::block_do_txn(BlockDevice* dev, uint32_t opcode,
                                uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
     LTRACEF("vmo offset %#lx dev_offset %#lx length %#lx\n", vmo_offset, dev_offset, length);
     if ((dev_offset % dev->GetBlockSize()) || (length % dev->GetBlockSize())) {
-        dev->callbacks_->complete(cookie, ERR_INVALID_ARGS);
+        dev->callbacks_->complete(cookie, MX_ERR_INVALID_ARGS);
         return;
     }
     uint64_t size = dev->GetSize();
     if ((dev_offset >= size) || (length >= (size - dev_offset))) {
-        dev->callbacks_->complete(cookie, ERR_OUT_OF_RANGE);
+        dev->callbacks_->complete(cookie, MX_ERR_OUT_OF_RANGE);
         return;
     }
 
     mx_status_t status;
     iotxn_t* txn;
     if ((status = iotxn_alloc_vmo(&txn, IOTXN_ALLOC_POOL,
-                    vmo, vmo_offset, length)) != NO_ERROR) {
+                    vmo, vmo_offset, length)) != MX_OK) {
         dev->callbacks_->complete(cookie, status);
         return;
     }
@@ -165,16 +165,16 @@ void BlockDevice::block_do_txn(BlockDevice* dev, uint32_t opcode,
     iotxn_queue(dev->device_, txn);
 }
 
-void BlockDevice::virtio_block_read(mx_device_t* dev, mx_handle_t vmo,
+void BlockDevice::virtio_block_read(void* ctx, mx_handle_t vmo,
                                     uint64_t length, uint64_t vmo_offset,
                                     uint64_t dev_offset, void* cookie) {
-    block_do_txn((BlockDevice*)dev->ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
+    block_do_txn((BlockDevice*)ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
-void BlockDevice::virtio_block_write(mx_device_t* dev, mx_handle_t vmo,
+void BlockDevice::virtio_block_write(void* ctx, mx_handle_t vmo,
                                      uint64_t length, uint64_t vmo_offset,
                                      uint64_t dev_offset, void* cookie) {
-    block_do_txn((BlockDevice*)dev->ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
+    block_do_txn((BlockDevice*)ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
 mx_status_t BlockDevice::Init() {
@@ -251,7 +251,7 @@ mx_status_t BlockDevice::Init() {
         return status;
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 void BlockDevice::IrqRingUpdate() {
@@ -291,7 +291,7 @@ void BlockDevice::IrqRingUpdate() {
                 LTRACEF("completes txn %p\n", txn);
                 free_blk_req((unsigned int)txn->extra[1]);
                 list_delete(&txn->node);
-                iotxn_complete(txn, NO_ERROR, txn->length);
+                iotxn_complete(txn, MX_OK, txn->length);
                 break;
             }
         }
@@ -351,7 +351,7 @@ void BlockDevice::QueueReadWriteTxn(iotxn_t* txn) {
     // offset must be aligned to block size
     if (txn->offset % config_.blk_size) {
         LTRACEF("offset %#" PRIx64 " is not aligned to sector size %u!\n", txn->offset, config_.blk_size);
-        iotxn_complete(txn, ERR_INVALID_ARGS, 0);
+        iotxn_complete(txn, MX_ERR_INVALID_ARGS, 0);
         return;
     }
 
@@ -363,7 +363,7 @@ void BlockDevice::QueueReadWriteTxn(iotxn_t* txn) {
     // constrain to device capacity
     txn->length = mxtl::min(txn->length, GetSize() - txn->offset);
     if (txn->length == 0) {
-        iotxn_complete(txn, NO_ERROR, 0);
+        iotxn_complete(txn, MX_OK, 0);
         return;
     }
 
@@ -371,7 +371,7 @@ void BlockDevice::QueueReadWriteTxn(iotxn_t* txn) {
     auto index = alloc_blk_req();
     if (index >= blk_req_count) {
         TRACEF("too many block requests queued (%zu)!\n", index);
-        iotxn_complete(txn, ERR_NO_RESOURCES, 0);
+        iotxn_complete(txn, MX_ERR_NO_RESOURCES, 0);
         return;
     }
 
@@ -416,7 +416,7 @@ void BlockDevice::QueueReadWriteTxn(iotxn_t* txn) {
     if (!desc) {
         TRACEF("failed to allocate descriptor chain of length %zu\n", 2u + run_count);
         // TODO: handle this scenario by requeing the transfer in smaller runs
-        iotxn_complete(txn, ERR_NO_RESOURCES, 0);
+        iotxn_complete(txn, MX_ERR_NO_RESOURCES, 0);
         return;
     }
 

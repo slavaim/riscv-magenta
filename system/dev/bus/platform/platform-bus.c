@@ -8,9 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// needed to access mx_device_t children list in platform_dev_find_protocol()
-#define DDK_INTERNAL 1
-
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/binding.h>
@@ -22,8 +19,17 @@
 #include <mdi/mdi-defs.h>
 
 typedef struct {
+    uint32_t id;
+    struct {
+        void* ops;
+        void* ctx;
+    } proto;
+    list_node_t node;
+} platform_protocol_t;
+
+typedef struct {
     mx_device_t* mxdev;
-    list_node_t children;
+    list_node_t protocols;
 } platform_bus_t;
 
 typedef struct {
@@ -32,7 +38,6 @@ typedef struct {
     uint32_t proto_id;
     void* protocol;
     mdi_node_ref_t mdi_node;
-    list_node_t node;
     mx_device_prop_t props[3];
 } platform_dev_t;
 
@@ -56,27 +61,41 @@ static mx_protocol_device_t platform_dev_proto = {
     .release = platform_dev_release,
 };
 
-static mx_status_t platform_dev_find_protocol(mx_device_t* dev, uint32_t proto_id,
-                                       mx_device_t** out_dev, void** out_proto) {
-    platform_dev_t* pdev = dev->ctx;
+static mx_status_t platform_dev_find_protocol(void* ctx, uint32_t proto_id, void* out) {
+    platform_dev_t* pdev = ctx;
     platform_bus_t* bus = pdev->bus;
 
-    list_for_every_entry(&bus->children, pdev, platform_dev_t, node) {
-        // search children of our platform device nodes for the protocol
-        mx_device_t* child;
-        list_for_every_entry(&pdev->mxdev->children, child, mx_device_t, node) {
-            if (device_op_get_protocol(child, proto_id, out_proto) == MX_OK) {
-                *out_dev = child;
-                return MX_OK;
-            }
+    platform_protocol_t* proto;
+    list_for_every_entry(&bus->protocols, proto, platform_protocol_t, node) {
+        if (proto->id == proto_id) {
+            memcpy(out, &proto->proto, sizeof(proto->proto));
+            return MX_OK;
         }
     }
 
     return MX_ERR_NOT_FOUND;
 }
 
-static platform_device_protocol_t platform_dev_proto_ops = {
+static mx_status_t platform_dev_register_protocol(void* ctx, uint32_t proto_id,
+                                                  void* proto_ops, void* proto_ctx) {
+    platform_dev_t* pdev = ctx;
+    platform_bus_t* bus = pdev->bus;
+
+    platform_protocol_t* proto;
+    if ((proto = malloc(sizeof(platform_protocol_t))) == NULL) {
+        return MX_ERR_NO_MEMORY;
+    }
+
+    proto->id = proto_id;
+    proto->proto.ops = proto_ops;
+    proto->proto.ctx = proto_ctx;
+    list_add_tail(&bus->protocols, &proto->node);
+    return MX_OK;
+}
+
+static platform_device_protocol_ops_t platform_dev_proto_ops = {
     .find_protocol = platform_dev_find_protocol,
+    .register_protocol = platform_dev_register_protocol,
 };
 
 static mx_status_t platform_bus_publish_devices(platform_bus_t* bus, mdi_node_ref_t* node) {
@@ -153,7 +172,6 @@ static mx_status_t platform_bus_publish_devices(platform_bus_t* bus, mdi_node_re
                    vid, pid, did);
             return status;
         }
-        list_add_tail(&bus->children, &dev->node);
     }
 
     return MX_OK;
@@ -199,7 +217,7 @@ static mx_status_t platform_bus_bind(void* ctx, mx_device_t* parent, void** cook
         status = MX_ERR_NO_MEMORY;
         goto fail;
     }
-    list_initialize(&bus->children);
+    list_initialize(&bus->protocols);
 
     device_add_args_t add_args = {
         .version = DEVICE_ADD_ARGS_VERSION,

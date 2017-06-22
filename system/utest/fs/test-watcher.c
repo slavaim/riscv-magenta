@@ -26,7 +26,7 @@
 bool check_for_empty(mx_handle_t h) {
     char name[NAME_MAX + 1];
     ASSERT_EQ(mx_channel_read(h, 0, &name, NULL, sizeof(name), 0, NULL, NULL),
-              ERR_SHOULD_WAIT, "");
+              MX_ERR_SHOULD_WAIT, "");
     return true;
 }
 
@@ -35,13 +35,13 @@ bool check_for_watched(mx_handle_t h, const char* expected, size_t expected_len)
     mx_signals_t observed;
     ASSERT_EQ(mx_object_wait_one(h, MX_CHANNEL_READABLE,
                                  mx_deadline_after(MX_SEC(5)), &observed),
-              NO_ERROR, "");
+              MX_OK, "");
     ASSERT_EQ(observed & MX_CHANNEL_READABLE, MX_CHANNEL_READABLE, "");
     uint32_t actual;
 
     uint8_t msg[expected_len + 2];
     ASSERT_EQ(mx_channel_read(h, 0, msg, NULL, expected_len + 2, 0, &actual, NULL),
-              NO_ERROR, "");
+              MX_OK, "");
     ASSERT_EQ(actual, expected_len + 2, "");
     ASSERT_EQ(msg[0], VFS_WATCH_EVT_ADDED, "");
     ASSERT_EQ(msg[1], expected_len, "");
@@ -63,6 +63,7 @@ bool test_watcher_basic(void) {
     vfs_watch_dir_t request;
     ASSERT_EQ(mx_channel_create(0, &h, &request.channel), MX_OK, "");
     request.mask = VFS_WATCH_MASK_ADDED;
+    request.options = 0;
     ASSERT_EQ(ioctl_vfs_watch_dir_v2(dirfd(dir), &request), MX_OK, "");
 
     // The channel should be empty
@@ -112,6 +113,7 @@ bool test_watcher_unsupported(void) {
     // Ask to watch an unsupported event
     ASSERT_EQ(mx_channel_create(0, &h, &request.channel), MX_OK, "");
     request.mask = VFS_WATCH_MASK_ADDED | VFS_WATCH_EVT_EXISTING;
+    request.options = 0;
     ASSERT_NEQ(ioctl_vfs_watch_dir_v2(dirfd(dir), &request), MX_OK, "");
     mx_handle_close(h);
 

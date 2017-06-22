@@ -22,7 +22,7 @@ mx_status_t callback(int dirfd, int event, const char* fn, void* cookie) {
         fprintf(stderr, "watch: waiting...\n");
         break;
     }
-    return NO_ERROR;
+    return MX_OK;
 }
 
 int main(int argc, char** argv) {
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
     }
 
     mx_status_t status;
-    if ((status = mxio_watch_directory(fd, callback, argv[1])) < 0) {
+    if ((status = mxio_watch_directory(fd, callback, MX_TIME_INFINITE, argv[1])) < 0) {
         fprintf(stderr, "mxio watch directory failed: %d\n", status);
         return -1;
     }

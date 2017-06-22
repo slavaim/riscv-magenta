@@ -23,7 +23,7 @@
 typedef struct blkdev {
     mx_device_t* mxdev;
     mx_device_t* parent;
-    block_ops_t* blockops;
+    block_protocol_t proto;
 
     mtx_t lock;
     BlockServer* bs;
@@ -34,7 +34,7 @@ static int blockserver_thread(void* arg) {
     BlockServer* bs = bdev->bs;
     mtx_unlock(&bdev->lock);
 
-    blockserver_serve(bs, device_get_parent(bdev->mxdev), bdev->blockops);
+    blockserver_serve(bs, &bdev->proto);
 
     mtx_lock(&bdev->lock);
     if (bdev->bs == bs) {
@@ -184,7 +184,7 @@ static mx_status_t blkdev_ioctl(void* ctx, uint32_t op, const void* cmd,
     case IOCTL_BLOCK_FIFO_CLOSE:
         return blkdev_fifo_close(blkdev);
     default:
-        return device_op_ioctl(blkdev->parent, op, cmd, cmdlen, reply, max, out_actual);
+        return device_ioctl(blkdev->parent, op, cmd, cmdlen, reply, max, out_actual);
     }
 }
 
@@ -195,7 +195,7 @@ static void blkdev_iotxn_queue(void* ctx, iotxn_t* txn) {
 
 static mx_off_t blkdev_get_size(void* ctx) {
     blkdev_t* blkdev = ctx;
-    return device_op_get_size(blkdev->parent);
+    return device_get_size(blkdev->parent);
 }
 
 static void blkdev_unbind(void* ctx) {
@@ -227,7 +227,7 @@ static mx_status_t block_driver_bind(void* ctx, mx_device_t* dev, void** cookie)
     bdev->parent = dev;
 
     mx_status_t status;
-    if (device_op_get_protocol(dev, MX_PROTOCOL_BLOCK_CORE, (void**)&bdev->blockops)) {
+    if (device_get_protocol(dev, MX_PROTOCOL_BLOCK_CORE, &bdev->proto)) {
         status = MX_ERR_INTERNAL;
         goto fail;
     }

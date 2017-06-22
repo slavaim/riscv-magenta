@@ -249,13 +249,13 @@ static mx_protocol_device_t sdmmc_device_proto = {
     .get_size = sdmmc_get_size,
 };
 
-static void sdmmc_block_set_callbacks(mx_device_t* dev, block_callbacks_t* cb) {
-    sdmmc_t* device = dev->ctx;
+static void sdmmc_block_set_callbacks(void* ctx, block_callbacks_t* cb) {
+    sdmmc_t* device = ctx;
     device->callbacks = cb;
 }
 
-static void sdmmc_block_get_info(mx_device_t* dev, block_info_t* info) {
-    sdmmc_t* device = dev->ctx;
+static void sdmmc_block_get_info(void* ctx, block_info_t* info) {
+    sdmmc_t* device = ctx;
     sdmmc_get_info(info, device);
 }
 
@@ -295,16 +295,16 @@ static void block_do_txn(sdmmc_t* dev, uint32_t opcode, mx_handle_t vmo, uint64_
     iotxn_queue(dev->mxdev, txn);
 }
 
-static void sdmmc_block_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    block_do_txn((sdmmc_t*)dev->ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
+static void sdmmc_block_read(void* ctx, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn(ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
-static void sdmmc_block_write(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    block_do_txn((sdmmc_t*)dev->ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
+static void sdmmc_block_write(void* ctx, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn(ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
 // Block core protocol
-static block_ops_t sdmmc_block_ops = {
+static block_protocol_ops_t sdmmc_block_ops = {
     .set_callbacks = sdmmc_block_set_callbacks,
     .get_info = sdmmc_block_get_info,
     .read = sdmmc_block_read,
@@ -312,6 +312,7 @@ static block_ops_t sdmmc_block_ops = {
 };
 
 static int sdmmc_bootstrap_thread(void* arg) {
+    xprintf("sdmmc: bootstrap\n");
     mx_device_t* dev = arg;
 
     mx_status_t st;
@@ -403,8 +404,8 @@ static int sdmmc_bootstrap_thread(void* arg) {
     }
 
     uint32_t new_bus_frequency = 25000000;
-    st = device_op_ioctl(dev, IOCTL_SDMMC_SET_BUS_FREQ, &new_bus_frequency,
-                         sizeof(new_bus_frequency), NULL, 0, NULL);
+    st = device_ioctl(dev, IOCTL_SDMMC_SET_BUS_FREQ, &new_bus_frequency,
+                      sizeof(new_bus_frequency), NULL, 0, NULL);
     if (st != MX_OK) {
         // This is non-fatal but the card will run slowly.
         xprintf("sdmmc: failed to increase bus frequency.\n");
@@ -419,8 +420,8 @@ static int sdmmc_bootstrap_thread(void* arg) {
         }
 
         const uint32_t new_voltage = SDMMC_VOLTAGE_18;
-        st = device_op_ioctl(dev, IOCTL_SDMMC_SET_VOLTAGE, &new_voltage,
-                             sizeof(new_voltage), NULL, 0, NULL);
+        st = device_ioctl(dev, IOCTL_SDMMC_SET_VOLTAGE, &new_voltage,
+                          sizeof(new_voltage), NULL, 0, NULL);
         if (st != MX_OK) {
             xprintf("sdmmc: Card supports 1.8v signalling but was unable to "
                     "switch to 1.8v mode, retcode = %d\n", st);
@@ -508,8 +509,8 @@ static int sdmmc_bootstrap_thread(void* arg) {
                 break;
             }
             const uint32_t new_bus_width = 4;
-            st = device_op_ioctl(dev, IOCTL_SDMMC_SET_BUS_WIDTH, &new_bus_width,
-                                 sizeof(new_bus_width), NULL, 0, NULL);
+            st = device_ioctl(dev, IOCTL_SDMMC_SET_BUS_WIDTH, &new_bus_width,
+                              sizeof(new_bus_width), NULL, 0, NULL);
             if (st != MX_OK) {
                 xprintf("sdmmc: failed to set host bus width, retcode = %d\n", st);
             }

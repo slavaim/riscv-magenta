@@ -281,18 +281,18 @@ static mx_protocol_device_t mailbox_device_protocol = {
     .ioctl = mailbox_device_ioctl,
 };
 
-static mx_status_t bcm_bus_get_macid(mx_device_t* device, uint8_t* out_mac) {
+static mx_status_t bcm_bus_get_macid(void* ctx, uint8_t* out_mac) {
     if (!out_mac) return MX_ERR_INVALID_ARGS;
     bcm_get_macid(out_mac);
     return MX_OK;
 }
 
-static mx_status_t bcm_bus_get_clock_rate(mx_device_t* device, uint32_t id, uint32_t* out_clock) {
+static mx_status_t bcm_bus_get_clock_rate(void* ctx, uint32_t id, uint32_t* out_clock) {
     if (!out_clock) return MX_ERR_INVALID_ARGS;
     return bcm_get_clock_rate(id, out_clock);
 }
 
-static mx_status_t bcm_bus_set_framebuffer(mx_device_t* device, mx_paddr_t addr) {
+static mx_status_t bcm_bus_set_framebuffer(void* ctx, mx_paddr_t addr) {
     mx_status_t ret = mailbox_write(ch_framebuffer, addr + BCM_SDRAM_BUS_ADDR_BASE);
     if (ret != MX_OK)
         return ret;
@@ -301,7 +301,7 @@ static mx_status_t bcm_bus_set_framebuffer(mx_device_t* device, mx_paddr_t addr)
     return mailbox_read(ch_framebuffer, &ack);
 }
 
-static bcm_bus_protocol_t bcm_bus_protocol = {
+static bcm_bus_protocol_ops_t bcm_bus_protocol = {
     .get_macid = bcm_bus_get_macid,
     .get_clock_rate = bcm_bus_get_clock_rate,
     .set_framebuffer = bcm_bus_set_framebuffer,
@@ -309,6 +309,11 @@ static bcm_bus_protocol_t bcm_bus_protocol = {
 
 static mx_status_t mailbox_bind(void* ctx, mx_device_t* parent, void** cookie) {
     uintptr_t page_base;
+
+    platform_device_protocol_t pdp;
+    if (device_get_protocol(parent, MX_PROTOCOL_PLATFORM_DEV, &pdp) != MX_OK) {
+        return MX_ERR_NOT_SUPPORTED;
+    }
 
     // Carve out some address space for the device -- it's memory mapped.
     mx_status_t status = mx_mmap_device_memory(
@@ -322,7 +327,6 @@ static mx_status_t mailbox_bind(void* ctx, mx_device_t* parent, void** cookie) {
     // The device is actually mapped at some offset into the page.
     mailbox_regs = (uint32_t*)(page_base + PAGE_REG_DELTA);
 
-    mx_device_t* rpc_mxdev;
     device_add_args_t vc_rpc_args = {
         .version = DEVICE_ADD_ARGS_VERSION,
         .name = "bcm-vc-rpc",
@@ -331,7 +335,7 @@ static mx_status_t mailbox_bind(void* ctx, mx_device_t* parent, void** cookie) {
         .proto_ops = &bcm_bus_protocol,
     };
 
-    status = device_add(parent, &vc_rpc_args, &rpc_mxdev);
+    status = device_add(parent, &vc_rpc_args, NULL);
     if (status != MX_OK) {
         return status;
     }
@@ -339,6 +343,8 @@ static mx_status_t mailbox_bind(void* ctx, mx_device_t* parent, void** cookie) {
     bcm_vc_poweron(bcm_dev_sd);
     bcm_vc_poweron(bcm_dev_usb);
     bcm_vc_poweron(bcm_dev_i2c1);
+
+    pdp.ops->register_protocol(pdp.ctx, MX_PROTOCOL_BCM_BUS, &bcm_bus_protocol, NULL);
 
     return MX_OK;
 }

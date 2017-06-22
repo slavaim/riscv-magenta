@@ -31,7 +31,7 @@
 // | Mixin class          | Required function implementation                   |
 // +----------------------+----------------------------------------------------+
 // | ddk::GetProtocolable | mx_status_t DdkGetProtocol(uint32_t proto_id,      |
-// |                      |                            void** protocol)        |
+// |                      |                            void* out)              |
 // |                      |                                                    |
 // | ddk::Openable        | mx_status_t DdkOpen(mx_device_t** dev_out,         |
 // |                      |                     uint32_t flags)                |
@@ -80,13 +80,12 @@
 // class MyDevice : public DeviceType {
 //   public:
 //     MyDevice(mx_device_t* parent)
-//       : DeviceType("my-device-name"),
-//         parent_(parent) {}
+//       : DeviceType(parent, "my-device-name") {}
 //
 //     mx_status_t Bind() {
 //         // Any other setup required by MyDevice. The device_add_args_t will be filled out by the
 //         // base class.
-//         return Add(parent_);
+//         return DdkAdd();
 //     }
 //
 //     // Methods required by the ddk mixins
@@ -95,16 +94,13 @@
 //     mx_status_t DdkRead(void* buf, size_t count, mx_off_t off, size_t* actual);
 //     void DdkUnbind();
 //     void DdkRelease();
-//
-//   private:
-//     mx_device_t* parent_;
 // };
 //
 // extern "C" mx_status_t my_bind(mx_device_t* device,
 //                                void** cookie) {
 //     auto dev = unique_ptr<MyDevice>(new MyDevice(device));
 //     auto status = dev->Bind();
-//     if (status == NO_ERROR) {
+//     if (status == MX_OK) {
 //         // devmgr is now in charge of the memory for dev
 //         dev.release();
 //     }
@@ -114,6 +110,11 @@
 // See also: protocol mixins for setting protocol_id and protocol_ops.
 
 namespace ddk {
+
+struct AnyProtocol {
+    void* ops;
+    void* ctx;
+};
 
 // DDK Device mixins
 
@@ -126,8 +127,8 @@ class GetProtocolable : public internal::base_mixin {
     }
 
   private:
-    static mx_status_t GetProtocol(void* ctx, uint32_t proto_id, void** protocol) {
-        return static_cast<D*>(ctx)->DdkGetProtocol(proto_id, protocol);
+    static mx_status_t GetProtocol(void* ctx, uint32_t proto_id, void* out) {
+        return static_cast<D*>(ctx)->DdkGetProtocol(proto_id, out);
     }
 };
 
@@ -296,20 +297,23 @@ class Resumable : public internal::base_mixin {
 template <class D, template <typename> class... Mixins>
 class Device : public ::ddk::internal::base_device, public Mixins<D>... {
   public:
-    mx_device_t* mxdev() { return mxdev_; }
-
-    mx_status_t Add(mx_device_t* parent) {
+    mx_status_t DdkAdd(const char* name) {
         device_add_args_t args = {};
         args.version = DEVICE_ADD_ARGS_VERSION;
-        args.name = name_;
+        args.name = name;
         // Since we are stashing this as a D*, we can use ctx in all
         // the callback functions and cast it directly to a D*.
         args.ctx = static_cast<D*>(this);
         args.ops = &ddk_device_proto_;
         AddProtocol(&args);
 
-        return device_add(parent, &args, &mxdev_);
+        return device_add(parent_, &args, &mxdev_);
     }
+
+    // The opaque pointer representing this device.
+    mx_device_t* mxdev() { return mxdev_; }
+    // The opaque pointer representing the device's parent.
+    mx_device_t* parent() { return parent_; }
 
     void SetState(mx_signals_t stateflag) {
         device_state_set(mxdev_, stateflag);
@@ -319,14 +323,14 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
         device_state_clr(mxdev_, stateflag);
     }
 
-    void SetAndClearState(mx_signals_t setflag, mx_signals_t clearflag) {
-        device_state_set_clr(mxdev_, setflag, clearflag);
+    void ClearAndSetState(mx_signals_t clearflag, mx_signals_t setflag) {
+        device_state_clr_set(mxdev_, clearflag, setflag);
     }
 
   protected:
-    Device(const char* name)
-      : Mixins<D>(&ddk_device_proto_)...,
-        name_(name) {
+    Device(mx_device_t* parent)
+      : internal::base_device(parent),
+        Mixins<D>(&ddk_device_proto_)... {
         internal::CheckMixins<Mixins<D>...>();
         internal::CheckReleasable<D>();
 
@@ -355,8 +359,6 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
     template <typename T = D>
     void AddProtocol(device_add_args_t* args,
                      typename mxtl::enable_if<!is_protocol<T>::value, T>::type* dummy = 0) {}
-
-    const char* name_;
 };
 
 // Convenience type for implementations that would like to override all

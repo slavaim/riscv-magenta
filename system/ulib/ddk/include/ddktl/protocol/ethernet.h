@@ -40,12 +40,12 @@
 //         ethmac_protocol_t* ops;
 //         auto status = get_device_protocol(parent_, MX_PROTOCOL_ETHERMAC,
 //                                           reinterpret_cast<void**>(&ops));
-//         if (status != NO_ERROR) {
+//         if (status != MX_OK) {
 //             return status;
 //         }
 //        proxy_.reset(new ddk::EthmacProtocolProxy(ops, parent_));
 //        status = proxy_->Start(this);
-//        if (status != NO_ERROR) {
+//        if (status != MX_OK) {
 //            return status;
 //        }
 //        return device_add(ddk_device(), parent_);
@@ -90,7 +90,7 @@
 //
 //     mx_status_t EthmacQuery(uint32_t options, ethmac_info_t* info) {
 //         // Fill out the ethmac info
-//         return NO_ERROR;
+//         return MX_OK;
 //     }
 //
 //     void EthmacStop() {
@@ -100,7 +100,7 @@
 //     mx_status_t EthmacStart(mxtl::unique_ptr<ddk::EthmacIfcProxy> proxy) {
 //         // Start ethmac operation
 //         proxy_.swap(proxy);
-//         return NO_ERROR;
+//         return MX_OK;
 //     }
 //
 //     void EthmacSend(uint32_t options, void* data, size_t length) {
@@ -172,55 +172,53 @@ class EthmacProtocol : public internal::base_protocol {
     }
 
   private:
-    static mx_status_t Query(mx_device_t* dev, uint32_t options, ethmac_info_t* info) {
-        return static_cast<D*>(dev->ctx)->EthmacQuery(options, info);
+    static mx_status_t Query(void* ctx, uint32_t options, ethmac_info_t* info) {
+        return static_cast<D*>(ctx)->EthmacQuery(options, info);
     }
 
-    static void Stop(mx_device_t* dev) {
-        static_cast<D*>(dev->ctx)->EthmacStop();
+    static void Stop(void* ctx) {
+        static_cast<D*>(ctx)->EthmacStop();
     }
 
-    static mx_status_t Start(mx_device_t* dev, ethmac_ifc_t* ifc, void* cookie) {
+    static mx_status_t Start(void* ctx, ethmac_ifc_t* ifc, void* cookie) {
         auto ifc_proxy = mxtl::unique_ptr<EthmacIfcProxy>(new EthmacIfcProxy(ifc, cookie));
-        return static_cast<D*>(dev->ctx)->EthmacStart(mxtl::move(ifc_proxy));
+        return static_cast<D*>(ctx)->EthmacStart(mxtl::move(ifc_proxy));
     }
 
-    static void Send(mx_device_t* dev, uint32_t options, void* data, size_t length) {
-        static_cast<D*>(dev->ctx)->EthmacSend(options, data, length);
+    static void Send(void* ctx, uint32_t options, void* data, size_t length) {
+        static_cast<D*>(ctx)->EthmacSend(options, data, length);
     }
 
-    ethmac_protocol_t ops_ = {};
+    ethmac_protocol_ops_t ops_ = {};
 };
 
 class EthmacProtocolProxy {
   public:
-    EthmacProtocolProxy(ethmac_protocol_t* ops, mx_device_t* dev)
-      : ops_(ops), dev_(dev) {}
+    EthmacProtocolProxy(ethmac_protocol_t* proto)
+      : ops_(proto->ops), ctx_(proto->ctx) {}
 
     mx_status_t Query(uint32_t options, ethmac_info_t* info) {
-        return ops_->query(dev_, options, info);
+        return ops_->query(ctx_, options, info);
     }
 
     template <typename D>
     mx_status_t Start(D* ifc) {
         static_assert(mxtl::is_base_of<EthmacIfc<D>, D>::value,
                       "Start must be called with a subclass of EthmacIfc");
-        return ops_->start(dev_, ifc->ethmac_ifc(), ifc);
+        return ops_->start(ctx_, ifc->ethmac_ifc(), ifc);
     }
 
     void Stop() {
-        ops_->stop(dev_);
+        ops_->stop(ctx_);
     }
 
     void Send(uint32_t options, void* data, size_t length) {
-        ops_->send(dev_, options, data, length);
+        ops_->send(ctx_, options, data, length);
     }
 
-    mx_device_t* device() { return dev_; }
-
   private:
-    ethmac_protocol_t* ops_;
-    mx_device_t* dev_;
+    ethmac_protocol_ops_t* ops_;
+    void* ctx_;
 };
 
 }  // namespace ddk

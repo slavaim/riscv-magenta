@@ -6,7 +6,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/protocol/hidbus.h>
-#include <ddk/protocol/input.h>
+#include <magenta/device/input.h>
 #include <hw/inout.h>
 
 #include <magenta/syscalls.h>
@@ -23,8 +23,6 @@
 #define xprintf(fmt...) do {} while (0)
 
 typedef struct i8042_device {
-    mx_device_t* mxdev;
-
     mtx_t lock;
     hidbus_ifc_t* ifc;
     void* cookie;
@@ -611,16 +609,16 @@ static void i8042_identify(int (*cmd)(uint8_t* param, int command)) {
     cmd(resp, I8042_CMD_SCAN_EN);
 }
 
-static mx_status_t i8042_query(mx_device_t* dev, uint32_t options, hid_info_t* info) {
-    i8042_device_t* i8042 = dev->ctx;
+static mx_status_t i8042_query(void* ctx, uint32_t options, hid_info_t* info) {
+    i8042_device_t* i8042 = ctx;
     info->dev_num = i8042->type;  // use the type for the device number for now
     info->dev_class = i8042->type;
     info->boot_device = true;
     return MX_OK;
 }
 
-static mx_status_t i8042_start(mx_device_t* dev, hidbus_ifc_t* ifc, void* cookie) {
-    i8042_device_t* i8042 = dev->ctx;
+static mx_status_t i8042_start(void* ctx, hidbus_ifc_t* ifc, void* cookie) {
+    i8042_device_t* i8042 = ctx;
     mtx_lock(&i8042->lock);
     if (i8042->ifc != NULL) {
         mtx_unlock(&i8042->lock);
@@ -632,21 +630,21 @@ static mx_status_t i8042_start(mx_device_t* dev, hidbus_ifc_t* ifc, void* cookie
     return MX_OK;
 }
 
-static void i8042_stop(mx_device_t* dev) {
-    i8042_device_t* i8042 = dev->ctx;
+static void i8042_stop(void* ctx) {
+    i8042_device_t* i8042 = ctx;
     mtx_lock(&i8042->lock);
     i8042->ifc = NULL;
     i8042->cookie = NULL;
     mtx_unlock(&i8042->lock);
 }
 
-static mx_status_t i8042_get_descriptor(mx_device_t* dev, uint8_t desc_type,
+static mx_status_t i8042_get_descriptor(void* ctx, uint8_t desc_type,
         void** data, size_t* len) {
     if (desc_type != HID_DESC_TYPE_REPORT) {
         return MX_ERR_NOT_FOUND;
     }
 
-    i8042_device_t* device = dev->ctx;
+    i8042_device_t* device = ctx;
     const uint8_t* buf = NULL;
     size_t buflen = 0;
     if (device->type == INPUT_PROTO_KBD) {
@@ -665,33 +663,33 @@ static mx_status_t i8042_get_descriptor(mx_device_t* dev, uint8_t desc_type,
     return MX_OK;
 }
 
-static mx_status_t i8042_get_report(mx_device_t* dev, uint8_t rpt_type, uint8_t rpt_id,
+static mx_status_t i8042_get_report(void* ctx, uint8_t rpt_type, uint8_t rpt_id,
         void* data, size_t len) {
     return MX_ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_set_report(mx_device_t* dev, uint8_t rpt_type, uint8_t rpt_id,
+static mx_status_t i8042_set_report(void* ctx, uint8_t rpt_type, uint8_t rpt_id,
         void* data, size_t len) {
     return MX_ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_get_idle(mx_device_t* dev, uint8_t rpt_type, uint8_t* duration) {
+static mx_status_t i8042_get_idle(void* ctx, uint8_t rpt_type, uint8_t* duration) {
     return MX_ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_set_idle(mx_device_t* dev, uint8_t rpt_type, uint8_t duration) {
+static mx_status_t i8042_set_idle(void* ctx, uint8_t rpt_type, uint8_t duration) {
     return MX_OK;
 }
 
-static mx_status_t i8042_get_protocol(mx_device_t* dev, uint8_t* protocol) {
+static mx_status_t i8042_get_protocol(void* ctx, uint8_t* protocol) {
     return MX_ERR_NOT_SUPPORTED;
 }
 
-static mx_status_t i8042_set_protocol(mx_device_t* dev, uint8_t protocol) {
+static mx_status_t i8042_set_protocol(void* ctx, uint8_t protocol) {
     return MX_OK;
 }
 
-static hidbus_protocol_t hidbus_ops = {
+static hidbus_protocol_ops_t hidbus_ops = {
     .query = i8042_query,
     .start = i8042_start,
     .stop = i8042_stop,
@@ -753,7 +751,7 @@ static mx_status_t i8042_dev_init(i8042_device_t* dev, const char* name, mx_devi
         .proto_ops = &hidbus_ops,
     };
 
-    return device_add(parent, &args, &dev->mxdev);
+    return device_add(parent, &args, NULL);
 }
 
 static int i8042_init_thread(void* arg) {

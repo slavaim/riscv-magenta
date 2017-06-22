@@ -51,7 +51,7 @@ int do_minfs_mount(mxtl::unique_ptr<minfs::Bcache> bc, int argc, char** argv) {
     mx_handle_t h = mx_get_startup_handle(PA_HND(PA_USER0, 0));
     if (h == MX_HANDLE_INVALID) {
         FS_TRACE_ERROR("minfs: Could not access startup handle to mount point\n");
-        return ERR_BAD_STATE;
+        return MX_ERR_BAD_STATE;
     }
 
     vfs_rpc_server(h, vn);
@@ -277,12 +277,21 @@ int usage() {
 }
 
 off_t get_size(int fd) {
+#ifdef __Fuchsia__
+    block_info_t info;
+    if (ioctl_block_get_info(fd, &info) != sizeof(info)) {
+        fprintf(stderr, "error: minfs could not find size of device\n");
+        return 0;
+    }
+    return info.block_size * info.block_count;
+#else
     struct stat s;
     if (fstat(fd, &s) < 0) {
-        fprintf(stderr, "error: could not find end of file/device\n");
+        fprintf(stderr, "error: minfs could not find end of file/device\n");
         return 0;
     }
     return s.st_size;
+#endif
 }
 
 } // namespace anonymous

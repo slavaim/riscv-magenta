@@ -31,8 +31,6 @@
 #endif
 
 typedef struct bochs_vbe_device {
-    mx_device_t* mxdev;
-
     void* regs;
     uint64_t regs_size;
     mx_handle_t regs_handle;
@@ -130,29 +128,29 @@ static void set_hw_mode(bochs_vbe_device_t* dev) {
 
 // implement display protocol
 
-static mx_status_t bochs_vbe_set_mode(mx_device_t* dev, mx_display_info_t* info) {
+static mx_status_t bochs_vbe_set_mode(void* ctx, mx_display_info_t* info) {
     assert(info);
-    bochs_vbe_device_t* vdev = dev->ctx;
+    bochs_vbe_device_t* vdev = ctx;
     memcpy(&vdev->info, info, sizeof(mx_display_info_t));
     set_hw_mode(vdev);
     return MX_OK;
 }
 
-static mx_status_t bochs_vbe_get_mode(mx_device_t* dev, mx_display_info_t* info) {
+static mx_status_t bochs_vbe_get_mode(void* ctx, mx_display_info_t* info) {
     assert(info);
-    bochs_vbe_device_t* vdev = dev->ctx;
+    bochs_vbe_device_t* vdev = ctx;
     memcpy(info, &vdev->info, sizeof(mx_display_info_t));
     return MX_OK;
 }
 
-static mx_status_t bochs_vbe_get_framebuffer(mx_device_t* dev, void** framebuffer) {
+static mx_status_t bochs_vbe_get_framebuffer(void* ctx, void** framebuffer) {
     assert(framebuffer);
-    bochs_vbe_device_t* vdev = dev->ctx;
+    bochs_vbe_device_t* vdev = ctx;
     (*framebuffer) = vdev->framebuffer;
     return MX_OK;
 }
 
-static mx_display_protocol_t bochs_vbe_display_proto = {
+static display_protocol_ops_t bochs_vbe_display_proto = {
     .set_mode = bochs_vbe_set_mode,
     .get_mode = bochs_vbe_get_mode,
     .get_framebuffer = bochs_vbe_get_framebuffer,
@@ -184,13 +182,13 @@ static mx_protocol_device_t bochs_vbe_device_proto = {
 // implement driver object:
 
 static mx_status_t bochs_vbe_bind(void* ctx, mx_device_t* dev, void** cookie) {
-    pci_protocol_t* pci;
+    pci_protocol_t pci;
     mx_status_t status;
 
-    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci))
+    if (device_get_protocol(dev, MX_PROTOCOL_PCI, &pci))
         return MX_ERR_NOT_SUPPORTED;
 
-    status = pci->claim_device(dev);
+    status = pci.ops->claim_device(pci.ctx);
     if (status != MX_OK)
         return status;
 
@@ -200,19 +198,19 @@ static mx_status_t bochs_vbe_bind(void* ctx, mx_device_t* dev, void** cookie) {
         return MX_ERR_NO_MEMORY;
 
     // map register window
-    status = pci->map_resource(dev, PCI_RESOURCE_BAR_2, MX_CACHE_POLICY_UNCACHED_DEVICE,
-                           &device->regs, &device->regs_size,
-                           &device->regs_handle);
+    status = pci.ops->map_resource(pci.ctx, PCI_RESOURCE_BAR_2, MX_CACHE_POLICY_UNCACHED_DEVICE,
+                                   &device->regs, &device->regs_size,
+                                   &device->regs_handle);
     if (status != MX_OK) {
         printf("bochs-vbe: failed to map pci config: %d\n", status);
         goto fail;
     }
 
     // map framebuffer window
-    status = pci->map_resource(dev, PCI_RESOURCE_BAR_0,  MX_CACHE_POLICY_WRITE_COMBINING,
-                           &device->framebuffer,
-                           &device->framebuffer_size,
-                           &device->framebuffer_handle);
+    status = pci.ops->map_resource(pci.ctx, PCI_RESOURCE_BAR_0,  MX_CACHE_POLICY_WRITE_COMBINING,
+                                   &device->framebuffer,
+                                   &device->framebuffer_size,
+                                   &device->framebuffer_handle);
     if (status != MX_OK) {
         printf("bochs-vbe: failed to map pci config: %d\n", status);
         goto fail;
@@ -234,7 +232,7 @@ static mx_status_t bochs_vbe_bind(void* ctx, mx_device_t* dev, void** cookie) {
         .proto_ops = &bochs_vbe_display_proto,
     };
 
-    status = device_add(dev, &args, &device->mxdev);
+    status = device_add(dev, &args, NULL);
     if (status != MX_OK) {
         goto fail;
     }

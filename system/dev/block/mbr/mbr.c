@@ -128,7 +128,7 @@ static mx_status_t mbr_ioctl(void* ctx, uint32_t op, const void* cmd,
     }
     case IOCTL_DEVICE_SYNC: {
         // Propagate sync to parent device
-        return device_op_ioctl(device->parent, IOCTL_DEVICE_SYNC, NULL, 0, NULL, 0, NULL);
+        return device_ioctl(device->parent, IOCTL_DEVICE_SYNC, NULL, 0, NULL, 0, NULL);
     }
     default:
         return MX_ERR_NOT_SUPPORTED;
@@ -205,13 +205,13 @@ static mx_protocol_device_t mbr_proto = {
     .close = mbr_close,
 };
 
-static void mbr_block_set_callbacks(mx_device_t* dev, block_callbacks_t* cb) {
-    mbrpart_device_t* device = dev->ctx;
+static void mbr_block_set_callbacks(void* ctx, block_callbacks_t* cb) {
+    mbrpart_device_t* device = ctx;
     device->callbacks = cb;
 }
 
-static void mbr_block_get_info(mx_device_t* dev, block_info_t* info) {
-    mbrpart_device_t* device = dev->ctx;
+static void mbr_block_get_info(void* ctx, block_info_t* info) {
+    mbrpart_device_t* device = ctx;
     memcpy(info, &device->info, sizeof(*info));
 }
 
@@ -249,15 +249,15 @@ static void block_do_txn(mbrpart_device_t* dev, uint32_t opcode, mx_handle_t vmo
     iotxn_queue(dev->parent, txn);
 }
 
-static void mbr_block_read(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    block_do_txn((mbrpart_device_t*)dev->ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
+static void mbr_block_read(void* ctx, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn(ctx, IOTXN_OP_READ, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
-static void mbr_block_write(mx_device_t* dev, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
-    block_do_txn((mbrpart_device_t*)dev->ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
+static void mbr_block_write(void* ctx, mx_handle_t vmo, uint64_t length, uint64_t vmo_offset, uint64_t dev_offset, void* cookie) {
+    block_do_txn(ctx, IOTXN_OP_WRITE, vmo, length, vmo_offset, dev_offset, cookie);
 }
 
-static block_ops_t mbr_block_ops = {
+static block_protocol_ops_t mbr_block_ops = {
     .set_callbacks = mbr_block_set_callbacks,
     .get_info = mbr_block_get_info,
     .read = mbr_block_read,
@@ -273,8 +273,8 @@ static int mbr_bind_thread(void* arg) {
 
     block_info_t block_info;
     size_t actual;
-    ssize_t rc = device_op_ioctl(dev, IOCTL_BLOCK_GET_INFO, NULL, 0,
-                                 &block_info, sizeof(block_info), &actual);
+    ssize_t rc = device_ioctl(dev, IOCTL_BLOCK_GET_INFO, NULL, 0,
+                              &block_info, sizeof(block_info), &actual);
     if (rc < 0 || actual != sizeof(block_info)) {
         xprintf("mbr: Could not get block size for dev=%s, retcode = %zd\n",
                 dev->name, rc);

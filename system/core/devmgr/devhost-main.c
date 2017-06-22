@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#pragma once
+int device_host_main(int argc, char** argv);
 
-#include <magenta/device/ramdisk.h>
-
+int main(int argc, char** argv) {
+    device_host_main(argc, argv);
+}

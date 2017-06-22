@@ -7,7 +7,6 @@
 #include <hypervisor/decode.h>
 #include <magenta/syscalls/hypervisor.h>
 
-static const uint32_t kMaxInstructionLength = 15;
 static const uint8_t kRexRMask = 1u << 2;
 static const uint8_t kRexWMask = 1u << 3;
 static const uint8_t kModRMRegMask = 0b00111000;
@@ -111,11 +110,11 @@ mx_status_t deconstruct_instruction(const uint8_t* inst_buf, uint32_t inst_len,
     return MX_OK;
 }
 
-mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
-                               mx_guest_gpr_t* guest_gpr, instruction_t* inst) {
+mx_status_t inst_decode(const uint8_t* inst_buf, uint32_t inst_len, mx_guest_gpr_t* guest_gpr,
+                        instruction_t* inst) {
     if (inst_len == 0)
         return MX_ERR_BAD_STATE;
-    if (inst_len > kMaxInstructionLength)
+    if (inst_len > X86_MAX_INST_LEN)
         return MX_ERR_OUT_OF_RANGE;
 
     // Parse 66H prefix.
@@ -161,6 +160,7 @@ mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
         inst->mem = mem_size(h66, rex_w);
         inst->imm = 0;
         inst->reg = select_register(guest_gpr, register_id(mod_rm, rex_r));
+        inst->flags = NULL;
         return inst->reg == NULL ? MX_ERR_NOT_SUPPORTED : MX_OK;
     // Move r/m to r.
     case 0x8b:
@@ -170,6 +170,7 @@ mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
         inst->mem = mem_size(h66, rex_w);
         inst->imm = 0;
         inst->reg = select_register(guest_gpr, register_id(mod_rm, rex_r));
+        inst->flags = NULL;
         return inst->reg == NULL ? MX_ERR_NOT_SUPPORTED : MX_OK;
     // Move imm to r/m.
     case 0xc7: {
@@ -182,6 +183,7 @@ mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
         inst->mem = mem_size(h66, rex_w);
         inst->imm = 0;
         inst->reg = NULL;
+        inst->flags = NULL;
         memcpy(&inst->imm, inst_buf + disp_size + 2, imm_size);
         return MX_OK;
     }
@@ -195,6 +197,7 @@ mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
         inst->mem = 1;
         inst->imm = 0;
         inst->reg = select_register(guest_gpr, register_id(mod_rm, rex_r));
+        inst->flags = NULL;
         return inst->reg == NULL ? MX_ERR_NOT_SUPPORTED : MX_OK;
     // Move (16-bit) with zero-extend r/m to r.
     case 0xb70f:
@@ -206,6 +209,7 @@ mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
         inst->mem = 2;
         inst->imm = 0;
         inst->reg = select_register(guest_gpr, register_id(mod_rm, rex_r));
+        inst->flags = NULL;
         return inst->reg == NULL ? MX_ERR_NOT_SUPPORTED : MX_OK;
     // Logical compare (8-bit) imm with r/m.
     case 0xf6:
@@ -219,6 +223,7 @@ mx_status_t decode_instruction(const uint8_t* inst_buf, uint32_t inst_len,
         inst->mem = 1;
         inst->imm = 0;
         inst->reg = NULL;
+        inst->flags = &guest_gpr->flags;
         memcpy(&inst->imm, inst_buf + disp_size + 2, 1);
         return MX_OK;
     default:

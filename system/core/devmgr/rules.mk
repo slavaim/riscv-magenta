@@ -54,12 +54,14 @@ MODULE_LIBS := \
     system/ulib/magenta \
     system/ulib/c
 
-MODULE_DEFINES := DDK_INTERNAL=1
-
 include make/module.mk
 
 
 # devhost - container for drivers
+#
+# This is just a main() that calls device_host_main() which
+# is provided by libdriver, where all the other devhost-*.c
+# files get built.
 #
 MODULE := $(LOCAL_DIR).host
 
@@ -67,22 +69,15 @@ MODULE_NAME := devhost
 
 MODULE_TYPE := userapp
 
-MODULE_DEFINES := DDK_INTERNAL=1
-
 MODULE_SRCS := \
-	$(LOCAL_DIR)/devhost.c \
-    $(LOCAL_DIR)/devhost-api.c \
-    $(LOCAL_DIR)/devhost-core.c \
-    $(LOCAL_DIR)/devhost-rpc-server.c \
-    $(LOCAL_DIR)/devhost-shared.c \
+	$(LOCAL_DIR)/devhost-main.c
 
-MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync system/ulib/port
-
-MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/magenta system/ulib/c
+MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/c
 
 include make/module.mk
 
 
+# dmctl - bridge between dm command and devmgr
 
 MODULE := $(LOCAL_DIR).dmctl
 
@@ -98,10 +93,10 @@ MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/port
 
 MODULE_LIBS := system/ulib/driver system/ulib/mxio system/ulib/magenta system/ulib/c
 
-MODULE_DEFINES := DDK_INTERNAL=1
-
 include make/module.mk
 
+
+# driver-info - tool to dump driver metadata
 
 MODULE := $(LOCAL_DIR).driver-info
 

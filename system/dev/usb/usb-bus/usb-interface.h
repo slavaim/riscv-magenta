@@ -15,7 +15,7 @@ typedef struct {
     mx_device_t* mxdev;
     usb_device_t* device;
     mx_device_t* hci_mxdev;
-    usb_hci_protocol_t* hci_protocol;
+    usb_hci_protocol_t hci;
     uint32_t device_id;
 
     usb_descriptor_header_t* descriptor;
@@ -59,7 +59,7 @@ mx_status_t usb_device_add_interface_association(usb_device_t* device,
 
 void usb_device_remove_interfaces(usb_device_t* device);
 
-uint32_t usb_interface_get_device_id(mx_device_t* device);
+mx_status_t usb_interface_get_device_id(mx_device_t* device, uint32_t* id);
 
 bool usb_interface_contains_interface(usb_interface_t* intf, uint8_t interface_id);
 

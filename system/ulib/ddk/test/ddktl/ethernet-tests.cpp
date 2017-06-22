@@ -20,7 +20,7 @@ namespace {
 class TestEthmacIfc : public ddk::Device<TestEthmacIfc>,
                       public ddk::EthmacIfc<TestEthmacIfc> {
   public:
-    TestEthmacIfc() : ddk::Device<TestEthmacIfc>("ddktl-test") {
+    TestEthmacIfc() : ddk::Device<TestEthmacIfc>(nullptr) {
         this_ = get_this();
     }
 
@@ -61,14 +61,16 @@ class TestEthmacProtocol : public ddk::Device<TestEthmacProtocol, ddk::GetProtoc
                            public ddk::EthmacProtocol<TestEthmacProtocol> {
   public:
     TestEthmacProtocol()
-      : ddk::Device<TestEthmacProtocol, ddk::GetProtocolable>("ddktl-test") {
+      : ddk::Device<TestEthmacProtocol, ddk::GetProtocolable>(nullptr) {
         this_ = get_this();
     }
 
-    mx_status_t DdkGetProtocol(uint32_t proto_id, void** protocol) {
-        if (proto_id != MX_PROTOCOL_ETHERMAC) return ERR_INVALID_ARGS;
-        *protocol = ddk_proto_ops_;
-        return NO_ERROR;
+    mx_status_t DdkGetProtocol(uint32_t proto_id, void* out) {
+        if (proto_id != MX_PROTOCOL_ETHERMAC) return MX_ERR_INVALID_ARGS;
+        ddk::AnyProtocol* proto = static_cast<ddk::AnyProtocol*>(out);
+        proto->ops = ddk_proto_ops_;
+        proto->ctx = this;
+        return MX_OK;
     }
 
     void DdkRelease() {}
@@ -76,7 +78,7 @@ class TestEthmacProtocol : public ddk::Device<TestEthmacProtocol, ddk::GetProtoc
     mx_status_t EthmacQuery(uint32_t options, ethmac_info_t* info) {
         query_this_ = get_this();
         query_called_ = true;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     void EthmacStop() {
@@ -88,7 +90,7 @@ class TestEthmacProtocol : public ddk::Device<TestEthmacProtocol, ddk::GetProtoc
         start_this_ = get_this();
         proxy_.swap(proxy);
         start_called_ = true;
-        return NO_ERROR;
+        return MX_OK;
     }
 
     void EthmacSend(uint32_t options, void* data, size_t length) {
@@ -163,22 +165,20 @@ static bool test_ethmac_protocol() {
     BEGIN_TEST;
 
     TestEthmacProtocol dev;
-    mx_device_t ddkdev;
-    ddkdev.ctx = &dev;
 
     // Normally we would use device_op_get_protocol, but we haven't added the device to devmgr so
     // its ops table is currently invalid.
-    ethmac_protocol_t* ops;
-    auto status = dev.DdkGetProtocol(0, reinterpret_cast<void**>(&ops));
-    EXPECT_EQ(ERR_INVALID_ARGS, status, "");
+    ethmac_protocol_t proto;
+    auto status = dev.DdkGetProtocol(0, reinterpret_cast<void*>(&proto));
+    EXPECT_EQ(MX_ERR_INVALID_ARGS, status, "");
 
-    status = dev.DdkGetProtocol(MX_PROTOCOL_ETHERMAC, reinterpret_cast<void**>(&ops));
-    EXPECT_EQ(NO_ERROR, status, "");
+    status = dev.DdkGetProtocol(MX_PROTOCOL_ETHERMAC, reinterpret_cast<void*>(&proto));
+    EXPECT_EQ(MX_OK, status, "");
 
-    EXPECT_EQ(NO_ERROR, ops->query(&ddkdev, 0, nullptr), "");
-    ops->stop(&ddkdev);
-    EXPECT_EQ(NO_ERROR, ops->start(&ddkdev, nullptr, nullptr), "");
-    ops->send(&ddkdev, 0, nullptr, 0);
+    EXPECT_EQ(MX_OK, proto.ops->query(proto.ctx, 0, nullptr), "");
+    proto.ops->stop(proto.ctx);
+    EXPECT_EQ(MX_OK, proto.ops->start(proto.ctx, nullptr, nullptr), "");
+    proto.ops->send(proto.ctx, 0, nullptr, 0);
 
     EXPECT_TRUE(dev.VerifyCalls(), "");
 
@@ -191,21 +191,19 @@ static bool test_ethmac_protocol_proxy() {
     // The EthmacProtocol device to wrap. This would live in the parent device
     // our driver was binding to.
     TestEthmacProtocol protocol_dev;
-    mx_device_t ddkdev;
-    ddkdev.ctx = &protocol_dev;
 
-    ethmac_protocol_t* ops;
-    auto status = protocol_dev.DdkGetProtocol(MX_PROTOCOL_ETHERMAC, reinterpret_cast<void**>(&ops));
-    EXPECT_EQ(NO_ERROR, status, "");
+    ethmac_protocol_t proto;
+    auto status = protocol_dev.DdkGetProtocol(MX_PROTOCOL_ETHERMAC, reinterpret_cast<void*>(&proto));
+    EXPECT_EQ(MX_OK, status, "");
     // The proxy device to wrap the ops + device that represent the parent
     // device.
-    ddk::EthmacProtocolProxy proxy(ops, &ddkdev);
+    ddk::EthmacProtocolProxy proxy(&proto);
     // The EthmacIfc to hand to the parent device.
     TestEthmacIfc ifc_dev;
 
-    EXPECT_EQ(NO_ERROR, proxy.Query(0, nullptr), "");
+    EXPECT_EQ(MX_OK, proxy.Query(0, nullptr), "");
     proxy.Stop();
-    EXPECT_EQ(NO_ERROR, proxy.Start(&ifc_dev), "");
+    EXPECT_EQ(MX_OK, proxy.Start(&ifc_dev), "");
     proxy.Send(0, nullptr, 0);
 
     EXPECT_TRUE(protocol_dev.VerifyCalls(), "");
@@ -220,16 +218,14 @@ static bool test_ethmac_protocol_ifc_proxy() {
     // then use the pointer passed to it to call methods on the ifc device. This ensures the void*
     // casting is correct.
     TestEthmacProtocol protocol_dev;
-    mx_device_t ddkdev;
-    ddkdev.ctx = &protocol_dev;
 
-    ethmac_protocol_t* ops;
-    auto status = protocol_dev.DdkGetProtocol(MX_PROTOCOL_ETHERMAC, reinterpret_cast<void**>(&ops));
-    EXPECT_EQ(NO_ERROR, status, "");
+    ethmac_protocol_t proto;
+    auto status = protocol_dev.DdkGetProtocol(MX_PROTOCOL_ETHERMAC, reinterpret_cast<void*>(&proto));
+    EXPECT_EQ(MX_OK, status, "");
 
-    ddk::EthmacProtocolProxy proxy(ops, &ddkdev);
+    ddk::EthmacProtocolProxy proxy(&proto);
     TestEthmacIfc ifc_dev;
-    EXPECT_EQ(NO_ERROR, ifc_dev.StartProtocol(&proxy), "");
+    EXPECT_EQ(MX_OK, ifc_dev.StartProtocol(&proxy), "");
 
     // Execute the EthmacIfc methods
     ASSERT_TRUE(protocol_dev.TestIfc(), "");

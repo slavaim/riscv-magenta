@@ -63,7 +63,7 @@ count of handles in the reply message are returned via *actual_bytes* and
 *actual_handles*, respectively.
 
 The special return value **MX_ERR_CALL_FAILED** indicates that the message was
-sent, but an error occured while waiting for a response.  This is necessary
+sent, but an error occurred while waiting for a response.  This is necessary
 to disambiguate errors like **MX_ERR_PEER_CLOSED** which could have occurred
 while attempting the write (in which case the caller would still own any handles
 passed via *handles*) or while waiting (in which case the caller would no longer
@@ -78,8 +78,8 @@ return values, the handles in *handles* remain in the calling process, unchanged
 
 ## ERRORS
 
-**MX_ERR_BAD_HANDLE**  *handle* is not a valid handle or any of *handles*
-are not a valid handle.
+**MX_ERR_BAD_HANDLE**  *handle* is not a valid handle or any element in
+*handles* is not a valid handle.
 
 **MX_ERR_WRONG_TYPE**  *handle* is not a channel handle.
 
@@ -88,14 +88,14 @@ or there are duplicates among the handles in the *handles* array,
 or *options* is nonzero.
 
 **MX_ERR_ACCESS_DENIED**  *handle* does not have **MX_RIGHT_WRITE** or
-any of *handles* do not have **MX_RIGHT_TRANSFER**.
+any element in *handles* does not have **MX_RIGHT_TRANSFER**.
 
 **MX_ERR_PEER_CLOSED**  The other side of the channel was closed or became
 closed while waiting for the reply.
 
 **MX_ERR_CANCELED**  *handle* was closed while waiting for a reply.
 
-**MX_ERR_CALL_FAILED**  The write phase of the call succeeded, but an error occured
+**MX_ERR_CALL_FAILED**  The write phase of the call succeeded, but an error occurred
 while or after waiting for the response.  The specific error is returned via
 *read_status* if it is non-null.
 

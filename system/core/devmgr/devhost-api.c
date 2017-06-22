@@ -6,7 +6,7 @@
 
 #include <ddk/device.h>
 #include "devhost.h"
-#include <driver/driver-api.h>
+
 
 // These are the API entry-points from drivers
 // They must take the devhost_api_lock before calling devhost_* internals
@@ -16,8 +16,8 @@
 
 // LibDriver Device Interface
 
-static mx_status_t _device_add(mx_driver_t* drv, mx_device_t* parent,
-                               device_add_args_t* args, mx_device_t** out) {
+__EXPORT mx_status_t device_add_from_driver(mx_driver_t* drv, mx_device_t* parent,
+                                            device_add_args_t* args, mx_device_t** out) {
     mx_status_t r;
     mx_device_t* dev = NULL;
 
@@ -61,7 +61,9 @@ static mx_status_t _device_add(mx_driver_t* drv, mx_device_t* parent,
         r = devhost_device_add(dev, parent, args->props, args->prop_count, NULL, MX_HANDLE_INVALID);
     }
     if (r == MX_OK) {
-        *out = dev;
+        if (out) {
+            *out = dev;
+        }
     } else {
         devhost_device_destroy(dev);
     }
@@ -70,7 +72,7 @@ static mx_status_t _device_add(mx_driver_t* drv, mx_device_t* parent,
     return r;
 }
 
-static mx_status_t _device_remove(mx_device_t* dev) {
+__EXPORT mx_status_t device_remove(mx_device_t* dev) {
     mx_status_t r;
     DM_LOCK();
     r = devhost_device_remove(dev);
@@ -78,13 +80,13 @@ static mx_status_t _device_remove(mx_device_t* dev) {
     return r;
 }
 
-static void _device_unbind(mx_device_t* dev) {
+__EXPORT void device_unbind(mx_device_t* dev) {
     DM_LOCK();
     devhost_device_unbind(dev);
     DM_UNLOCK();
 }
 
-static mx_status_t _device_rebind(mx_device_t* dev) {
+__EXPORT mx_status_t device_rebind(mx_device_t* dev) {
     mx_status_t r;
     DM_LOCK();
     r = devhost_device_rebind(dev);
@@ -93,31 +95,33 @@ static mx_status_t _device_rebind(mx_device_t* dev) {
 }
 
 
-const char* _device_get_name(mx_device_t* dev) {
+__EXPORT const char* device_get_name(mx_device_t* dev) {
     return dev->name;
 }
 
-mx_device_t* _device_get_parent(mx_device_t* dev) {
+__EXPORT mx_device_t* device_get_parent(mx_device_t* dev) {
     return dev->parent;
 }
 
-mx_status_t _device_get_protocol(mx_device_t* dev, uint32_t proto_id,
-                                 void** protocol) {
+typedef struct {
+    void* ops;
+    void* ctx;
+} generic_protocol_t;
+
+__EXPORT mx_status_t device_get_protocol(mx_device_t* dev, uint32_t proto_id, void* out) {
+    generic_protocol_t* proto = out;
     if (dev->ops->get_protocol) {
-        return dev->ops->get_protocol(dev->ctx, proto_id, protocol);
-    }
-    if (proto_id == MX_PROTOCOL_DEVICE) {
-        *protocol = dev->ops;
-        return NO_ERROR;
+        return dev->ops->get_protocol(dev->ctx, proto_id, out);
     }
     if ((proto_id == dev->protocol_id) && (dev->protocol_ops != NULL)) {
-        *protocol = dev->protocol_ops;
-        return NO_ERROR;
+        proto->ops = dev->protocol_ops;
+        proto->ctx = dev->ctx;
+        return MX_OK;
     }
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
-mx_handle_t _device_get_resource(mx_device_t* dev) {
+__EXPORT mx_handle_t device_get_resource(mx_device_t* dev) {
     mx_handle_t h;
     if (mx_handle_duplicate(dev->resource, MX_RIGHT_SAME_RIGHTS, &h) < 0) {
         return MX_HANDLE_INVALID;
@@ -126,37 +130,38 @@ mx_handle_t _device_get_resource(mx_device_t* dev) {
     }
 }
 
-void _device_state_clr_set(mx_device_t* dev, mx_signals_t clearflag, mx_signals_t setflag) {
+__EXPORT void device_state_clr_set(mx_device_t* dev, mx_signals_t clearflag, mx_signals_t setflag) {
     mx_object_signal(dev->event, clearflag, setflag);
 }
 
 
-mx_off_t _device_op_get_size(mx_device_t* dev) {
+__EXPORT mx_off_t device_get_size(mx_device_t* dev) {
     return dev->ops->get_size(dev->ctx);
 }
 
-mx_status_t _device_op_read(mx_device_t* dev, void* buf, size_t count,
-                            mx_off_t off, size_t* actual) {
+__EXPORT mx_status_t device_read(mx_device_t* dev, void* buf, size_t count,
+                                 mx_off_t off, size_t* actual) {
     return dev->ops->read(dev->ctx, buf, count, off, actual);
 }
 
-mx_status_t _device_op_write(mx_device_t* dev, const void* buf, size_t count,
-                             mx_off_t off, size_t* actual) {
+__EXPORT mx_status_t device_write(mx_device_t* dev, const void* buf, size_t count,
+                                  mx_off_t off, size_t* actual) {
     return dev->ops->write(dev->ctx, buf, count, off, actual);
 }
 
-mx_status_t _device_op_ioctl(mx_device_t* dev, uint32_t op,
-                             const void* in_buf, size_t in_len,
-                             void* out_buf, size_t out_len, size_t* out_actual) {
+__EXPORT mx_status_t device_ioctl(mx_device_t* dev, uint32_t op,
+                                  const void* in_buf, size_t in_len,
+                                  void* out_buf, size_t out_len,
+                                  size_t* out_actual) {
     return dev->ops->ioctl(dev->ctx, op, in_buf, in_len, out_buf, out_len, out_actual);
 }
 
-mx_status_t _device_op_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
+__EXPORT mx_status_t device_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
     if (dev->ops->iotxn_queue != NULL) {
         dev->ops->iotxn_queue(dev->ctx, txn);
-        return NO_ERROR;
+        return MX_OK;
     } else {
-        return ERR_NOT_SUPPORTED;
+        return MX_ERR_NOT_SUPPORTED;
     }
 }
 
@@ -165,12 +170,12 @@ mx_status_t _device_op_iotxn_queue(mx_device_t* dev, iotxn_t* txn) {
 
 extern mx_handle_t root_resource_handle;
 
-__EXPORT mx_handle_t _get_root_resource(void) {
+__EXPORT mx_handle_t get_root_resource(void) {
     return root_resource_handle;
 }
 
-static mx_status_t _load_firmware(mx_device_t* dev, const char* path, mx_handle_t* fw,
-                                  size_t* size) {
+__EXPORT mx_status_t load_firmware(mx_device_t* dev, const char* path,
+                                   mx_handle_t* fw, size_t* size) {
     mx_status_t r;
     DM_LOCK();
     r = devhost_load_firmware(dev, path, fw, size);
@@ -204,23 +209,3 @@ mx_status_t device_close(mx_device_t* dev, uint32_t flags) {
     DM_UNLOCK();
     return r;
 }
-
-
-driver_api_t devhost_api = {
-    .add = _device_add,
-    .remove = _device_remove,
-    .unbind = _device_unbind,
-    .rebind = _device_rebind,
-    .get_name = _device_get_name,
-    .get_parent = _device_get_parent,
-    .get_protocol = _device_get_protocol,
-    .get_resource = _device_get_resource,
-    .state_clr_set = _device_state_clr_set,
-    .op_get_size = _device_op_get_size,
-    .op_read = _device_op_read,
-    .op_write = _device_op_write,
-    .op_ioctl = _device_op_ioctl,
-    .op_iotxn_queue = _device_op_iotxn_queue,
-    .get_root_resource = _get_root_resource,
-    .load_firmware = _load_firmware,
-};

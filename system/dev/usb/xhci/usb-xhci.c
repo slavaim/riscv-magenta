@@ -28,80 +28,80 @@
 mx_status_t xhci_add_device(xhci_t* xhci, int slot_id, int hub_address, int speed) {
     xprintf("xhci_add_new_device\n");
 
-    if (!xhci->bus_mxdev || !xhci->bus_protocol) {
+    if (!xhci->bus_mxdev || !xhci->bus.ops) {
         printf("no bus device in xhci_add_device\n");
         return MX_ERR_INTERNAL;
     }
 
-    return xhci->bus_protocol->add_device(xhci->bus_mxdev, slot_id, hub_address, speed);
+    return xhci->bus.ops->add_device(xhci->bus.ctx, slot_id, hub_address, speed);
 }
 
 void xhci_remove_device(xhci_t* xhci, int slot_id) {
     xprintf("xhci_remove_device %d\n", slot_id);
 
-    if (!xhci->bus_mxdev || !xhci->bus_protocol) {
+    if (!xhci->bus_mxdev || !xhci->bus.ops) {
         printf("no bus device in xhci_remove_device\n");
         return;
     }
 
-    xhci->bus_protocol->remove_device(xhci->bus_mxdev, slot_id);
+    xhci->bus.ops->remove_device(xhci->bus.ctx, slot_id);
 }
 
-static void xhci_set_bus_device(mx_device_t* device, mx_device_t* busdev) {
-    xhci_t* xhci = device->ctx;
+static void xhci_set_bus_device(void* ctx, mx_device_t* busdev) {
+    xhci_t* xhci = ctx;
     xhci->bus_mxdev = busdev;
     if (busdev) {
-        device_op_get_protocol(busdev, MX_PROTOCOL_USB_BUS, (void**)&xhci->bus_protocol);
+        device_get_protocol(busdev, MX_PROTOCOL_USB_BUS, &xhci->bus);
         // wait until bus driver has started before doing this
         xhci_queue_start_root_hubs(xhci);
     } else {
-        xhci->bus_protocol = NULL;
+        xhci->bus.ops = NULL;
     }
 }
 
-static size_t xhci_get_max_device_count(mx_device_t* device) {
-    xhci_t* xhci = device->ctx;
+static size_t xhci_get_max_device_count(void* ctx) {
+    xhci_t* xhci = ctx;
     // add one to allow device IDs to be 1-based
     return xhci->max_slots + XHCI_RH_COUNT + 1;
 }
 
-static mx_status_t xhci_enable_ep(mx_device_t* device, uint32_t device_id,
+static mx_status_t xhci_enable_ep(void* ctx, uint32_t device_id,
                                   usb_endpoint_descriptor_t* ep_desc,
                                   usb_ss_ep_comp_descriptor_t* ss_comp_desc, bool enable) {
-    xhci_t* xhci = device->ctx;
+    xhci_t* xhci = ctx;
     return xhci_enable_endpoint(xhci, device_id, ep_desc, ss_comp_desc, enable);
 }
 
-static uint64_t xhci_get_frame(mx_device_t* device) {
-    xhci_t* xhci = device->ctx;
+static uint64_t xhci_get_frame(void* ctx) {
+    xhci_t* xhci = ctx;
     return xhci_get_current_frame(xhci);
 }
 
-mx_status_t xhci_config_hub(mx_device_t* device, uint32_t device_id, usb_speed_t speed,
+mx_status_t xhci_config_hub(void* ctx, uint32_t device_id, usb_speed_t speed,
                             usb_hub_descriptor_t* descriptor) {
-    xhci_t* xhci = device->ctx;
+    xhci_t* xhci = ctx;
     return xhci_configure_hub(xhci, device_id, speed, descriptor);
 }
 
-mx_status_t xhci_hub_device_added(mx_device_t* device, uint32_t hub_address, int port,
+mx_status_t xhci_hub_device_added(void* ctx, uint32_t hub_address, int port,
                                   usb_speed_t speed) {
-    xhci_t* xhci = device->ctx;
+    xhci_t* xhci = ctx;
     return xhci_enumerate_device(xhci, hub_address, port, speed);
 }
 
-mx_status_t xhci_hub_device_removed(mx_device_t* device, uint32_t hub_address, int port) {
-    xhci_t* xhci = device->ctx;
+mx_status_t xhci_hub_device_removed(void* ctx, uint32_t hub_address, int port) {
+    xhci_t* xhci = ctx;
     xhci_device_disconnected(xhci, hub_address, port);
     return MX_OK;
 }
 
-mx_status_t xhci_reset_ep(mx_device_t* device, uint32_t device_id, uint8_t ep_address) {
-    xhci_t* xhci = device->ctx;
+mx_status_t xhci_reset_ep(void* ctx, uint32_t device_id, uint8_t ep_address) {
+    xhci_t* xhci = ctx;
     uint8_t ep_index = xhci_endpoint_index(ep_address);
     return xhci_reset_endpoint(xhci, device_id, ep_index);
 }
 
-size_t xhci_get_max_transfer_size(mx_device_t* device, uint32_t device_id, uint8_t ep_address) {
+size_t xhci_get_max_transfer_size(void* ctx, uint32_t device_id, uint8_t ep_address) {
     if (ep_address == 0) {
         // control requests have uint16 length field so we need to support UINT16_MAX
         // we require one setup, status and data event TRB in addition to data transfer TRBs
@@ -114,7 +114,7 @@ size_t xhci_get_max_transfer_size(mx_device_t* device, uint32_t device_id, uint8
     return PAGE_SIZE * (TRANSFER_RING_SIZE - 2);
 }
 
-usb_hci_protocol_t xhci_hci_protocol = {
+usb_hci_protocol_ops_t xhci_hci_protocol = {
     .set_bus_device = xhci_set_bus_device,
     .get_max_device_count = xhci_get_max_device_count,
     .enable_endpoint = xhci_enable_ep,
@@ -213,8 +213,8 @@ static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
     xhci_t* xhci = NULL;
     mx_status_t status;
 
-    pci_protocol_t* pci_proto;
-    if (device_op_get_protocol(dev, MX_PROTOCOL_PCI, (void**)&pci_proto)) {
+    pci_protocol_t pci;
+    if (device_get_protocol(dev, MX_PROTOCOL_PCI, &pci)) {
         status = MX_ERR_NOT_SUPPORTED;
         goto error_return;
     }
@@ -225,7 +225,7 @@ static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
         goto error_return;
     }
 
-    status = pci_proto->claim_device(dev);
+    status = pci.ops->claim_device(pci.ctx);
     if (status < 0) {
         printf("usb_xhci_bind claim_device failed %d\n", status);
         goto error_return;
@@ -237,8 +237,8 @@ static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
      * eXtensible Host Controller Interface revision 1.1, section 5, xhci
      * should only use BARs 0 and 1. 0 for 32 bit addressing, and 0+1 for 64 bit addressing.
      */
-    status = pci_proto->map_resource(dev, PCI_RESOURCE_BAR_0, MX_CACHE_POLICY_UNCACHED_DEVICE,
-                                     &mmio, &mmio_len, &mmio_handle);
+    status = pci.ops->map_resource(pci.ctx, PCI_RESOURCE_BAR_0, MX_CACHE_POLICY_UNCACHED_DEVICE,
+                                   &mmio, &mmio_len, &mmio_handle);
     if (status != MX_OK) {
         printf("usb_xhci_bind could not find bar\n");
         status = MX_ERR_INTERNAL;
@@ -246,16 +246,16 @@ static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
     }
 
     // enable bus master
-    status = pci_proto->enable_bus_master(dev, true);
+    status = pci.ops->enable_bus_master(pci.ctx, true);
     if (status < 0) {
         printf("usb_xhci_bind enable_bus_master failed %d\n", status);
         goto error_return;
     }
 
     // select our IRQ mode
-    status = pci_proto->set_irq_mode(dev, MX_PCIE_IRQ_MODE_MSI, 1);
+    status = pci.ops->set_irq_mode(pci.ctx, MX_PCIE_IRQ_MODE_MSI, 1);
     if (status < 0) {
-        mx_status_t status_legacy = pci_proto->set_irq_mode(dev, MX_PCIE_IRQ_MODE_LEGACY, 1);
+        mx_status_t status_legacy = pci.ops->set_irq_mode(pci.ctx, MX_PCIE_IRQ_MODE_LEGACY, 1);
 
         if (status_legacy < 0) {
             printf("usb_xhci_bind Failed to set IRQ mode to either MSI "
@@ -268,7 +268,7 @@ static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
     }
 
     // register for interrupts
-    status = pci_proto->map_interrupt(dev, 0, &irq_handle);
+    status = pci.ops->map_interrupt(pci.ctx, 0, &irq_handle);
     if (status != MX_OK) {
         printf("usb_xhci_bind map_interrupt failed %d\n", status);
         goto error_return;
@@ -277,7 +277,6 @@ static mx_status_t usb_xhci_bind(void* ctx, mx_device_t* dev, void** cookie) {
     xhci->irq_handle = irq_handle;
     xhci->mmio_handle = mmio_handle;
     xhci->cfg_handle = cfg_handle;
-    xhci->pci_proto = pci_proto;
 
     // stash this here for the startup thread to call device_add() with
     xhci->parent = dev;
