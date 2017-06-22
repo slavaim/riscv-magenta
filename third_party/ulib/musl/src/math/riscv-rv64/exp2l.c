@@ -24,7 +24,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
+#ifdef __riscv_float_abi_soft
 #include "libm.h"
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024
@@ -617,3 +617,4 @@ exp2l(long double x)
 	return scalbnl(r, k.i);
 }
 #endif
+#endif // __riscv_float_abi_soft

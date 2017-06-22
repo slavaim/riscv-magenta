@@ -18,8 +18,15 @@ MODULES += \
 
 ifeq ($(SUBARCH),riscv-rv64)
 
+# system/
 MODULES += \
-    system/core/userboot
+    system/core/userboot \
+
+MODULES += $(patsubst %/rules.mk,%,$(wildcard system/ulib/*/rules.mk))
+
+# third_party/
+MODULES += \
+	third_party/ulib/jemalloc \
 
 else
 

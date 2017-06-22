@@ -75,7 +75,7 @@
  *      sqrt(-ve) = NaN         ... with invalid signal
  *      sqrt(NaN) = NaN         ... with invalid signal for signaling NaN
  */
-
+#ifdef __riscv_float_abi_soft
 #include "libm.h"
 
 static const double tiny = 1.0e-300;
@@ -183,3 +183,4 @@ double sqrt(double x)
 	INSERT_WORDS(z, ix0, ix1);
 	return z;
 }
+#endif // __riscv_float_abi_soft

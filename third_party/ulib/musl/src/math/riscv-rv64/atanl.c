@@ -13,7 +13,7 @@
  * See comments in atan.c.
  * Converted to long double by David Schultz <das@FreeBSD.ORG>.
  */
-
+#ifdef __riscv_float_abi_soft
 #include "libm.h"
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024
@@ -182,3 +182,4 @@ long double atanl(long double x)
 	return sign ? -z : z;
 }
 #endif
+#endif // __riscv_float_abi_soft

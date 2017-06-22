@@ -12,7 +12,7 @@
  * is preserved.
  * ====================================================
  */
-
+#ifdef __riscv_float_abi_soft
 #include "libm.h"
 
 static const float tiny = 1.0e-30;
@@ -82,3 +82,4 @@ float sqrtf(float x)
 	SET_FLOAT_WORD(z, ix);
 	return z;
 }
+#endif // __riscv_float_abi_soft

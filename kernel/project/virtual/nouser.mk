@@ -11,3 +11,16 @@ MODULES += \
 # hard disable building of sysroot in a no userspace build
 ENABLE_BUILD_SYSROOT := false
 
+# risc-v is under development with user related functionality
+# compiled into nouser build to facilitate with development
+ifeq ($(SUBARCH),riscv-rv64)
+
+MODULES += \
+    kernel/lib/syscalls \
+    kernel/lib/userboot \
+    kernel/lib/debuglog \
+    kernel/lib/ktrace \
+    kernel/lib/mtrace \
+
+endif
+

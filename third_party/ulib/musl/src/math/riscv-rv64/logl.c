@@ -51,7 +51,7 @@
  * of the random arguments were uniformly distributed over
  * [-10000, +10000].
  */
-
+#ifdef __riscv_float_abi_soft
 #include "libm.h"
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024
@@ -173,3 +173,4 @@ long double logl(long double x)
 	return log(x);
 }
 #endif
+#endif // __riscv_float_abi_soft

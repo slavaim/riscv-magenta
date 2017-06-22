@@ -47,7 +47,7 @@
  * arithmetic   domain     # trials      peak         rms
  *    IEEE     -1.0, 9.0    100000      8.2e-20    2.5e-20
  */
-
+#ifdef __riscv_float_abi_soft
 #include "libm.h"
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024
@@ -175,3 +175,4 @@ long double log1pl(long double x)
 	return log1p(x);
 }
 #endif
+#endif //__riscv_float_abi_soft
