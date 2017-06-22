@@ -9,6 +9,7 @@ Milestones:
   - 02 June 2017 some syscall facilities are implemented
   - 14 June 2017 some pagefault facilities are implemented
   - 21 June 2017 user mode entry
+  - 23 June 2017 libc(musl) ported to RISC-V
   
 Some notes on Magents RISC-V porting can be found here https://github.com/slavaim/riscv-notes/tree/master/magenta 
 
