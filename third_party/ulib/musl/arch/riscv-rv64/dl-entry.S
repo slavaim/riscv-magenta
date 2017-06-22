@@ -19,5 +19,5 @@ ENTRY(_start)
     // void* entry; returned in a1
     // } dl_start_return_t;
     //
-    tail a1
+    jr a1
 END(_start)

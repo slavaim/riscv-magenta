@@ -20,7 +20,7 @@ uint arch_num_regsets(void)
 status_t arch_get_regset(struct thread *thread, uint regset, void* regs, uint* buf_size)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 // |priv| = true -> allow setting privileged values, otherwise leave them unchanged
@@ -29,5 +29,5 @@ status_t arch_get_regset(struct thread *thread, uint regset, void* regs, uint* b
 status_t arch_set_regset(struct thread *thread, uint regset, const void* regs, uint buf_size, bool priv)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }

@@ -28,4 +28,13 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/memory.cpp \
     $(LOCAL_DIR)/interrupts.cpp \
 
+MODULE_DEPS += \
+    kernel/lib/cbuf \
+    kernel/lib/gfxconsole \
+    kernel/lib/fixed_point \
+    kernel/lib/memory_limit \
+    kernel/lib/pow2_range_allocator \
+    kernel/lib/version \
+    kernel/dev/interrupt \
+
 include make/module.mk

@@ -165,7 +165,7 @@ void riscv_syscall(struct pt_regs*  regs)
     if (unlikely(syscall_imm != 0xf0f)) {
         LTRACEF("syscall does not have magenta magic, %#" PRIx64
                 " @ PC %#" PRIx64 "\n", syscall_num, regs->sepc);
-        regs->a0 = ERR_BAD_SYSCALL;
+        regs->a0 = MX_ERR_BAD_SYSCALL;
         return;
     }
 

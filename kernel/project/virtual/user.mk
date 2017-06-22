@@ -16,6 +16,13 @@ MODULES += \
     kernel/lib/ktrace \
     kernel/lib/mtrace \
 
+ifeq ($(SUBARCH),riscv-rv64)
+
+MODULES += \
+    system/core/userboot
+
+else
+
 # include all core, dev, uapp, ulib and utest from system/...
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/core/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/dev/*/*/rules.mk))
@@ -29,5 +36,8 @@ MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/udev/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/ulib/*/rules.mk))
 MODULES += $(patsubst %/rules.mk,%,$(wildcard third_party/utest/*/rules.mk))
 
+endif
+
 EXTRA_BUILDDEPS += $(USER_BOOTDATA)
+
 

@@ -33,6 +33,20 @@
 
 #define	LG_SIZE_CLASS_GROUP	2
 
+////
+#ifndef LG_SIZEOF_PTR
+ #error "LG_SIZEOF_PTR not defined"
+#endif
+#ifndef LG_TINY_MIN
+ #error "LG_TINY_MIN not defined"
+#endif
+#ifndef LG_QUANTUM
+ #error "LG_QUANTUM not defined"
+#endif
+#ifndef LG_PAGE
+ #error "LG_PAGE not defined"
+#endif
+////
 #if (LG_SIZEOF_PTR == 2 && LG_TINY_MIN == 3 && LG_QUANTUM == 3 && LG_PAGE == 12)
 #define	SIZE_CLASSES \
   /* index, lg_grp, lg_delta, ndelta, psz, bin, pgs, lg_delta_lookup */ \

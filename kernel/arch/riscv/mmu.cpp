@@ -84,7 +84,7 @@ status_t arch_mmu_init_aspace(arch_aspace_t* aspace, vaddr_t base, size_t size, 
 
         aspace->pt_virt = static_cast<pgd_t*>(allocate_pt(&aspace->pt_phys));
         if (!aspace->pt_virt)
-            return ERR_NO_MEMORY;
+            return MX_ERR_NO_MEMORY;
 
         /* zero the top level translation table */
         /* XXX remove when PMM starts returning pre-zeroed pages */
@@ -98,13 +98,13 @@ status_t arch_mmu_init_aspace(arch_aspace_t* aspace, vaddr_t base, size_t size, 
                sizeof(pgd_t) * KERNEL_PTRS_PER_PGD);
     }
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t arch_mmu_destroy_aspace(arch_aspace_t* aspace)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* test the vaddr against the address space's range */
@@ -177,7 +177,7 @@ riscv64_mmu_map(
     if ((vaddr & PAGE_MASK_LOW) ||
         (paddr & PAGE_MASK_LOW) ||
         (size & PAGE_MASK_LOW)) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     mapped_size = 0;
@@ -289,19 +289,19 @@ arch_mmu_map(
 
     DEBUG_ASSERT(is_valid_vaddr(aspace, vaddr));
     if (!is_valid_vaddr(aspace, vaddr))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     if (!(mmu_flags & ARCH_MMU_FLAG_PERM_READ))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     /* paddr and vaddr must be aligned */
     DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
     DEBUG_ASSERT(IS_PAGE_ALIGNED(paddr));
     if (!IS_PAGE_ALIGNED(vaddr) || !IS_PAGE_ALIGNED(paddr))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if (count == 0)
-        return NO_ERROR;
+        return MX_OK;
 
     ssize_t  bmp; // stands for BytesMaPped
     if (aspace->flags & ARCH_ASPACE_FLAG_KERNEL) {
@@ -331,7 +331,7 @@ arch_mmu_map(
         DEBUG_ASSERT(*mapped <= count);
     }
 
-    return (bmp < 0) ? (status_t)bmp : NO_ERROR;
+    return (bmp < 0) ? (status_t)bmp : MX_OK;
 }
 
 static
@@ -349,7 +349,7 @@ riscv64_mmu_unmap(
 
     if ((vaddr & PAGE_MASK_LOW) ||
         (size & PAGE_MASK_LOW)) {
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
     }
 
     unmapped_size = 0;
@@ -454,11 +454,11 @@ arch_mmu_unmap(
     DEBUG_ASSERT(is_valid_vaddr(aspace, vaddr));
 
     if (!is_valid_vaddr(aspace, vaddr))
-        return ERR_OUT_OF_RANGE;
+        return MX_ERR_OUT_OF_RANGE;
 
     DEBUG_ASSERT(IS_PAGE_ALIGNED(vaddr));
     if (!IS_PAGE_ALIGNED(vaddr))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     ssize_t ret;
     if (aspace->flags & ARCH_ASPACE_FLAG_KERNEL) {
@@ -537,7 +537,7 @@ status_t arch_mmu_protect(arch_aspace_t* aspace, vaddr_t vaddr, size_t count, ui
     DEBUG_ASSERT(aspace->magic == ARCH_ASPACE_MAGIC);
 
     if (count == 0)
-        return NO_ERROR; // nothing to do
+        return MX_OK; // nothing to do
 
     //
     // the end is the last byte of the range instead of a usual
@@ -552,26 +552,26 @@ status_t arch_mmu_protect(arch_aspace_t* aspace, vaddr_t vaddr, size_t count, ui
 
     if (!is_valid_vaddr(aspace, start) ||
         !is_valid_vaddr(aspace, end))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if (!IS_PAGE_ALIGNED(start))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     if (!(mmu_flags & ARCH_MMU_FLAG_PERM_READ))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     //
     // check for overflow
     //
     if (start > end)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     //
     // check that the range doesn't span from
     // lower(user) to upper(kernel) half
     //
     if (start < USER_ASPACE_MAXADDR && end > USER_ASPACE_MAXADDR)
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     //
     // use the kernel page table for kernel space
@@ -639,21 +639,21 @@ status_t arch_mmu_protect(arch_aspace_t* aspace, vaddr_t vaddr, size_t count, ui
         *pte = new_pte;
     } // end for
 
-    return NO_ERROR;
+    return MX_OK;
 }
 
 status_t arch_mmu_query(arch_aspace_t *aspace, vaddr_t vaddr, paddr_t *p_paddr, uint *p_mmu_flags)
 {
     if (!is_valid_vaddr(aspace, vaddr))
-        return ERR_INVALID_ARGS;
+        return MX_ERR_INVALID_ARGS;
 
     pgd_t *pgd = pgd_offset(aspace->pt_virt, vaddr);
     if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
 
     pud_t *pud = pud_offset(pgd, vaddr);
     if (pud_none(*pud) || unlikely(pud_bad(*pud)))
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
 
     if (pud_huge(*pud)) {
 
@@ -667,15 +667,15 @@ status_t arch_mmu_query(arch_aspace_t *aspace, vaddr_t vaddr, paddr_t *p_paddr, 
             if (p_mmu_flags)
                 *p_mmu_flags = get_pdu_mmu_flags(*pud);
 
-            return NO_ERROR;
+            return MX_OK;
         }
 
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
 
     pmd_t *pmd = pmd_offset(pud, vaddr);
     if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd)))
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
 
     if (pmd_huge(*pmd)) {
 
@@ -688,15 +688,15 @@ status_t arch_mmu_query(arch_aspace_t *aspace, vaddr_t vaddr, paddr_t *p_paddr, 
             if (p_mmu_flags)
                 *p_mmu_flags = get_pmd_mmu_flags(*pmd);
 
-            return NO_ERROR;
+            return MX_OK;
         }
 
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
     }
 
     pte_t *pte = pte_offset(pmd, vaddr);
     if (pte_none(*pte) || !pte_present(*pte))
-        return ERR_NOT_FOUND;
+        return MX_ERR_NOT_FOUND;
 
     paddr_t paddr = follow_pte_to_phys(*pte, vaddr);
     if (paddr) {
@@ -707,10 +707,10 @@ status_t arch_mmu_query(arch_aspace_t *aspace, vaddr_t vaddr, paddr_t *p_paddr, 
         if (p_mmu_flags)
             *p_mmu_flags = get_pte_mmu_flags(*pte);
 
-        return NO_ERROR;
+        return MX_OK;
     }
 
-    return ERR_NOT_FOUND;
+    return MX_ERR_NOT_FOUND;
 }
 
 /*

@@ -10,6 +10,7 @@
 #include <bits.h>
 #include <inttypes.h>
 #include <trace.h>
+#include <magenta/errors.h>
 #include <kernel/thread.h>
 #include <kernel/vm/fault.h>
 #include <platform.h>
@@ -171,7 +172,7 @@ page_in:
         DEBUG_ASSERT(!arch_in_int_handler());
 
         status_t pf_err = vmm_page_fault_handler(addr, flags);
-        if (pf_err != NO_ERROR) {
+        if (pf_err != MX_OK) {
 
             //
             // if the high level page fault handler can't deal with it,

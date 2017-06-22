@@ -24,7 +24,7 @@
 status_t arch_copy_from_user(void *dst, const void *src, size_t len)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /*
@@ -42,6 +42,6 @@ status_t arch_copy_from_user(void *dst, const void *src, size_t len)
 status_t arch_copy_to_user(void *dst, const void *src, size_t len)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 

@@ -13,14 +13,14 @@
 status_t arch_mp_send_ipi(mp_cpu_mask_t target, mp_ipi_t ipi)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* Bring a CPU up and enter it into the scheduler */
 status_t platform_mp_cpu_hotplug(uint cpu_id)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* Prepare for CPU unplug.  The platform may want to shift
@@ -28,7 +28,7 @@ status_t platform_mp_cpu_hotplug(uint cpu_id)
 status_t platform_mp_prep_cpu_unplug(uint cpu_id)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* shutdown the specified CPU.  called after it is no longer
@@ -36,7 +36,7 @@ status_t platform_mp_prep_cpu_unplug(uint cpu_id)
 status_t platform_mp_cpu_unplug(uint cpu_id)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* Should be invoked by platform_mp_cpu_hotplug to ask the arch
@@ -44,7 +44,7 @@ status_t platform_mp_cpu_unplug(uint cpu_id)
 status_t arch_mp_cpu_hotplug(uint cpu_id)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* Should be invoked by platform_mp_prep_cpu_unplug to ask the
@@ -52,7 +52,7 @@ status_t arch_mp_cpu_hotplug(uint cpu_id)
 status_t arch_mp_prep_cpu_unplug(uint cpu_id)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 /* Should be invoked by platform_mp_cpu_unplug to ask the
@@ -60,7 +60,7 @@ status_t arch_mp_prep_cpu_unplug(uint cpu_id)
 status_t arch_mp_cpu_unplug(uint cpu_id)
 {
     PANIC_UNIMPLEMENTED;
-    return ERR_NOT_SUPPORTED;
+    return MX_ERR_NOT_SUPPORTED;
 }
 
 void arch_mp_init_percpu(void)

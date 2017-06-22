@@ -17,6 +17,11 @@
 #define MX_TLS_STACK_GUARD_OFFSET       -0x10
 #define MX_TLS_UNSAFE_SP_OFFSET         -0x8
 
+#elif defined(__riscv) && __riscv_xlen==64
+
+#define MX_TLS_STACK_GUARD_OFFSET       -0x10
+#define MX_TLS_UNSAFE_SP_OFFSET         -0x8
+
 #else
 
 #error what architecture?

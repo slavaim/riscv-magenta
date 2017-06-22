@@ -82,7 +82,11 @@ LOCAL_SRCS += \
     $(GET_LOCAL_DIR)/x86_64/memset.S \
 
 else ifeq ($(SUBARCH),riscv-rv64)
-# TO_DO_RISCV
+LOCAL_SRCS += \
+    $(GET_LOCAL_DIR)/memcpy.c \
+    $(GET_LOCAL_DIR)/memmove.c \
+    $(GET_LOCAL_DIR)/mempcpy.c \
+    $(GET_LOCAL_DIR)/memset.c \
 
 else
 error Unsupported architecture for musl build!

@@ -1087,8 +1087,47 @@ LOCAL_SRCS += \
     $(LOCAL_DIR)/src/signal/x86_64/restore.S \
 
 else ifeq ($(SUBARCH),riscv-rv64)
-# TO_DO_RISCV
-# LOCAL_SRCS += 
+
+# CPU with FPU
+LOCAL_SRCS += \
+    $(LOCAL_DIR)/src/fenv/riscv-rv64/fenv.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/copysignf.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/copysign.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fabsf.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fabs.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fmaf.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fma.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fmaxf.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fmax.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fminf.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/fmin.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/sqrtf.S \
+	$(LOCAL_DIR)/src/math/riscv-rv64/sqrt.S \
+
+# FPU software emulation
+LOCAL_SRCS += \
+	$(LOCAL_DIR)/src/fenv/riscv-rv64/fenv-sf.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/sqrt.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/sqrtf.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/atan2l.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/logl.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/log1pl.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/exp2l.c \
+	$(LOCAL_DIR)/src/math/riscv-rv64/atanl.c \
+	$(LOCAL_DIR)/src/math/fmodl.c \
+	$(LOCAL_DIR)/src/math/rintl.c \
+	$(LOCAL_DIR)/src/math/sqrtl.c \
+	$(LOCAL_DIR)/src/math/fabs.c \
+	$(LOCAL_DIR)/src/math/fabsf.c \
+	$(LOCAL_DIR)/src/math/fabsl.c \
+
+LOCAL_SRCS += \
+	$(LOCAL_DIR)/src/setjmp/riscv-rv64/longjmp.S \
+	$(LOCAL_DIR)/src/setjmp/riscv-rv64/setjmp.S \
+
+LOCAL_SRCS += \
+	$(LOCAL_DIR)/src/signal/riscv-rv64/restore.S \
+	$(LOCAL_DIR)/src/ldso/riscv-rv64/tlsdesc.c \
 
 else
 error Unsupported architecture for musl build!

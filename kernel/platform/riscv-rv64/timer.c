@@ -53,7 +53,7 @@ status_t platform_set_oneshot_timer(platform_timer_callback callback,
     
     sbi_set_timer((deadline * timebase) / LK_SEC(1));
 
-    return NO_ERROR;
+    return MX_OK; // no error
 }
 #endif // #if PLATFORM_HAS_DYNAMIC_TIMER
 

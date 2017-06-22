@@ -137,6 +137,16 @@ _Noreturn void pthread_exit(void* result) {
             [base]"r"(self->tcb_region.iov_base),
             [len]"r"(self->tcb_region.iov_len - PAGE_SIZE),
             [self]"r"(self));
+#elif __riscv && __riscv_xlen==64
+    // RISC-V code added by slavaim
+    // The thread descriptor is at the start of the region, so the rest of
+    // the space up to the guard page is available as the temporary stack.
+    __asm__("add  sp, %[base], %[len]\n"
+            "move a0, %[self]\n"
+            "call final_exit" : :
+            [base]"r"(self->tcb_region.iov_base),
+            [len]"r"(self->tcb_region.iov_len - PAGE_SIZE),
+            [self]"r"(self));
 #else
 #error what architecture?
 #endif

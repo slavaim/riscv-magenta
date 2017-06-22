@@ -28,6 +28,10 @@
 #define JB_D(n) (JB_X(29) + n - 8)
 #define JB_COUNT JB_D(16)
 
+#elif __riscv && __riscv_xlen==64
+
+#define JB_COUNT 28
+
 #else
 
 #error what architecture?

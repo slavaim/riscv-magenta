@@ -1,6 +1,7 @@
 // Copyright 2016 The Fuchsia Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+// RISC-V code added by Slava Imameev ( slavaim )
 
 #pragma once
 
@@ -67,6 +68,18 @@ __NO_SAFESTACK static inline void mxr_tp_set(mx_handle_t self, void* tp) {
         self, MX_PROP_REGISTER_FS, (uintptr_t*)&tp, sizeof(uintptr_t));
     if (status != MX_OK)
         __builtin_trap();
+}
+
+#elif defined(__riscv) && __riscv_xlen==64
+
+__NO_SAFESTACK static inline void* mxr_tp_get(void) {
+    char *tp;
+    __asm__ __volatile__("mv %0, tp" : "=r"(tp));
+    return tp;
+}
+
+__NO_SAFESTACK static inline void mxr_tp_set(mx_handle_t self, void* tp) {
+    __asm__ __volatile__("mv tp,%0" ::"r"(tp));
 }
 
 #else

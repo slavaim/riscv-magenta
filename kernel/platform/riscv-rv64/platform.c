@@ -8,8 +8,11 @@
 #include <kernel/vm.h>
 #include <platform.h>
 #include <magenta/atomic.h>
+#include <magenta/errors.h>
 
+#if WITH_LIB_DEBUGLOG
 #include <lib/debuglog.h>
+#endif
 
 #include <platform/riscv/memory.h>
 
@@ -40,7 +43,7 @@ size_t hw_rng_get_entropy(void* buf, size_t len, bool block) {
 
 /* no built in framebuffer */
 status_t display_get_info(struct display_info *info) {
-    return ERR_NOT_FOUND;
+    return MX_ERR_NOT_FOUND;
 }
 
 static void halt_other_cpus(void) {

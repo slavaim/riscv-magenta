@@ -54,7 +54,7 @@ static inline void ktrace(uint32_t tag, uint32_t a, uint32_t b, uint32_t c, uint
 static inline void ktrace_probe0(const char* name) {}
 static inline void ktrace_probe2(const char* name, uint32_t arg0, uint32_t arg1) {}
 static inline void ktrace_name(uint32_t tag, uint32_t id, uint32_t arg, const char* name) {}
-static inline ssize_t ktrace_read_user(void* ptr, uint32_t off, uint32_t len) {
+static inline int ktrace_read_user(void* ptr, uint32_t off, uint32_t len) {
     if ((len == 0) && (off == 0)) {
         return 0;
     } else {
