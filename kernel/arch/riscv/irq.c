@@ -17,6 +17,7 @@
 #include <arch/riscv/asm/asm-offsets.h>
 #include <arch/riscv/pt_regs.h>
 #include <platform/riscv/timer.h>
+#include <platform/riscv/console.h>
 
 #if WITH_LIB_MAGENTA
 #include <lib/user_copy.h>
@@ -47,7 +48,20 @@ static void arch_set_in_int_handler(bool in_irq)
 
 static void riscv_software_interrupt(void)
 {
-	PANIC_UNIMPLEMENTED;
+	irqreturn_t ret;
+/*
+TO_DO_RISV
+#if WITH_SMP
+	ret = handle_ipi();
+	if (ret != IRQ_NONE)
+		return;
+#endif
+*/
+	ret = sbi_console_isr();
+	if (ret != IRQ_NONE)
+		return;
+
+	panic("%s: software interrupt has not been processed\n", __PRETTY_FUNCTION__);
 }
 
 static void plic_interrupt(void)

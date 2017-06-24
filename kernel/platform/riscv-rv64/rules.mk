@@ -27,6 +27,7 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/platform.c \
     $(LOCAL_DIR)/memory.cpp \
     $(LOCAL_DIR)/interrupts.cpp \
+	$(LOCAL_DIR)/console.c \
 
 MODULE_DEPS += \
     kernel/lib/cbuf \

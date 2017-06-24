@@ -15,8 +15,10 @@
 #endif
 
 #include <platform/riscv/memory.h>
+#include <platform/riscv/console.h>
 
 #include <arch/riscv/mmu.h>
+#include <arch/riscv/sbi.h>
 #include <arch/arch_ops.h>
 
 #include <dev/display.h>
@@ -26,13 +28,10 @@
 
 void platform_early_init(void)
 {
+    sbi_console_init();
+
     /* initialize physical memory arenas */
     platform_mem_init();
-}
-
-int platform_dgetc(char *c, bool wait)
-{
-    PANIC_UNIMPLEMENTED;
 }
 
 /* currently doesn't exist on test platform */
