@@ -11,8 +11,6 @@
 
 __BEGIN_CDECLS
 
-extern cbuf_t console_input_buf;
-
 void sbi_console_init(void);
 irqreturn_t sbi_console_isr(void);
 

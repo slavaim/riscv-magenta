@@ -265,6 +265,8 @@ static int debuglog_dumper(void *arg) {
     // assembly buffer with room for log text plus header text
     char tmp[DLOG_MAX_DATA + 128];
 
+    static bool new_line = true;
+
     struct {
         dlog_header_t hdr;
         char data[DLOG_MAX_DATA + 1];
@@ -281,21 +283,41 @@ static int debuglog_dumper(void *arg) {
         // dump records to kernel console
         size_t actual;
         while (dlog_read(&reader, 0, &rec, DLOG_MAX_RECORD, &actual) == MX_OK) {
-            if (rec.hdr.datalen && (rec.data[rec.hdr.datalen - 1] == '\n')) {
+
+            bool end_of_line = (rec.hdr.datalen && (rec.data[rec.hdr.datalen - 1] == '\n'));
+
+            if (end_of_line) {
                 rec.data[rec.hdr.datalen - 1] = 0;
             } else {
                 rec.data[rec.hdr.datalen] = 0;
             }
             int n;
-            n = snprintf(tmp, sizeof(tmp), "[%05d.%03d] %05" PRIu64 ".%05" PRIu64 "> %s\n",
-                         (int) (rec.hdr.timestamp / LK_SEC(1)),
-                         (int) ((rec.hdr.timestamp / LK_MSEC(1)) % 1000ULL),
-                         rec.hdr.pid, rec.hdr.tid, rec.data);
-            if (n > (int)sizeof(tmp)) {
-                n = sizeof(tmp);
+
+            // reserve space for '\n'
+            int bl = end_of_line ? (sizeof(tmp) - sizeof('\n')) : sizeof(tmp);
+
+            if (new_line) {
+                n = snprintf(tmp, bl, "[%05d.%03d] %05" PRIu64 ".%05" PRIu64 "> %s",
+                             (int) (rec.hdr.timestamp / LK_SEC(1)),
+                             (int) ((rec.hdr.timestamp / LK_MSEC(1)) % 1000ULL),
+                             rec.hdr.pid, rec.hdr.tid, rec.data);
+            } else {
+                n = snprintf(tmp, bl, "%s", rec.data);
             }
+
+            if (n > bl) {
+                n = bl;
+            }
+            
+            if (end_of_line){
+                tmp[n] = '\n';
+                ++n;
+            }
+
             __kernel_console_write(tmp, n);
             __kernel_serial_write(tmp, n);
+
+            new_line = end_of_line;
         }
     }
 
