@@ -60,7 +60,7 @@ welcome to lk/MP
 [00005.293] 00000.00000> starting app shell
 ] [00005.296] 00000.00000> entering main console loop
 ```
-An example of a kernel console seeion
+An example of a kernel console session
 
 ```
 help
