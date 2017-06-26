@@ -7,7 +7,7 @@
 #include "blobstore.h"
 
 #include <bitmap/raw-bitmap.h>
-#include <merkle/digest.h>
+#include <digest/digest.h>
 #include <mx/event.h>
 #include <mx/vmo.h>
 #include <mxtl/algorithm.h>
@@ -28,8 +28,11 @@ class VnodeBlob;
 
 using WriteTxn = fs::WriteTxn<kBlobstoreBlockSize, Blobstore>;
 using ReadTxn = fs::ReadTxn<kBlobstoreBlockSize, Blobstore>;
+using digest::Digest;
 
 typedef uint32_t BlobFlags;
+
+// clang-format off
 
 // After Open;
 constexpr BlobFlags kBlobStateEmpty       = 0x00010000; // Not yet allocated
@@ -48,6 +51,8 @@ constexpr BlobFlags kBlobFlagSync         = 0x01000000; // The blob is being wri
 constexpr BlobFlags kBlobFlagDeletable    = 0x02000000; // This node should be unlinked when closed
 constexpr BlobFlags kBlobFlagDirectory    = 0x04000000; // This node represents the root directory
 constexpr BlobFlags kBlobOtherMask        = 0xFF000000;
+
+// clang-format on
 
 static_assert(((kBlobStateMask | kBlobOtherMask) & V_FLAG_RESERVED_MASK) == 0,
               "Blobstore flags conflict with VFS-reserved flags");
@@ -93,7 +98,7 @@ public:
     // Constructs the "directory" blob
     VnodeBlob(mxtl::RefPtr<Blobstore> bs);
     // Constructs actual blobs
-    VnodeBlob(mxtl::RefPtr<Blobstore> bs, const merkle::Digest& digest);
+    VnodeBlob(mxtl::RefPtr<Blobstore> bs, const Digest& digest);
     virtual ~VnodeBlob();
 
 private:
@@ -173,21 +178,21 @@ private:
     uint64_t bytes_written_;
 
     BlobFlags flags_;
-    uint8_t digest_[merkle::Digest::kLength];
+    uint8_t digest_[Digest::kLength];
 
     size_t map_index_;
 };
 
 // We need to define this structure to allow the Blob to be indexable by a key
-// which is larger than a primitive type: the keys are 'merkle::Digest::kLength'
+// which is larger than a primitive type: the keys are 'Digest::kLength'
 // bytes long.
 struct MerkleRootTraits {
     static const uint8_t* GetKey(const VnodeBlob& obj) { return obj.GetKey(); }
     static bool LessThan(const uint8_t* k1, const uint8_t* k2) {
-        return memcmp(k1, k2, merkle::Digest::kLength) < 0;
+        return memcmp(k1, k2, Digest::kLength) < 0;
     }
     static bool EqualTo(const uint8_t* k1, const uint8_t* k2) {
-        return memcmp(k1, k2, merkle::Digest::kLength) == 0;
+        return memcmp(k1, k2, Digest::kLength) == 0;
     }
 };
 
@@ -196,9 +201,13 @@ public:
     DISALLOW_COPY_ASSIGN_AND_MOVE(Blobstore);
     friend class VnodeBlob;
 
-    static mx_status_t Create(int blockfd, const blobstore_info_t* info, mxtl::RefPtr<VnodeBlob>* out);
+    static mx_status_t Create(int blockfd, const blobstore_info_t* info, mxtl::RefPtr<Blobstore>* out);
+
     mx_status_t Unmount();
     virtual ~Blobstore();
+
+    // Returns the root blob
+    mx_status_t GetRootBlob(mxtl::RefPtr<VnodeBlob>* out);
 
     // Searches for a blob by name.
     // - If a readable blob with the same name exists, return it.
@@ -210,13 +219,13 @@ public:
     //
     // If 'out' is not null, then the blob's  will be added to the
     // "quick lookup" map if it was not there already.
-    mx_status_t LookupBlob(const merkle::Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
+    mx_status_t LookupBlob(const Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
 
     // Creates a new blob in-memory, with no backing disk storage (yet).
     // If a blob with the name already exists, this function fails.
     //
     // Adds Blob to the "quick lookup" map.
-    mx_status_t NewBlob(const merkle::Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
+    mx_status_t NewBlob(const Digest& digest, mxtl::RefPtr<VnodeBlob>* out);
 
     // Removes blob from 'active' hashmap.
     mx_status_t ReleaseBlob(VnodeBlob* blob);
@@ -231,7 +240,10 @@ public:
 
     int blockfd_;
     blobstore_info_t info_;
+
 private:
+    friend class BlobstoreChecker;
+
     Blobstore(int fd, const blobstore_info_t* info);
     mx_status_t LoadBitmaps();
 
@@ -253,6 +265,9 @@ private:
     // Given a node within the node map at an index, write it to disk.
     mx_status_t WriteNode(WriteTxn* txn, size_t map_index);
 
+    // Enqueues an update for allocated inode/block counts
+    mx_status_t CountUpdate(WriteTxn* txn);
+
     // VnodeBlobs exist in the WAVLTree as long as one or more reference exists;
     // when the Vnode is deleted, it is immediately removed from the WAVL tree.
     using WAVLTreeByMerkle = mxtl::WAVLTree<const uint8_t*,
@@ -267,11 +282,30 @@ private:
     vmoid_t block_map_vmoid_;
     mxtl::unique_ptr<MappedVmo> node_map_;
     vmoid_t node_map_vmoid_;
+    mxtl::unique_ptr<MappedVmo> info_vmo_;
+    vmoid_t info_vmoid_;
+};
+
+class BlobstoreChecker {
+public:
+    BlobstoreChecker();
+    void Init(mxtl::RefPtr<Blobstore> vnode);
+    void TraverseInodeBitmap();
+    void TraverseBlockBitmap();
+    mx_status_t CheckAllocatedCounts() const;
+
+private:
+    DISALLOW_COPY_ASSIGN_AND_MOVE(BlobstoreChecker);
+    mxtl::RefPtr<Blobstore> blobstore_;
+    uint32_t alloc_inodes_;
+    uint32_t alloc_blocks_;
 };
 
 int blobstore_mkfs(int fd);
 
 mx_status_t blobstore_mount(mxtl::RefPtr<VnodeBlob>* out, int blockfd);
+mx_status_t blobstore_create(mxtl::RefPtr<Blobstore>* out, int blockfd);
+mx_status_t blobstore_check(mxtl::RefPtr<Blobstore> vnode);
 
 mx_status_t readblk(int fd, uint64_t bno, void* data);
 mx_status_t writeblk(int fd, uint64_t bno, const void* data);

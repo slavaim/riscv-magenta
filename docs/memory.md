@@ -143,7 +143,7 @@ R  000059f5c7068000-000059f5c708d000      148k:sz                    'useralloc'
 ### Dump all VMOs associated with a process
 
 ```
-k mx vmos <pid>
+vmos <pid>
 ```
 
 This will also show unmapped VMOs, which neither `ps` nor `vmaps` currently
@@ -151,41 +151,33 @@ account for.
 
 It also shows whether a given VMO is a clone, along with its parent's koid.
 
-> NOTE: This is a kernel command, and will print to the kernel console.
-
 ```
-$ k mx vmos 1102
-process [1102]:
-Handles to VMOs:
-      handle rights  koid parent #chld #map #shr    size   alloc name
-   158288097 rwxmdt  1144      -     0    1    1    256k      4k -
-   151472261 r-xmdt  1031      -     0   22   11     28k     28k -
-  total: 2 VMOs, size 284k, alloc 32k
-Mapped VMOs:
-           -      -  koid parent #chld #map #shr    size   alloc name
-           -      -  1109   1038     1    1    1   25.6k      8k -
-           -      -  1146   1109     0    2    1      8k      8k -
-           -      -  1146   1109     0    2    1      8k      8k -
+$ vmos 1118
+rights  koid parent #chld #map #shr    size   alloc name
+rwxmdt  1170      -     0    1    1      4k      4k stack: msg of 0x5a
+r-xmdt  1031      -     2   28   14     28k     28k vdso/full
+     -  1298      -     0    1    1      2M     68k jemalloc-heap
+     -  1381      -     0    3    1    516k      8k self-dump-thread:0x12afe79c8b38
+     -  1233   1232     1    1    1   33.6k      4k libbacktrace.so
+     -  1237   1233     0    1    1      4k      4k data:libbacktrace.so
 ...
-           -      -  1343      -     0    3    1    516k      8k -
-           -      -  1325      -     0    1    1     28k      4k -
-...
-           -      -  1129   1038     1    1    1  883.2k     12k -
-           -      -  1133   1129     0    1    1     16k     12k -
-           -      -  1134      -     0    1    1     12k     12k -
-           -      -  koid parent #chld #map #shr    size   alloc name
+     -  1153   1146     1    1    1  883.2k     12k ld.so.1
+     -  1158   1153     0    1    1     16k     12k data:ld.so.1
+     -  1159      -     0    1    1     12k     12k bss:ld.so.1
+rights  koid parent #chld #map #shr    size   alloc name
 ```
 
 Columns:
 
--   `handle`: The `mx_handle_t` value of this process's handle to the VMO.
--   `rights`: The rights that the handle has, zero or more of:
+-   `rights`: If the process points to the VMO via a handle, this column shows
+    the rights that the handle has, zero or more of:
     -   `r`: `MX_RIGHT_READ`
     -   `w`: `MX_RIGHT_WRITE`
     -   `x`: `MX_RIGHT_EXECUTE`
     -   `m`: `MX_RIGHT_MAP`
     -   `d`: `MX_RIGHT_DUPLICATE`
     -   `t`: `MX_RIGHT_TRANSFER`
+    -   **NOTE**: Non-handle entries will have a single '-' in this colum.
 -   `koid`: The koid of the VMO, if it has one. Zero otherwise. A VMO without a
     koid was created by the kernel, and has never had a userspace handle.
 -   `parent`: The koid of the VMO's parent, if it's a clone.
@@ -208,15 +200,28 @@ SHARED  =  #shr  > 1 ? alloc : 0
 PSS     =  PRIVATE + (SHARED / #shr)
 ```
 
-### Dump all VMOs in the system (userspace and kernel)
+### Dump "hidden" (unmapped and kernel) VMOs
+
+> NOTE: This is a kernel command, and will print to the kernel console.
 
 ```
-k mx vmos all
+k mx vmos hidden
 ```
 
-Just like `k mx vmos <pid>`, but dumps all VMOs across all processes and the
-kernel. A `koid` value of zero means that only the kernel has a reference to
-that VMO.
+Similar to `vmos <pid>`, but dumps all VMOs in the system that are not mapped
+into any process:
+-   VMOs that userspace has handles to but does not map
+-   VMOs that are mapped only into kernel space
+-   Kernel-only, unmapped VMOs that have no handles
+
+A `koid` value of zero means that only the kernel has a reference to that VMO.
+
+A `#map` value of zero means that the VMO is not mapped into any address space.
+
+**See also**: `k mx vmos all`, which dumps all VMOs in the system. **NOTE**:
+It's very common for this output to be truncated because of kernel console
+buffer limitations, so it's often better to combine the `k mx vmos hidden`
+output with a `vmaps` dump of each user process.
 
 ### Limitations
 
@@ -241,11 +246,6 @@ None of the process-dumping tools account for:
     `k mx ps help` for a description of its columns.
 
 ## Kernel memory
-
-*** note
-**TODO**(dbort): Add commands/APIs to dump and examine kernel memory usage, and
-document them here.
-***
 
 ### Dump system memory arenas and kernel heap usage
 
@@ -279,3 +279,27 @@ Fields:
     data like the ram disk and kernel image, and for early-boot dynamic memory.
 -   `mmu`: The amount of memory used for architecture-specific MMU metadata like
     page tables.
+
+### Dump the kernel address space
+
+> NOTE: This is a kernel command, and will print to the kernel console.
+
+```
+k mx asd kernel
+```
+
+Dumps the kernel's VMAR/mapping/VMO hierarchy, similar to the `vmaps` tool for
+user processes.
+
+```
+$ k mx asd kernel
+as 0xffffffff80252b20 [0xffffff8000000000 0xffffffffffffffff] sz 0x8000000000 fl 0x1 ref 71 'kernel'
+  vmar 0xffffffff802529a0 [0xffffff8000000000 0xffffffffffffffff] sz 0x8000000000 ref 1 'root'
+    map 0xffffff80015f89a0 [0xffffff8000000000 0xffffff8fffffffff] sz 0x1000000000 mmufl 0x18 vmo 0xffffff80015f8890/k0 off 0 p ages 0 ref 1 ''
+      vmo 0xffffff80015f8890/k0 size 0 pages 0 ref 1 parent k0
+    map 0xffffff80015f8b30 [0xffffff9000000000 0xffffff9000000fff] sz 0x1000 mmufl 0x18 vmo 0xffffff80015f8a40/k0 off 0 pages 0 ref 1 ''
+      object 0xffffff80015f8a40 base 0x7ffe2000 size 0x1000 ref 1
+    map 0xffffff80015f8cc0 [0xffffff9000001000 0xffffff9000001fff] sz 0x1000 mmufl 0x1a vmo 0xffffff80015f8bd0/k0 off 0 pages 0 ref 1 ''
+      object 0xffffff80015f8bd0 base 0xfed00000 size 0x1000 ref 1
+...
+```

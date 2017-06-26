@@ -679,7 +679,6 @@ LOCAL_SRCS := \
     $(LOCAL_DIR)/src/signal/sigtimedwait.c \
     $(LOCAL_DIR)/src/signal/sigwait.c \
     $(LOCAL_DIR)/src/signal/sigwaitinfo.c \
-    $(LOCAL_DIR)/src/stat/futimens.c \
     $(LOCAL_DIR)/src/stat/futimesat.c \
     $(LOCAL_DIR)/src/stat/lchmod.c \
     $(LOCAL_DIR)/src/stat/mkfifoat.c \
@@ -1168,6 +1167,7 @@ MODULE_SRCS += \
 MODULE_SRCS += \
     $(LOCAL_DIR)/sanitizers/__asan_early_init.c \
     $(LOCAL_DIR)/sanitizers/asan-stubs.c \
+    $(LOCAL_DIR)/sanitizers/hooks.c \
 
 include make/module.mk
 

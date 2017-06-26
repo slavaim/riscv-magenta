@@ -14,13 +14,14 @@ MODULE_NAME := blobstore
 MODULE_SRCS := \
     $(LOCAL_DIR)/blobstore.cpp \
     $(LOCAL_DIR)/blobstore-ops.cpp \
+    $(LOCAL_DIR)/blobstore-check.cpp \
     $(LOCAL_DIR)/main.cpp \
     $(LOCAL_DIR)/rpc.cpp \
 
 MODULE_STATIC_LIBS := \
     system/ulib/block-client \
     system/ulib/fs \
-    system/ulib/merkle \
+    system/ulib/digest \
     third_party/ulib/cryptolib \
     system/ulib/mx \
     system/ulib/mxalloc \

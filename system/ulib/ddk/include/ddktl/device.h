@@ -298,6 +298,10 @@ template <class D, template <typename> class... Mixins>
 class Device : public ::ddk::internal::base_device, public Mixins<D>... {
   public:
     mx_status_t DdkAdd(const char* name) {
+        if (mxdev_ != nullptr) {
+            return MX_ERR_BAD_STATE;
+        }
+
         device_add_args_t args = {};
         args.version = DEVICE_ADD_ARGS_VERSION;
         args.name = name;
@@ -310,10 +314,22 @@ class Device : public ::ddk::internal::base_device, public Mixins<D>... {
         return device_add(parent_, &args, &mxdev_);
     }
 
+    mx_status_t DdkRemove() {
+        if (mxdev_ == nullptr) {
+            return MX_ERR_BAD_STATE;
+        }
+
+        mx_status_t res = device_remove(mxdev_);
+        mxdev_ = nullptr;
+        return res;
+    }
+
+    const char* name() const { return device_get_name(mxdev()); }
+
     // The opaque pointer representing this device.
-    mx_device_t* mxdev() { return mxdev_; }
+    mx_device_t* mxdev() const { return mxdev_; }
     // The opaque pointer representing the device's parent.
-    mx_device_t* parent() { return parent_; }
+    mx_device_t* parent() const { return parent_; }
 
     void SetState(mx_signals_t stateflag) {
         device_state_set(mxdev_, stateflag);

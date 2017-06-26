@@ -12,6 +12,7 @@
 #  + Initial RAM filesystem and RAM disk (initramfs/initrd) support
 #  + 8250/16550 and compatible serial support
 #  + Console on 8250/16550 and compatible serial port
+#  + kexec
 #
 # More additions to come as and when desired / needed.
 
@@ -22,7 +23,7 @@ PATCHFILE="${SRCFILE%/*}/alldefconfig_plus.patch"
 
 # Location of magenta and its build dir
 MAGENTADIR="${SRCFILE%magenta/*}magenta"
-BUILDDIR="$MAGENTADIR/build-magenta-pc-x86-64"
+BUILDDIR="${MAGENTA_BUILD_DIR:-$MAGENTADIR/build-magenta-pc-x86-64}"
 mkdir -p $BUILDDIR
 
 # Location to download tarballs to

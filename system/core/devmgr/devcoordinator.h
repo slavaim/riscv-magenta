@@ -82,6 +82,9 @@ struct dc_device {
     // to this device's devhost, awaiting a response
     list_node_t pending;
 
+    // listnode for this device in the all devices list
+    list_node_t anode;
+
     mx_device_prop_t props[];
 };
 
@@ -128,9 +131,10 @@ void devfs_unpublish(device_t* dev);
 device_t* coordinator_init(mx_handle_t root_job);
 void coordinator(void);
 
-void coordinator_new_driver(driver_t* ctx, const char* version);
+void dc_driver_added(driver_t* drv, const char* version);
 
-void enumerate_drivers(void);
+void load_driver(const char* path);
+void find_loadable_drivers(const char* path);
 
 bool dc_is_bindable(driver_t* drv, uint32_t protocol_id,
                     mx_device_prop_t* props, size_t prop_count,
@@ -177,6 +181,7 @@ typedef struct {
 // Host->Coord Ops for DmCtl
 #define DC_OP_DM_COMMAND         0x80000020
 #define DC_OP_DM_OPEN_VIRTCON    0x80000021
+#define DC_OP_DM_WATCH           0x80000022
 #define DC_PATH_MAX 1024
 
 mx_status_t dc_msg_pack(dc_msg_t* msg, uint32_t* len_out,

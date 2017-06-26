@@ -10,7 +10,10 @@
 #include <unistd.h>
 
 #include "devcoordinator.h"
-#include "driver-info.h"
+
+#include <driver-info/driver-info.h>
+
+#include <magenta/driver/binding.h>
 
 static bool is_driver_disabled(const char* name) {
     // driver.<driver_name>.disable
@@ -61,10 +64,10 @@ static void found_driver(magenta_driver_note_t* note, mx_bind_inst_t* bi, void* 
     }
 #endif
 
-    coordinator_new_driver(drv, note->version);
+    dc_driver_added(drv, note->version);
 }
 
-static void find_loadable_drivers(const char* path) {
+void find_loadable_drivers(const char* path) {
     DIR* dir = opendir(path);
     if (dir == NULL) {
         return;
@@ -88,7 +91,7 @@ static void find_loadable_drivers(const char* path) {
         if ((fd = openat(dirfd(dir), de->d_name, O_RDONLY)) < 0) {
             continue;
         }
-        mx_status_t status = read_driver_info(fd, libname, found_driver);
+        mx_status_t status = di_read_driver_info(fd, libname, found_driver);
         close(fd);
 
         if (status) {
@@ -102,12 +105,21 @@ static void find_loadable_drivers(const char* path) {
     closedir(dir);
 }
 
-void enumerate_drivers(void) {
-    find_loadable_drivers("/boot/driver");
-    find_loadable_drivers("/boot/driver/test");
-    find_loadable_drivers("/system/driver");
+void load_driver(const char* path) {
+    //TODO: check for duplicate driver add
+    int fd;
+    if ((fd = open(path, O_RDONLY)) < 0) {
+        printf("devcoord: cannot open '%s'\n", path);
+        return;
+    }
+    mx_status_t status = di_read_driver_info(fd, (void*)path, found_driver);
+    close(fd);
 
-    //TODO: remove deprecated driver paths:
-    find_loadable_drivers("/boot/lib/driver");
-    find_loadable_drivers("/system/lib/driver");
+    if (status) {
+        if (status == MX_ERR_NOT_FOUND) {
+            printf("devcoord: no driver info in '%s'\n", path);
+        } else {
+            printf("devcoord: error reading info from '%s'\n", path);
+        }
+    }
 }

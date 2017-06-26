@@ -468,10 +468,25 @@ static int send_dmctl(const char* command, size_t length) {
         return fd;
     }
 
-    dmctl_cmd_t cmd;
-    snprintf(cmd.name, sizeof(cmd.name), command);
-    mx_handle_t h;
+    // commands with ':' get passed through and don't use
+    // socket for results (since there are none)
+    const char* p;
+    for (p = command; p < (command + length); p++) {
+        if (*p == ':') {
+            write(fd, command, length);
+            return 0;
+        }
+    }
 
+    dmctl_cmd_t cmd;
+    if (length >= sizeof(cmd.name)) {
+        fprintf(stderr, "error: dmctl command longer than %zu bytes: '%.*s'\n",
+                sizeof(cmd.name), (int)length, command);
+        return -1;
+    }
+    snprintf(cmd.name, sizeof(cmd.name), command);
+
+    mx_handle_t h;
     if (mx_socket_create(0, &cmd.h, &h) < 0) {
         return -1;
     }

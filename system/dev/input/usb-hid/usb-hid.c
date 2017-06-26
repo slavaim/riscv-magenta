@@ -51,7 +51,7 @@ static void usb_interrupt_callback(iotxn_t* txn, void* cookie) {
 
     bool requeue = true;
     switch (txn->status) {
-    case MX_ERR_PEER_CLOSED:
+    case MX_ERR_IO_NOT_PRESENT:
         requeue = false;
         break;
     case MX_OK:
@@ -62,7 +62,8 @@ static void usb_interrupt_callback(iotxn_t* txn, void* cookie) {
         mtx_unlock(&hid->lock);
         break;
     default:
-        printf("usb-hid: unknown interrupt status %d\n", txn->status);
+        printf("usb-hid: unknown interrupt status %d; not requeuing iotxn\n", txn->status);
+        requeue = false;
         break;
     }
 

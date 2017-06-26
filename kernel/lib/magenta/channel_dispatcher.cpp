@@ -197,8 +197,9 @@ status_t ChannelDispatcher::Call(mxtl::unique_ptr<MessagePacket> msg,
     auto waiter = UserThread::GetCurrent()->GetMessageWaiter();
     if (unlikely(waiter->BeginWait(mxtl::WrapRefPtr(this), msg->get_txid()) != MX_OK)) {
         // If a thread tries BeginWait'ing twice, the VDSO contract around retrying
-        // channel calls has been violated.  Shoot the misbehaving thread.
-        ProcessDispatcher::GetCurrent()->Exit(MX_ERR_BAD_STATE);
+        // channel calls has been violated.  Shoot the misbehaving process.
+        ProcessDispatcher::GetCurrent()->Kill();
+        return MX_ERR_BAD_STATE;
     }
 
     mxtl::RefPtr<ChannelDispatcher> other;
@@ -214,8 +215,8 @@ status_t ChannelDispatcher::Call(mxtl::unique_ptr<MessagePacket> msg,
         }
         other = other_;
 
-        // (0) Before writing outbound message and waiting.
-        // Add our stack-allocated waiter to the list.
+        // (0) Before writing the outbound message and waiting, add our
+        // waiter to the list.
         waiters_.push_back(waiter);
     }
 

@@ -74,7 +74,9 @@ Where *policy* is either
 + **MX_POL_ACTION_DENY**  prevent *condition*.
 
 Optionally it can be augmented via OR with
-+ **MX_POL_ACTION_ALARM** generate an alarm packet via the job.
++ **MX_POL_ACTION_EXCEPTION** generate an exception via the debug port. An
+  exception generated this way acts as a breakpoint. The thread may be
+  resumed after the exception.
 + **MX_POL_ACTION_KILL** terminate the process. It also
 implies **MX_POL_ACTION_DENY**.
 
@@ -92,7 +94,7 @@ or *policy* was not **MX_JOB_POL_RELATIVE** or **MX_JOB_POL_ABSOLUTE**, or
 
 **MX_ERR_BAD_HANDLE**  *job_handle* is not valid handle.
 
-**ERR_WRONG_HANDLE**  *job_handle* is not a job handle.
+**MX_ERR_WRONG_TYPE**  *job_handle* is not a job handle.
 
 **MX_ERR_ACCESS_DENIED**  *job_handle* does not have MX_POL_RIGHT_SET right.
 

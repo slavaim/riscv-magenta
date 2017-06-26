@@ -8,19 +8,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <magenta/device/vfs.h>
 
 #include <magenta/syscalls.h>
-#include <mxio/vfs.h>
 #include <mxio/debug.h>
+#include <mxio/vfs.h>
 #include <mxtl/ref_ptr.h>
 
 #define MXDEBUG 0
 
 #include "blobstore-private.h"
+
+using digest::Digest;
 
 namespace blobstore {
 
@@ -91,7 +93,7 @@ mx_status_t VnodeBlob::Lookup(mxtl::RefPtr<fs::Vnode>* out, const char* name, si
     }
 
     mx_status_t status;
-    merkle::Digest digest;
+    Digest digest;
     if ((status = digest.Parse(name, len)) != MX_OK) {
         return status;
     }
@@ -122,7 +124,7 @@ mx_status_t VnodeBlob::Create(mxtl::RefPtr<fs::Vnode>* out, const char* name, si
         return MX_ERR_NOT_SUPPORTED;
     }
 
-    merkle::Digest digest;
+    Digest digest;
     mx_status_t status;
     if ((status = digest.Parse(name, len)) != MX_OK) {
         return status;
@@ -140,30 +142,28 @@ constexpr const char kFsName[] = "blobstore";
 ssize_t VnodeBlob::Ioctl(uint32_t op, const void* in_buf, size_t in_len, void* out_buf,
                          size_t out_len) {
     switch (op) {
-        case IOCTL_VFS_QUERY_FS: {
-            if (out_len < sizeof(vfs_query_info_t)) {
-                return MX_ERR_INVALID_ARGS;
-            }
-
-            vfs_query_info_t* info = static_cast<vfs_query_info_t*>(out_buf);
-            //TODO(planders): eventually report something besides 0.
-            info->total_bytes = 0;
-            info->used_bytes = 0;
-            info->total_nodes = 0;
-            info->used_nodes = 0;
-            strcpy(info->name, kFsName);
-            return sizeof(*info);
+    case IOCTL_VFS_QUERY_FS: {
+        if (out_len < sizeof(vfs_query_info_t)) {
+            return MX_ERR_INVALID_ARGS;
         }
-        case IOCTL_VFS_UNMOUNT_FS: {
-            mx_status_t status = Sync();
-            if (status != MX_OK) {
-                FS_TRACE_ERROR("blobstore unmount failed to sync; unmounting anyway: %d\n", status);
-            }
-            return blobstore_->Unmount();
+        vfs_query_info_t* info = static_cast<vfs_query_info_t*>(out_buf);
+        info->total_bytes = (blobstore_->info_.block_count - DataStartBlock(blobstore_->info_)) * blobstore_->info_.block_size;
+        info->used_bytes = blobstore_->info_.alloc_block_count * blobstore_->info_.block_size;
+        info->total_nodes = blobstore_->info_.inode_count;
+        info->used_nodes = blobstore_->info_.alloc_inode_count;
+        strcpy(info->name, kFsName);
+        return sizeof(*info);
+    }
+    case IOCTL_VFS_UNMOUNT_FS: {
+        mx_status_t status = Sync();
+        if (status != MX_OK) {
+            FS_TRACE_ERROR("blobstore unmount failed to sync; unmounting anyway: %d\n", status);
         }
-        default: {
-            return MX_ERR_NOT_SUPPORTED;
-        }
+        return blobstore_->Unmount();
+    }
+    default: {
+        return MX_ERR_NOT_SUPPORTED;
+    }
     }
 }
 
@@ -182,7 +182,7 @@ mx_status_t VnodeBlob::Unlink(const char* name, size_t len, bool must_be_dir) {
     }
 
     mx_status_t status;
-    merkle::Digest digest;
+    Digest digest;
     mxtl::RefPtr<VnodeBlob> out;
     if ((status = digest.Parse(name, len)) != MX_OK) {
         return status;

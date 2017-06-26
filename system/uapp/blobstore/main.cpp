@@ -11,14 +11,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <magenta/processargs.h>
 #include <magenta/process.h>
+#include <magenta/processargs.h>
 #include <mxtl/ref_ptr.h>
 
 #include "blobstore-private.h"
 #include "fs/vfs.h"
-
-// TODO(smklein): Implement fsck for blobstore
 
 namespace {
 
@@ -40,14 +38,25 @@ int do_blobstore_mkfs(int fd, int argc, char** argv) {
     return blobstore::blobstore_mkfs(fd);
 }
 
+int do_blobstore_check(int fd, int argc, char** argv) {
+    mxtl::RefPtr<blobstore::Blobstore> vn;
+    if (blobstore::blobstore_create(&vn, fd) < 0) {
+        return -1;
+    }
+
+    return blobstore::blobstore_check(vn);
+}
+
 struct {
     const char* name;
-    int (*func)(int fd, int argc, char**argv);
+    int (*func)(int fd, int argc, char** argv);
     const char* help;
 } CMDS[] = {
     {"create", do_blobstore_mkfs, "initialize filesystem"},
     {"mkfs", do_blobstore_mkfs, "initialize filesystem"},
     {"mount", do_blobstore_mount, "mount filesystem"},
+    {"check", do_blobstore_check, "check filesystem integrity"},
+    {"fsck", do_blobstore_check, "check filesystem integrity"},
 };
 
 int usage() {
@@ -66,7 +75,7 @@ int usage() {
     return -1;
 }
 
-} // namespace anonymous
+} // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {

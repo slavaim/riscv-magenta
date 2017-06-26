@@ -11,6 +11,7 @@
 #include <arch/x86/apic.h>
 #include <arch/x86/descriptor.h>
 #include <arch/x86/feature.h>
+#include <kernel/auto_lock.h>
 #include <kernel/vm/fault.h>
 #include <kernel/vm/pmm.h>
 #include <hypervisor/guest_physical_address_space.h>
@@ -30,6 +31,8 @@ class FifoDispatcher : public mxtl::RefCounted<FifoDispatcher> {};
     "setna %[" #var "];"     // Check CF and ZF for error.
 
 extern uint8_t _gdt[];
+
+static const uint64_t kIoApicPhysBase = 0xfec00000;
 static const uint kPfFlags = VMM_PF_FLAG_WRITE | VMM_PF_FLAG_SW_FAULT;
 
 static status_t vmxon(paddr_t pa) {
@@ -254,6 +257,16 @@ status_t PerCpu::Init(const VmxInfo& info) {
     return MX_OK;
 }
 
+status_t VmxonPerCpu::VmxOn() {
+    status_t status = vmxon(page_.PhysicalAddress());
+    is_on_ = status == MX_OK;
+    return status;
+}
+
+status_t VmxonPerCpu::VmxOff() {
+    return is_on_ ? vmxoff() : MX_OK;
+}
+
 AutoVmcsLoad::AutoVmcsLoad(const VmxPage* page)
     : page_(page) {
     DEBUG_ASSERT(!arch_ints_disabled());
@@ -276,16 +289,6 @@ void AutoVmcsLoad::reload() {
     arch_disable_ints();
     __UNUSED status_t status = vmptrld(page_->PhysicalAddress());
     DEBUG_ASSERT(status == MX_OK);
-}
-
-status_t VmxonPerCpu::VmxOn() {
-    status_t status = vmxon(page_.PhysicalAddress());
-    is_on_ = status == MX_OK;
-    return status;
-}
-
-status_t VmxonPerCpu::VmxOff() {
-    return is_on_ ? vmxoff() : MX_OK;
 }
 
 static bool cr_is_invalid(uint64_t cr_value, uint32_t fixed0_msr, uint32_t fixed1_msr) {
@@ -429,10 +432,10 @@ status_t VmcsPerCpu::Init(const VmxInfo& vmx_info) {
     memset(&vmx_state_, 0, sizeof(vmx_state_));
     timer_initialize(&local_apic_state_.timer);
     event_init(&local_apic_state_.event, false, EVENT_FLAG_AUTOUNSIGNAL);
-    local_apic_state_.active_interrupt = kInvalidInterrupt;
-    local_apic_state_.tsc_deadline = 0;
     local_apic_state_.apic_addr = nullptr;
-    return MX_OK;
+
+    AutoSpinLock lock(local_apic_state_.interrupt_lock);
+    return local_apic_state_.interrupt_bitmap.Reset(kNumInterrupts);
 }
 
 status_t VmcsPerCpu::Clear() {
@@ -542,7 +545,9 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address, paddr_t apic_access_address,
                               PROCBASED_CTLS2_RDTSCP |
                               // Associate cached translations of linear
                               // addresses with a virtual processor ID.
-                              PROCBASED_CTLS2_VPID,
+                              PROCBASED_CTLS2_VPID |
+                              // Enable use of INVPCID instruction.
+                              PROCBASED_CTLS2_INVPCID,
                               0);
     if (status != MX_OK)
         return status;
@@ -653,6 +658,15 @@ status_t VmcsPerCpu::Setup(paddr_t pml4_address, paddr_t apic_access_address,
     // associates all mappings it creates with the value of bits 51:12 of
     // current EPTP. If a VMM uses different EPTP values for different guests,
     // it may use the same VPID for those guests.
+    //
+    // From Volume 3, Section 28.3.3.1: Operations that architecturally
+    // invalidate entries in the TLBs or paging-structure caches independent of
+    // VMX operation (e.g., the INVLPG and INVPCID instructions) invalidate
+    // linear mappings and combined mappings. They are required to do so only
+    // for the current VPID (but, for combined mappings, all EP4TAs). Linear
+    // mappings for the current VPID are invalidated even if EPT is in use.
+    // Combined mappings for the current VPID are invalidated even if EPT is
+    // not in use.
     x86_percpu* percpu = x86_get_percpu();
     vmcs_write(VmcsField16::VPID, static_cast<uint16_t>(percpu->cpu_num + 1));
 
@@ -852,6 +866,15 @@ status_t VmcsPerCpu::Enter(const VmcsContext& context, GuestPhysicalAddressSpace
     return status;
 }
 
+status_t VmcsPerCpu::Interrupt(uint8_t interrupt) {
+    if (!local_apic_signal_interrupt(&local_apic_state_, interrupt, true)) {
+        // If we did not signal the VCPU, it means it is currently running,
+        // therefore we should issue an IPI to force a VM exit.
+        mp_reschedule(1u << 0, MP_IPI_RESCHEDULE);
+    }
+    return MX_OK;
+}
+
 template<typename Out, typename In>
 void gpr_copy(Out* out, const In& in) {
     out->rax = in.rax;
@@ -1030,6 +1053,11 @@ status_t VmcsContext::MemTrap(vaddr_t guest_paddr, size_t size) {
     return gpas_->UnmapRange(guest_paddr, size);
 }
 
+status_t VmcsContext::Interrupt(uint8_t interrupt) {
+    // TODO(abdulla): Update this when we move to an external VCPU model.
+    return per_cpus_[0].Interrupt(interrupt);
+}
+
 struct gpr_args {
     VmcsContext* context;
     mx_guest_gpr_t* guest_gpr;
@@ -1095,6 +1123,10 @@ status_t arch_guest_enter(const mxtl::unique_ptr<GuestContext>& context) {
 status_t arch_guest_mem_trap(const mxtl::unique_ptr<GuestContext>& context, vaddr_t guest_paddr,
                              size_t size) {
     return context->MemTrap(guest_paddr, size);
+}
+
+status_t arch_guest_interrupt(const mxtl::unique_ptr<GuestContext>& context, uint8_t interrupt) {
+    return context->Interrupt(interrupt);
 }
 
 status_t arch_guest_set_gpr(const mxtl::unique_ptr<GuestContext>& context,

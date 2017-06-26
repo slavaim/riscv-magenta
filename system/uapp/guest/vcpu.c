@@ -34,7 +34,6 @@
 
 /* Local APIC register addresses. */
 #define LOCAL_APIC_REGISTER_ID                  0x0020
-#define LOCAL_APIC_REGISTER_EOI                 0x00b0
 #define LOCAL_APIC_REGISTER_SVR                 0x00f0
 #define LOCAL_APIC_REGISTER_ESR                 0x0280
 #define LOCAL_APIC_REGISTER_LVT_TIMER           0x0320
@@ -56,6 +55,7 @@
 
 /* UART configuration flags. */
 #define UART_STATUS_IDLE                        (1u << 6)
+#define UART_STATUS_EMPTY                       (1u << 5)
 
 /* RTC register addresses. */
 #define RTC_REGISTER_SECONDS                    0u
@@ -117,7 +117,7 @@ static const uint16_t kPciDeviceBarSize[] = {
     0x40,   // PCI_DEVICE_VIRTIO_BLOCK
 };
 
-mx_status_t handle_rtc(uint8_t rtc_index, uint8_t* value) {
+static mx_status_t handle_rtc(uint8_t rtc_index, uint8_t* value) {
     time_t now = time(NULL);
     struct tm tm;
     if (localtime_r(&now, &tm) == NULL)
@@ -214,13 +214,17 @@ static mx_status_t handle_port_in(vcpu_context_t* context, const mx_guest_port_i
     mx_status_t status = MX_OK;
     io_port_state_t* io_port_state = &context->guest_state->io_port_state;
     switch (port_in->port) {
-    case UART_RECEIVE_IO_PORT + 4:
+    case UART_LINE_CONTROL_IO_PORT:
+        input_size = 1;
+        packet.port_in_ret.u8 = io_port_state->uart_line_control;
+        break;
+    case UART_MODEM_CONTROL_IO_PORT:
         input_size = 1;
         packet.port_in_ret.u8 = 0;
         break;
-    case UART_STATUS_IO_PORT:
+    case UART_LINE_STATUS_IO_PORT:
         input_size = 1;
-        packet.port_in_ret.u8 = UART_STATUS_IDLE;
+        packet.port_in_ret.u8 = UART_STATUS_IDLE | UART_STATUS_EMPTY;
         break;
     case RTC_DATA_PORT: {
         input_size = 1;
@@ -287,7 +291,8 @@ static mx_status_t handle_port_out(vcpu_context_t* context, const mx_guest_port_
     case PIC2_PORT ... PIC2_PORT + 2:
     case I8253_CONTROL_PORT:
     case I8042_DATA_PORT:
-    case UART_RECEIVE_IO_PORT + 1 ... UART_RECEIVE_IO_PORT + 5:
+    case UART_RECEIVE_IO_PORT + 1 ... UART_LINE_CONTROL_IO_PORT - 1:
+    case UART_LINE_CONTROL_IO_PORT + 1 ... UART_SCR_SCRATCH_IO_PORT:
         return MX_OK;
     case UART_RECEIVE_IO_PORT:
         for (int i = 0; i < port_out->access_size; i++) {
@@ -297,6 +302,11 @@ static mx_status_t handle_port_out(vcpu_context_t* context, const mx_guest_port_
                 io_port_state->offset = 0;
             }
         }
+        return MX_OK;
+    case UART_LINE_CONTROL_IO_PORT:
+        if (port_out->access_size != 1)
+            return MX_ERR_IO_DATA_INTEGRITY;
+        io_port_state->uart_line_control = port_out->u8;
         return MX_OK;
     case RTC_INDEX_PORT:
         if (port_out->access_size != 1)
@@ -334,11 +344,6 @@ static mx_status_t handle_local_apic(local_apic_state_t* local_apic_state,
     switch (offset) {
     case LOCAL_APIC_REGISTER_ID:
         return inst_read32(inst, 0);
-    case LOCAL_APIC_REGISTER_EOI: {
-        // TODO(abdulla): Correctly handle EOI.
-        uint32_t eoi;
-        return inst_write32(inst, &eoi);
-    }
     case LOCAL_APIC_REGISTER_ESR:
         // From Intel Volume 3, Section 10.5.3: Before attempt to read from the
         // ESR, software should first write to it.
@@ -358,6 +363,7 @@ static mx_status_t handle_local_apic(local_apic_state_t* local_apic_state,
         return initial_count > 0 ? MX_ERR_NOT_SUPPORTED : MX_OK;
     }}
 
+    fprintf(stderr, "Unhandled local APIC %#lx\n", offset);
     return MX_ERR_NOT_SUPPORTED;
 }
 
@@ -388,6 +394,7 @@ static mx_status_t handle_io_apic(io_apic_state_t* io_apic_state,
         }}
     }
 
+    fprintf(stderr, "Unhandled IO APIC %#lx\n", offset);
     return MX_ERR_NOT_SUPPORTED;
 }
 

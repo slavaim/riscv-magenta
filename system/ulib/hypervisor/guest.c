@@ -21,6 +21,7 @@ typedef struct e820entry {
 static const uint32_t kE820Ram = 1;
 static const uint32_t kE820Reserved = 2;
 
+static const uint64_t kAddr1mb      = 0x0000000000100000;
 static const uint64_t kAddr3500mb   = 0x00000000e0000000;
 static const uint64_t kAddr4000mb   = 0x0000000100000000;
 
@@ -50,9 +51,10 @@ enum {
  * @param l1_pte_off The offset of this page table, relative to the start of memory.
  * @param aspace_off The address space offset, used to keep track of mapped address space.
  * @param has_page Whether this level of the page table has associated pages.
+ * @param map_flags Flags added to any descriptors directly mapping pages.
  */
 static uintptr_t page_table(uintptr_t addr, size_t size, size_t l1_page_size, uintptr_t l1_pte_off,
-                            uint64_t* aspace_off, bool has_page) {
+                            uint64_t* aspace_off, bool has_page, uint64_t map_flags) {
     size_t l1_ptes = (size + l1_page_size - 1) / l1_page_size;
     bool has_l0_aspace = size % l1_page_size != 0;
     size_t l1_pages = (l1_ptes + kPtesPerPage - 1) / kPtesPerPage;
@@ -61,7 +63,7 @@ static uintptr_t page_table(uintptr_t addr, size_t size, size_t l1_page_size, ui
     uint64_t* pt = (uint64_t*)(addr + l1_pte_off);
     for (size_t i = 0; i < l1_ptes; i++) {
         if (has_page && (!has_l0_aspace || i < l1_ptes - 1)) {
-            pt[i] = *aspace_off | X86_PTE_P | X86_PTE_RW | X86_PTE_PS;
+            pt[i] = *aspace_off | X86_PTE_P | X86_PTE_RW | map_flags;
             *aspace_off += l1_page_size;
         } else {
             if (i > 0 && (i % kPtesPerPage == 0))
@@ -102,30 +104,70 @@ mx_status_t guest_create_page_table(uintptr_t addr, size_t size, uintptr_t* end_
 #if __x86_64__
     uint64_t aspace_off = 0;
     *end_off = 0;
-    *end_off = page_table(addr, size - aspace_off, kPml4PageSize, *end_off, &aspace_off, false);
-    *end_off = page_table(addr, size - aspace_off, kPdpPageSize, *end_off, &aspace_off, true);
-    *end_off = page_table(addr, size - aspace_off, kPdPageSize, *end_off, &aspace_off, true);
-    *end_off = page_table(addr, size - aspace_off, kPtPageSize, *end_off, &aspace_off, true);
+    *end_off = page_table(addr, size - aspace_off, kPml4PageSize, *end_off, &aspace_off, false, 0);
+    *end_off = page_table(addr, size - aspace_off, kPdpPageSize, *end_off, &aspace_off, true, X86_PTE_PS);
+    *end_off = page_table(addr, size - aspace_off, kPdPageSize, *end_off, &aspace_off, true, X86_PTE_PS);
+    *end_off = page_table(addr, size - aspace_off, kPtPageSize, *end_off, &aspace_off, true, 0);
     return MX_OK;
 #else // __x86_64__
     return MX_ERR_NOT_SUPPORTED;
 #endif // __x86_64__
 }
 
+static mx_status_t num_e820_entries(size_t size) {
+    return size > kAddr4000mb ? 4 : 3;
+}
+
+mx_status_t guest_create_e820_memory_map(uintptr_t addr, size_t size, uintptr_t e820_off,
+                                         int* num_entries) {
+    size_t e820_size = num_e820_entries(size) * sizeof(e820entry_t);
+    if (e820_off + e820_size > size) {
+        return MX_ERR_BUFFER_TOO_SMALL;
+    }
+
+    e820entry_t* entry = (e820entry_t*)(addr + e820_off);
+    memset(entry, 0, e820_size);
+    // 0 to 1mb is reserved.
+    entry[0].addr = 0;
+    entry[0].size = kAddr1mb;
+    entry[0].type = kE820Reserved;
+    // 1mb to min(size, 3500mb) is available.
+    entry[1].addr = kAddr1mb;
+    entry[1].size = (size < kAddr3500mb ? size : kAddr3500mb) - kAddr1mb;
+    entry[1].type = kE820Ram;
+    // 3500mb to 4000mb is reserved.
+    entry[2].addr = kAddr3500mb;
+    entry[2].size = kAddr4000mb - kAddr3500mb;
+    entry[2].type = kE820Reserved;
+    if (size > kAddr4000mb) {
+        // If size > 4000mb, then make that region available.
+        entry[3].addr = kAddr4000mb;
+        entry[3].size = size - kAddr4000mb;
+        entry[3].type = kE820Ram;
+        *num_entries = 4;
+    } else {
+        *num_entries = 3;
+    }
+
+    return MX_OK;
+}
+
 mx_status_t guest_create_bootdata(uintptr_t addr, size_t size, uintptr_t acpi_off,
                                   uintptr_t bootdata_off) {
     if (BOOTDATA_ALIGN(bootdata_off) != bootdata_off)
         return MX_ERR_INVALID_ARGS;
-    const uint32_t bootdata_len = sizeof(bootdata_t) + BOOTDATA_ALIGN(sizeof(uint64_t)) +
-                                  sizeof(bootdata_t) + BOOTDATA_ALIGN(sizeof(e820entry_t) * 3);
-    if (bootdata_off + bootdata_len > size)
+
+    size_t e820_size = num_e820_entries(size) * sizeof(e820entry_t);
+    const uint32_t max_bootdata_len = sizeof(bootdata_t) + BOOTDATA_ALIGN(sizeof(uint64_t)) +
+                                      sizeof(bootdata_t) + BOOTDATA_ALIGN(e820_size);
+    if (bootdata_off + max_bootdata_len > size)
         return MX_ERR_BUFFER_TOO_SMALL;
 
     // Bootdata container.
     bootdata_t* header = (bootdata_t*)(addr + bootdata_off);
     header->type = BOOTDATA_CONTAINER;
     header->extra = BOOTDATA_MAGIC;
-    header->length = bootdata_len;
+    header->length = max_bootdata_len;
 
     // ACPI root table pointer.
     bootdata_off += sizeof(bootdata_t);
@@ -141,29 +183,15 @@ mx_status_t guest_create_bootdata(uintptr_t addr, size_t size, uintptr_t acpi_of
     bootdata_off += BOOTDATA_ALIGN(sizeof(uint64_t));
     bootdata = (bootdata_t*)(addr + bootdata_off);
     bootdata->type = BOOTDATA_E820_TABLE;
-    bootdata->length = sizeof(e820entry_t) * 3;
+    bootdata->length = e820_size;
 
     bootdata_off += sizeof(bootdata_t);
-    e820entry_t* entry = (e820entry_t*)(addr + bootdata_off);
-    memset(entry, 0, bootdata->length);
-    // 0 to min(size, 3500mb) is available.
-    entry[0].addr = 0;
-    entry[0].size = size < kAddr3500mb ? size : kAddr3500mb;
-    entry[0].type = kE820Ram;
-    // 3500mb to 4000mb is reserved.
-    entry[1].addr = kAddr3500mb;
-    entry[1].size = kAddr4000mb - kAddr3500mb;
-    entry[1].type = kE820Reserved;
-    if (size > kAddr4000mb) {
-        // If size > 4000mb, then make that region available.
-        entry[2].addr = kAddr4000mb;
-        entry[2].size = size - kAddr4000mb;
-        entry[2].type = kE820Ram;
-    } else {
-        // Else, remove the last entry.
-        header->length -= BOOTDATA_ALIGN(sizeof(e820entry_t));
-        bootdata->length -= BOOTDATA_ALIGN(sizeof(e820entry_t));
-    }
+    int num_entries = 0;
+    mx_status_t status = guest_create_e820_memory_map(addr, size, bootdata_off, &num_entries);
+    if (status != MX_OK)
+        return status;
+    if (num_entries != num_e820_entries(size))
+        return MX_ERR_BAD_STATE;
 
     return MX_OK;
 }

@@ -117,7 +117,7 @@ ProcessDispatcher::~ProcessDispatcher() {
     DEBUG_ASSERT(exception_port_ == nullptr);
     DEBUG_ASSERT(debugger_exception_port_ == nullptr);
 
-    // Remove ourselves from the parent job's weak ref to us. Note that this might
+    // Remove ourselves from the parent job's raw ref to us. Note that this might
     // have beeen called when transitioning State::DEAD. The Job can handle double calls.
     job_->RemoveChildProcess(this);
 
@@ -164,7 +164,11 @@ void ProcessDispatcher::Exit(int retcode) {
         DEBUG_ASSERT_MSG(state_ == State::RUNNING || state_ == State::DYING,
                 "state is %s", StateToString(state_));
 
-        retcode_ = retcode;
+        // Set the exit status if there isn't already an exit in progress.
+        if (state_ != State::DYING) {
+            DEBUG_ASSERT(retcode_ == 0);
+            retcode_ = retcode;
+        }
 
         // enter the dying state, which should kill all threads
         SetStateLocked(State::DYING);
@@ -178,27 +182,36 @@ void ProcessDispatcher::Exit(int retcode) {
 void ProcessDispatcher::Kill() {
     LTRACE_ENTRY_OBJ;
 
-    AutoLock lock(&state_lock_);
+    // MG-880: Call RemoveChildProcess outside of |state_lock_|.
+    bool became_dead = false;
 
-    // we're already dead
-    if (state_ == State::DEAD)
-        return;
+    {
+        AutoLock lock(&state_lock_);
 
-    if (state_ != State::DYING) {
-        // If there isn't an Exit already in progress, set a nonzero exit
-        // status so e.g. crashing tests don't appear to have succeeded.
-        DEBUG_ASSERT(retcode_ == 0);
-        retcode_ = -1;
+        // we're already dead
+        if (state_ == State::DEAD)
+            return;
+
+        if (state_ != State::DYING) {
+            // If there isn't an Exit already in progress, set a nonzero exit
+            // status so e.g. crashing tests don't appear to have succeeded.
+            DEBUG_ASSERT(retcode_ == 0);
+            retcode_ = -1;
+        }
+
+        // if we have no threads, enter the dead state directly
+        if (thread_list_.is_empty()) {
+            SetStateLocked(State::DEAD);
+            became_dead = true;
+        } else {
+            // enter the dying state, which should trigger a thread kill.
+            // the last thread exiting will transition us to DEAD
+            SetStateLocked(State::DYING);
+        }
     }
 
-    // if we have no threads, enter the dead state directly
-    if (thread_list_.is_empty()) {
-        SetStateLocked(State::DEAD);
-    } else {
-        // enter the dying state, which should trigger a thread kill.
-        // the last thread exiting will transition us to DEAD
-        SetStateLocked(State::DYING);
-    }
+    if (became_dead)
+        job_->RemoveChildProcess(this);
 }
 
 void ProcessDispatcher::KillAllThreadsLocked() {
@@ -242,20 +255,28 @@ status_t ProcessDispatcher::AddThread(UserThread* t, bool initial_thread) {
 void ProcessDispatcher::RemoveThread(UserThread* t) {
     LTRACE_ENTRY_OBJ;
 
-    // we're going to check for state and possibly transition below
-    AutoLock state_lock(&state_lock_);
+    // MG-880: Call RemoveChildProcess outside of |state_lock_|.
+    bool became_dead = false;
 
-    // remove the thread from our list
-    DEBUG_ASSERT(t != nullptr);
-    thread_list_.erase(*t);
+    {
+        // we're going to check for state and possibly transition below
+        AutoLock state_lock(&state_lock_);
 
-    // if this was the last thread, transition directly to DEAD state
-    if (thread_list_.is_empty()) {
-        LTRACEF("last thread left the process %p, entering DEAD state\n", this);
-        SetStateLocked(State::DEAD);
+        // remove the thread from our list
+        DEBUG_ASSERT(t != nullptr);
+        thread_list_.erase(*t);
+
+        // if this was the last thread, transition directly to DEAD state
+        if (thread_list_.is_empty()) {
+            LTRACEF("last thread left the process %p, entering DEAD state\n", this);
+            SetStateLocked(State::DEAD);
+            became_dead = true;
+        }
     }
-}
 
+    if (became_dead)
+        job_->RemoveChildProcess(this);
+}
 
 void ProcessDispatcher::on_zero_handles() TA_NO_THREAD_SAFETY_ANALYSIS {
     LTRACE_ENTRY_OBJ;
@@ -273,7 +294,7 @@ void ProcessDispatcher::on_zero_handles() TA_NO_THREAD_SAFETY_ANALYSIS {
 }
 
 mx_koid_t ProcessDispatcher::get_related_koid() const {
-    return job_ ? job_->get_koid() : 0ull;
+    return job_->get_koid();
 }
 
 ProcessDispatcher::State ProcessDispatcher::state() const {
@@ -356,9 +377,16 @@ void ProcessDispatcher::SetStateLocked(State s) {
         LTRACEF_LEVEL(2, "signaling waiters\n");
         state_tracker_.UpdateState(0u, MX_TASK_TERMINATED);
 
-        // We remove ourselves from the parent Job weak ref (to us) list early, so
-        // the semantics of signaling MX_JOB_NO_PROCESSES match that of MX_TASK_TERMINATED.
-        job_->RemoveChildProcess(this);
+        // IWBN to call job_->RemoveChildProcess(this) here, but that risks
+        // a deadlock as we have |state_lock_| and RemoveChildProcess grabs the
+        // job's |lock_|, whereas JobDispatcher::EnumerateChildren obtains the
+        // locks in the opposite order. We want to keep lock acquisition order
+        // consistent, and JobDispatcher::EnumerateChildren's order makes
+        // sense. We don't need |state_lock_| when calling RemoveChildProcess
+        // here, so we leave that to the caller after it has released
+        // |state_lock_|. MG-880
+        // The caller should call RemoveChildProcess soon so that the semantics
+        // of signaling MX_JOB_NO_PROCESSES match that of MX_TASK_TERMINATED.
 
         // The PROC_CREATE record currently emits a uint32_t.
         uint32_t koid = static_cast<uint32_t>(get_koid());
@@ -509,6 +537,32 @@ status_t ProcessDispatcher::GetAspaceMaps(
         return MX_ERR_BAD_STATE;
     }
     return GetVmAspaceMaps(aspace_, maps, max, actual, available);
+}
+
+status_t ProcessDispatcher::GetVmos(
+    user_ptr<mx_info_vmo_t> vmos, size_t max,
+    size_t* actual_out, size_t* available_out) {
+    AutoLock lock(&state_lock_);
+    if (state_ != State::RUNNING) {
+        return MX_ERR_BAD_STATE;
+    }
+    size_t actual = 0;
+    size_t available = 0;
+    status_t s = GetProcessVmosViaHandles(this, vmos, max, &actual, &available);
+    if (s != MX_OK) {
+        return s;
+    }
+    size_t actual2 = 0;
+    size_t available2 = 0;
+    DEBUG_ASSERT(max >= actual);
+    s = GetVmAspaceVmos(aspace_, vmos.element_offset(actual), max - actual,
+                        &actual2, &available2);
+    if (s != MX_OK) {
+        return s;
+    }
+    *actual_out = actual + actual2;
+    *available_out = available + available2;
+    return MX_OK;
 }
 
 status_t ProcessDispatcher::CreateUserThread(mxtl::StringPiece name, uint32_t flags,
@@ -705,10 +759,8 @@ mx_status_t ProcessDispatcher::set_debug_addr(uintptr_t addr) {
 
 mx_status_t ProcessDispatcher::QueryPolicy(uint32_t condition) const {
     auto action = GetSystemPolicyManager()->QueryBasicPolicy(policy_, condition);
-    if (action & MX_POL_ACTION_ALARM) {
-        // TODO(cpu): Generate Port packet. Probably need to call up to the
-        // parent job for the actual port.
-        action &= ~MX_POL_ACTION_ALARM;
+    if (action & MX_POL_ACTION_EXCEPTION) {
+        thread_signal_exception();
     }
     // TODO(cpu): check for the MX_POL_KILL bit and return an error code
     // that sysgen understands as termination.
