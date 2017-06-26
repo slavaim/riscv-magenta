@@ -16,6 +16,7 @@ static char raw_console_input_buf[128];
 static char         dputs_buffer[256];
 static size_t       dputs_buffer_len = 0;
 static spin_lock_t  dputs_buffer_lock;
+static bool         flush_always = true;
 
 void sbi_console_init(void)
 {
@@ -52,7 +53,7 @@ static void platform_flush_dputs_buffer(void)
     while (dputs_buffer_len > 0) {
         char c = *str++;
         dputs_buffer_len--;
-        
+
         if (c == '\n') {
             sbi_console_putchar('\r');
         }
@@ -70,7 +71,11 @@ void platform_dputs(const char* str, size_t len)
 
             assert(dputs_buffer_len <= sizeof(dputs_buffer));
 
-            if ('\0' == c || '\n' == c || dputs_buffer_len == sizeof(dputs_buffer)){
+            if ( flush_always ||
+                 '\0' == c    ||
+                 '\n' == c    ||
+                 dputs_buffer_len == sizeof(dputs_buffer))
+            {
                 platform_flush_dputs_buffer();
             }
         }
