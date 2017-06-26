@@ -60,7 +60,87 @@ welcome to lk/MP
 [00005.293] 00000.00000> starting app shell
 ] [00005.296] 00000.00000> entering main console loop
 ```
+An example of a kernel console seeion
 
+```
+help
+] [00013.062] 00000.00000> command list:
+[00013.063] 00000.00000> 	ut              : Run unittests
+[00013.064] 00000.00000> 	rng32           : Generate and print a random 32 bit unsigned integer using the HW RNG
+[00013.065] 00000.00000> 	rng             : Generate and print N random bytes using the HW RNG
+[00013.066] 00000.00000> 	mx              : magenta diagnostics
+[00013.067] 00000.00000> 	heap            : heap debug commands
+[00013.068] 00000.00000> 	gfx             : gfx commands
+[00013.069] 00000.00000> 	help            : this list
+[00013.071] 00000.00000> 	test            : test the command processor
+[00013.072] 00000.00000> 	history         : command history
+[00013.073] 00000.00000> 	vmm             : virtual memory manager
+[00013.074] 00000.00000> 	vm_object       : vm object debug commands
+[00013.075] 00000.00000> 	vm              : vm commands
+[00013.076] 00000.00000> 	pmm             : physical memory manager
+[00013.077] 00000.00000> 	vm_page         : vm_page debug commands
+[00013.078] 00000.00000> 	mem_test        : test memory
+[00013.079] 00000.00000> 	printf_tests    : test printf
+[00013.079] 00000.00000> 	thread_tests    : test the scheduler
+[00013.080] 00000.00000> 	clock_tests     : test clocks
+[00013.081] 00000.00000> 	sleep_tests     : tests sleep
+[00013.081] 00000.00000> 	bench           : miscellaneous benchmarks
+[00013.082] 00000.00000> 	fibo            : threaded fibonacci
+[00013.083] 00000.00000> 	spinner         : create a spinning thread
+[00013.084] 00000.00000> 	sync_ipi_tests  : test synchronous IPIs
+[00013.085] 00000.00000> 	timer_tests     : tests timers
+[00013.085] 00000.00000> 	cache_tests     : test/bench the cpu cache
+[00013.086] 00000.00000> 	reboot          : soft reset
+[00013.087] 00000.00000> 	poweroff        : powerdown
+[00013.088] 00000.00000> 	version         : print version
+[00013.089] 00000.00000> 	thread          : list kernel threads with options
+[00013.090] 00000.00000> 	threadstats     : thread level statistics
+[00013.091] 00000.00000> 	threadload      : toggle thread load display
+[00013.092] 00000.00000> 	kill            : kill a thread
+vmm aspaces
+[00027.013] 00000.00000> as 0xffffffff80160e10 [0xffffffc000000000 0xffffffffffffffff] sz 0x4000000000 fl 0x1 ref 17 'kernel'
+[00027.020] 00000.00000>   vmar 0xffffffff80161040 [0xffffffc000000000 0xffffffffffffffff] sz 0x4000000000 ref 1 'root'
+[00027.022] 00000.00000>     vmar 0xffffffff81156a30 [0xffffffc000000000 0xffffffc000e00fff] sz 0xe01000 ref 2 'arena:handles'
+[00027.023] 00000.00000>       map 0xffffffff81156af0 [0xffffffc000000000 0xffffffc0003fffff] sz 0x400000 mmufl 0x18 vmo 0xffffffff81156920/k0 off 0 pages 0 ref 2 'arena:handles'
+[00027.028] 00000.00000>         vmo 0xffffffff81156920/k0 size 0xe00000 pages 4 ref 2 parent k0
+[00027.030] 00000.00000>       map 0xffffffff81156b90 [0xffffffc000401000 0xffffffc000e00fff] sz 0xa00000 mmufl 0x18 vmo 0xffffffff81156920/k0 off 0x400000 pages 4 ref 2 'arena:handles'
+[00027.055] 00000.00000>         vmo 0xffffffff81156920/k0 size 0xe00000 pages 4 ref 2 parent k0
+[00027.057] 00000.00000>     map 0xffffffff8116ee90 [0xffffffc000e01000 0xffffffc002e00fff] sz 0x2000000 mmufl 0x18 vmo 0xffffffff81156d80/k0 off 0 pages 8192 ref 1 ''
+[00027.074] 00000.00000>       vmo 0xffffffff81156d80/k0 size 0x2000000 pages 8192 ref 1 parent k0
+[00027.075] 00000.00000>     vmar 0xffffffff811711b0 [0xffffffc002e01000 0xffffffc002e04fff] sz 0x4000 ref 2 'kstack_vmar'
+[00027.076] 00000.00000>       map 0xffffffff81171270 [0xffffffc002e02000 0xffffffc002e03fff] sz 0x2000 mmufl 0x18 vmo 0xffffffff811710a0/k0 off 0 pages 2 ref 2 ''
+[00027.078] 00000.00000>         vmo 0xffffffff811710a0/k0 size 0x2000 pages 2 ref 1 parent k0
+[00027.079] 00000.00000>     map 0xffffffff8114c130 [0xffffffff80000000 0xffffffff800f6fff] sz 0xf7000 mmufl 0x28 vmo 0xffffffff8114c020/k0 off 0 pages 0 ref 1 ''
+[00027.081] 00000.00000>       vmo 0xffffffff8114c020/k0 size 0 pages 0 ref 1 parent k0
+[00027.083] 00000.00000>     map 0xffffffff8114c2e0 [0xffffffff800f7000 0xffffffff80138fff] sz 0x42000 mmufl 0x8 vmo 0xffffffff8114c1d0/k0 off 0 pages 0 ref 1 ''
+[00027.084] 00000.00000>       vmo 0xffffffff8114c1d0/k0 size 0 pages 0 ref 1 parent k0
+[00027.085] 00000.00000>     map 0xffffffff8114c490 [0xffffffff80139000 0xffffffff8013bfff] sz 0x3000 mmufl 0x18 vmo 0xffffffff8114c380/k0 off 0 pages 0 ref 1 ''
+[00027.087] 00000.00000>       vmo 0xffffffff8114c380/k0 size 0 pages 0 ref 1 parent k0
+[00027.088] 00000.00000>     map 0xffffffff8114c640 [0xffffffff8013c000 0xffffffff80165fff] ] sz 0x2a000 mmufl 0x18 vmo 0xffffffff8114c530/k0 off 0 pages 0 ref 1 ''
+[00027.090] 00000.00000>       vmo 0xffffffff8114c530/k0 size 0 pages 0 ref 1 parent k0
+[00027.091] 00000.00000>     map 0xffffffff8114c9a0 [0xffffffff80166000 0xffffffff80169fff] sz 0x4000 mmufl 0x18 vmo 0xffffffff8114c890/k0 off 0 pages 0 ref 1 ''
+[00027.093] 00000.00000>       vmo 0xffffffff8114c890/k0 size 0 pages 0 ref 1 parent k0
+[00027.094] 00000.00000>     map 0xffffffff8114c7f0 [0xffffffff8016a000 0xffffffff8114afff] sz 0xfe1000 mmufl 0x18 vmo 0xffffffff8114c6e0/k0 off 0 pages 0 ref 1 ''
+[00027.096] 00000.00000>       vmo 0xffffffff8114c6e0/k0 size 0 pages 0 ref 1 parent k0
+[00027.097] 00000.00000>     map 0xffffffff8114cb50 [0xffffffff8114b000 0xfffffffffeffffff] sz 0x7deb5000 mmufl 0x18 vmo 0xffffffff8114ca40/k0 off 0 pages 0 ref 1 ''
+[00027.099] 00000.00000>       vmo 0xffffffff8114ca40/k0 size 0 pages 0 ref 1 parent k0
+[00027.100] 00000.00000>     map 0xffffffff8114cd00 [0xffffffffffff5000 0xffffffffffffffff] sz 0xb000 mmufl 0x18 vmo 0xffffffff8114cbf0/k0 off 0 pages 0 ref 1 ''
+[00027.102] 00000.00000>       vmo 0xffffffff8114cbf0/k0 size 0 pages 0 ref 1 parent k0
+[00027.166] 00000.00000> as 0xffffffff8116f970 [0x1000000 0x3fffffefff] sz 0x3ffefff000 fl 0 ref 8 'proc:1029'
+[00027.167] 00000.00000>   vmar 0xffffffff8116fb20 [0x1000000 0x3fffffefff] sz 0x3ffefff000 ref 2 'root'
+[00027.168] 00000.00000>     map 0xffffffff81170a70 [0x1cc2f46000 0x1cc2f85fff] sz 0x40000 mmufl 0x1c vmo 0xffffffff8116ef30/k1026 off 0 pages 1 ref 1 'userboot-initial-stack'
+[00027.170] 00000.00000>       vmo 0xffffffff8116ef30/k1026 size 0x40000 pages 1 ref 2 parent k0
+[00027.171] 00000.00000>     vmar 0xffffffff811706f8 [0x292f043000 0x292f060fff] sz 0x1e000 ref 1 'useralloc'
+[00027.172] 00000.00000>       map 0xffffffff811707f0 [0x292f043000 0x292f044fff] sz 0x2000 mmufl 0xc vmo 0xffffffff811702f0/k1034 off 0 pages 2 ref 1 'userboot'
+[00027.174] 00000.00000>         vmo 0xffffffff811702f0/k1034 size 0x17000 pages 23 ref 3 parent k0
+[00027.175] 00000.00000>       map 0xffffffff81170890 [0x292f045000 0x292f059fff] sz 0x15000 mmufl 0x2c vmo 0xffffffff811702f0/k1034 off 0x2000 pages 21 ref 1 'userboot'
+[00027.177] 00000.00000>         vmo 0xffffffff811702f0/k1034 size 0x17000 pages 23 ref 3 parent k0
+[00027.178] 00000.00000>       map 0xffffffff81170930 [0x292f05a000 0x292f05efff] sz 0x5000 mmufl 0xc vmo 0xffffffff8116fc60/k1031 off 0 pages 5 ref 1 'vdso/full'
+[00027.180] 00000.00000>         vmo 0xffffffff8116fc60/k1031 size 0x7000 pages 7 ref 6 parent k0
+[00027.181] 00000.00000>       map 0xffffffff811709d0 [0x292f05f000 0x292f060fff] sz 0x2000 mmufl 0x2c vmo 0xffffffff8116fc60/k1031 off 0x5000 pages 2 ref 2 'vdso/full'
+[00027.183] 00000.00000>         vmo 0xffffffff8116fc60/k1031 size 0x7000 pages 7 ref 6 parent k0
+```
+  
 Some notes on Magents RISC-V porting can be found here https://github.com/slavaim/riscv-notes/tree/master/magenta 
 
 Below is the original Magenta's README.md  
