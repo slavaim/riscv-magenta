@@ -155,6 +155,16 @@ thread list
 [00369.828] 00000.00000> thr 0xffffffff8114f480 st blok pri 22:-2 pid 0 tid 0 (kernel:debuglog-dumper)
 [00369.829] 00000.00000> thr 0xffffffff8114cda0 st  rdy pri 23:4 pid 0 tid 0 (kernel:debuglog-notifier)
 [00369.830] 00000.00000> thr 0xffffffff8013c880 st  rdy pri  0:0 pid 0 tid 0 (kernel:idle 0)
+pmm arenas
+[00635.839] 00000.00000> arena 0xffffffff8016a000: name 'SDRAM' base 0x80800000 size 2032M (0x7f000000) priority 1 flags 0x1
+[00635.841] 00000.00000> 	page_array 0xffffffff8016a058, free_count 507279
+] [00636.266] 00000.00000> 	page states:
+[00636.266] 00000.00000> 		free         507279           (2077814784 bytes)
+[00636.268] 00000.00000> 		alloc        25               (102400 bytes)
+[00636.269] 00000.00000> 		wired        4427             (18132992 bytes)
+[00636.271] 00000.00000> 		heap         256              (1048576 bytes)
+[00636.272] 00000.00000> 		object       8205             (33607680 bytes)
+[00636.274] 00000.00000> 		mmu          0                (0 bytes)
 ```
   
 Some notes on Magents RISC-V porting can be found here https://github.com/slavaim/riscv-notes/tree/master/magenta 
