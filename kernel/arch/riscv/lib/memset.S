@@ -106,4 +106,4 @@ FUNCTION(arch_memset)
 	bltu t0, a3, 5b
 6:
 	ret
-END(arch_memset)
+END_FUNCTION(arch_memset)

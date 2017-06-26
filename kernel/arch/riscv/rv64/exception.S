@@ -24,7 +24,7 @@ DATA(excp_vect_table)
     PTR 0 /* handle_syscall */
     PTR do_trap_break
 excp_vect_table_end:
-END(excp_vect_table)
+END_DATA(excp_vect_table)
 
 .macro PANIC
     li a0, 0
@@ -293,7 +293,7 @@ _restore_all:
 
     /* return to the interrupted code */
     sret
-END(handle_exception)
+END_FUNCTION(handle_exception)
 
 .section .text
 FUNCTION(riscv64_uspace_entry)
@@ -369,7 +369,7 @@ FUNCTION(riscv64_uspace_entry)
 
     /* switch to the user code */ 
     sret
-END(riscv64_uspace_entry)
+END_FUNCTION(riscv64_uspace_entry)
 
 /*
  * Integer register context switch
@@ -414,7 +414,7 @@ FUNCTION(__switch_to)
     REG_L s9,  THREAD_S9(a1)
     REG_L s10, THREAD_S10(a1)
     REG_L s11, THREAD_S11(a1)
-    
+
    /*
     * Next thread_info pointer,
     * usually already set by a call
@@ -424,14 +424,14 @@ FUNCTION(__switch_to)
 
     /*return to $ra, the new $sp has been set*/
     ret
-END(__switch_to)
+END_FUNCTION(__switch_to)
 
 #if 0
 .section .text
 FUNCTION(ret_from_fork)
     la ra, ret_from_exception
     tail schedule_tail
-END(ret_from_fork)
+END_FUNCTION(ret_from_fork)
 
 .section .text
 FUNCTION(ret_from_kernel_thread)
@@ -440,7 +440,7 @@ FUNCTION(ret_from_kernel_thread)
     la ra, ret_from_exception
     move a0, s1
     jr s0
-END(ret_from_kernel_thread)
+END_FUNCTION(ret_from_kernel_thread)
 
 .section .text
 FUNCTION(__fstate_save)
@@ -482,7 +482,7 @@ FUNCTION(__fstate_save)
     sw t0, THREAD_FCSR(a0)
     csrc sstatus, t1
     ret
-END(__fstate_save)
+END_FUNCTION(__fstate_save)
 
 .section .text
 FUNCTION(__fstate_restore)
@@ -524,7 +524,7 @@ FUNCTION(__fstate_restore)
     fscsr t0
     csrc sstatus, t1
     ret
-END(__fstate_restore)
+END_FUNCTION(__fstate_restore)
 
 #endif // 0
 

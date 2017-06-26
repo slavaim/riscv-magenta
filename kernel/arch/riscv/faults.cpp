@@ -191,6 +191,11 @@ page_in:
     return;
 }
 
+status_t magenta_report_syscall_exception(void)
+{
+    PANIC_UNIMPLEMENTED;
+}
+
 #if WITH_LIB_MAGENTA
 void arch_fill_in_suspension_context(mx_exception_report_t *report)
 {

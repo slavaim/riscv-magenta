@@ -52,4 +52,4 @@ FUNCTION(_riscv_start)
     /* We lack SMP support or have too many harts, so park this hart */
     wfi
     j .Lsecondary_park
-END(_riscv_start)
+END_FUNCTION(_riscv_start)
