@@ -139,6 +139,22 @@ vmm aspaces
 [00027.180] 00000.00000>         vmo 0xffffffff8116fc60/k1031 size 0x7000 pages 7 ref 6 parent k0
 [00027.181] 00000.00000>       map 0xffffffff811709d0 [0x292f05f000 0x292f060fff] sz 0x2000 mmufl 0x2c vmo 0xffffffff8116fc60/k1031 off 0x5000 pages 2 ref 2 'vdso/full'
 [00027.183] 00000.00000>         vmo 0xffffffff8116fc60/k1031 size 0x7000 pages 7 ref 6 parent k0
+version
+] [00352.848] 00000.00000> version:
+[00352.848] 00000.00000> 	arch:     RISCV
+[00352.848] 00000.00000> 	platform: RISCV_RV64
+[00352.848] 00000.00000> 	target:   QEMU_RISCV_RV64
+[00352.848] 00000.00000> 	project:  MAGENTA_QEMU_RISCV_RV64
+[00352.849] 00000.00000> 	buildid:  GIT_0CBB25319C558E209E8AEAEE3483663C4A243FD9_DIRTY_LOCAL
+[00352.849] 00000.00000> 	ELF build ID: f864ff63c6ed5e36a0a269d9c6da40030b836e7b
+thread list
+[00369.823] 00000.00000> thread list:
+[00369.824] 00000.00000> thr 0xffffffff81171e40 st  run pri 16:4 pid 0 tid 0 (kernel:shell)
+[00369.826] 00000.00000> thr 0xffffffff81170d68 st  rdy pri 16:-4 pid 1029 tid 1036 (userboot:userboot)
+[00369.827] 00000.00000> thr 0xffffffff81154240 st blok pri 24:1 pid 0 tid 0 (kernel:dpc)
+[00369.828] 00000.00000> thr 0xffffffff8114f480 st blok pri 22:-2 pid 0 tid 0 (kernel:debuglog-dumper)
+[00369.829] 00000.00000> thr 0xffffffff8114cda0 st  rdy pri 23:4 pid 0 tid 0 (kernel:debuglog-notifier)
+[00369.830] 00000.00000> thr 0xffffffff8013c880 st  rdy pri  0:0 pid 0 tid 0 (kernel:idle 0)
 ```
   
 Some notes on Magents RISC-V porting can be found here https://github.com/slavaim/riscv-notes/tree/master/magenta 
