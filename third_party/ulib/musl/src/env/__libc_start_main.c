@@ -207,8 +207,9 @@ __NO_SAFESTACK _Noreturn void __libc_start_main(
     __asm__("add  sp, %[base], %[len]\n"
             "move a0, %[arg]\n"
             "j start_main" : :
-            [base]"r"(td->safe_stack.iov_base),
-            [len]"r"(td->safe_stack.iov_len),
+            [base]"r"(p.td->safe_stack.iov_base),
+            [len]"r"(p.td->safe_stack.iov_len),
+            "m"(p), // Tell the compiler p's fields are all still alive.
             [arg]"r"(&p));
 #else
 #error what architecture?

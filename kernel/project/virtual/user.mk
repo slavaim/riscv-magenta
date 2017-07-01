@@ -22,6 +22,8 @@ ifeq ($(SUBARCH),riscv-rv64)
 MODULES += \
     system/core/userboot \
 
+#MODULES += $(patsubst %/rules.mk,%,$(wildcard system/core/*/rules.mk))
+
 MODULES += $(patsubst %/rules.mk,%,$(wildcard system/ulib/*/rules.mk))
 
 # third_party/

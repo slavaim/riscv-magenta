@@ -218,7 +218,10 @@ ifeq ($(call TOBOOL,$(USE_GOLD)),false)
 # to generate -rpath-link in a general fashion.  Eventually we should
 # always use gold or lld for all the user-mode links, and then we'll
 # never need this.
-USERAPP_LDFLAGS += -rpath-link $(BUILDDIR)/ulib/magenta
+# A bug in original magenta repo - system dir is missing in the path
+# that broke RISC-V compilation that uses GNU ld instead of gold ld.
+#USERAPP_LDFLAGS += -rpath-link $(BUILDDIR)/ulib/magenta
+USERAPP_LDFLAGS += -rpath-link $(BUILDDIR)/system/ulib/magenta
 endif
 
 # Architecture specific compile flags

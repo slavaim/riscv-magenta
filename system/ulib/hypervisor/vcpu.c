@@ -459,6 +459,8 @@ static mx_status_t handle_mem_trap(vcpu_context_t* context, const mx_guest_mem_t
 #elif __x86_64__
     status = inst_decode(mem_trap->instruction_buffer, mem_trap->instruction_length, &guest_gpr,
                          &inst);
+#elif __riscv
+    status = MX_ERR_NOT_SUPPORTED;
 #else
 #error Unsupported architecture
 #endif
