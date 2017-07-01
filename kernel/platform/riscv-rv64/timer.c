@@ -19,8 +19,6 @@
 #include <debug.h>
 #include <assert.h>
 
-static platform_timer_callback t_callback[SMP_MAX_CPUS] = {NULL};
-static void*                   callback_arg[SMP_MAX_CPUS] = {NULL};
 static unsigned long           timebase; // ticks in one second
 
 //
@@ -32,24 +30,10 @@ lk_time_t current_time(void)
     return (get_ticks() * LK_SEC(1)) / timebase;
 }
 
-status_t platform_set_periodic_timer(platform_timer_callback callback, void *arg, lk_time_t interval)
-{
-    PANIC_UNIMPLEMENTED;
-}
-
 #if PLATFORM_HAS_DYNAMIC_TIMER
-status_t platform_set_oneshot_timer(platform_timer_callback callback,
-                                    void *arg, lk_time_t deadline)
+status_t platform_set_oneshot_timer(lk_time_t deadline)
 {
-    uint cpu = arch_curr_cpu_num();
-
     DEBUG_ASSERT(arch_ints_disabled());
-
-    if (t_callback[cpu] != callback)
-        t_callback[cpu] = callback;
-
-    if (callback_arg[cpu] != arg)
-        callback_arg[cpu] = arg;
     
     sbi_set_timer((deadline * timebase) / LK_SEC(1));
 
@@ -59,16 +43,8 @@ status_t platform_set_oneshot_timer(platform_timer_callback callback,
 
 enum handler_return riscv_timer_interrupt(void)
 {
-    enum handler_return  ret = INT_NO_RESCHEDULE;
-    uint                 cpu = arch_curr_cpu_num();
-    lk_time_t            time = current_time();
-
     DEBUG_ASSERT(arch_ints_disabled());
-
-    if (t_callback[cpu])
-        ret = t_callback[cpu](callback_arg[cpu], time);
-
-    return ret;
+    return timer_tick(current_time());
 }
 
 static void platform_init_timer(uint level)
