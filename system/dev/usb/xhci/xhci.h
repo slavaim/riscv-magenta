@@ -50,6 +50,7 @@ typedef struct xhci_endpoint {
     xhci_transfer_state_t* transfer_state;  // transfer state for current_txn
     mtx_t lock;
     bool enabled;
+    bool halted;                // set if endpoint is in HALTED or ERROR state
 } xhci_endpoint_t;
 
 typedef struct xhci_slot {
@@ -176,6 +177,7 @@ void xhci_handle_interrupt(xhci_t* xhci, bool legacy);
 void xhci_post_command(xhci_t* xhci, uint32_t command, uint64_t ptr, uint32_t control_bits,
                        xhci_command_context_t* context);
 void xhci_wait_bits(volatile uint32_t* ptr, uint32_t bits, uint32_t expected);
+void xhci_wait_bits64(volatile uint64_t* ptr, uint64_t bits, uint64_t expected);
 
 // returns monotonically increasing frame count
 uint64_t xhci_get_current_frame(xhci_t* xhci);
@@ -185,7 +187,7 @@ uint8_t xhci_endpoint_index(uint8_t ep_address);
 // returns index into xhci->root_hubs[], or -1 if not a root hub
 int xhci_get_root_hub_index(xhci_t* xhci, uint32_t device_id);
 
-inline bool xhci_is_root_hub(xhci_t* xhci, uint32_t device_id) {
+static inline bool xhci_is_root_hub(xhci_t* xhci, uint32_t device_id) {
     return xhci_get_root_hub_index(xhci, device_id) >= 0;
 }
 

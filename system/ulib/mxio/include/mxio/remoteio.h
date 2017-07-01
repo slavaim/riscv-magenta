@@ -50,7 +50,8 @@ __BEGIN_CDECLS
 #define MXRIO_SYNC         0x00000019
 #define MXRIO_LINK        (0x0000001a | MXRIO_ONE_HANDLE)
 #define MXRIO_MMAP         0x0000001b
-#define MXRIO_NUM_OPS      28
+#define MXRIO_FCNTL        0x0000001c
+#define MXRIO_NUM_OPS      29
 
 #define MXRIO_OP(n)        ((n) & 0x3FF) // opcode
 #define MXRIO_HC(n)        (((n) >> 8) & 3) // handle count
@@ -63,7 +64,7 @@ __BEGIN_CDECLS
     "read_at", "write_at", "truncate", "rename", \
     "connect", "bind", "listen", "getsockname", \
     "getpeername", "getsockopt", "setsockopt", "getaddrinfo", \
-    "setattr", "sync", "link", "mmap" }
+    "setattr", "sync", "link", "mmap", "fcntl" }
 
 const char* mxio_opname(uint32_t op);
 
@@ -159,12 +160,6 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 #define READDIR_CMD_NONE  0
 #define READDIR_CMD_RESET 1
 
-// Top 4 bits of open flags are reserved for
-// the protocol, and not accepted by open()
-// in O_* flags
-#define MXRIO_OFLAG_MASK     0xF0000000
-#define MXRIO_OFLAG_PIPELINE 0x10000000
-
 // - msg.datalen is the size of data sent or received and must be <= MXIO_CHUNK_SIZE
 // - msg.arg is the return code on replies
 
@@ -197,6 +192,7 @@ static_assert(MXIO_CHUNK_SIZE >= PATH_MAX, "MXIO_CHUNK_SIZE must be large enough
 // SYNC        0          0        0                 0           -               -
 // LINK        0          0        <name1>0<name2>0  0           -               -
 // MMAP        maxreply   0        mmap_data_msg     0           mmap_data_msg   vmohandle
+// FCNTL       cmd        flags    0                 flags       -               -
 //
 // proposed:
 //

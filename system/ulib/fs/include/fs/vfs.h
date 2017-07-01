@@ -26,10 +26,12 @@
 #endif
 
 // VFS Helpers (vfs.c)
-#define V_FLAG_DEVICE                 1
-#define V_FLAG_MOUNT_READY            2
-#define V_FLAG_DEVICE_DETACHED        4
-#define V_FLAG_RESERVED_MASK 0x0000FFFF
+// clang-format off
+#define V_FLAG_DEVICE          0x00000001
+#define V_FLAG_MOUNT_READY     0x00000002
+#define V_FLAG_DEVICE_DETACHED 0x00000004
+#define V_FLAG_RESERVED_MASK   0x0000FFFF
+// clang-format on
 
 __BEGIN_CDECLS
 // A lock which should be used to protect lookup and walk operations
@@ -56,6 +58,8 @@ __END_CDECLS
 #include <mxtl/unique_ptr.h>
 
 namespace fs {
+
+class Vnode;
 
 // RemoteContainer adds support for mounting remote handles on nodes.
 class RemoteContainer {
@@ -85,8 +89,8 @@ public:
 class WatcherContainer {
 public:
     mx_status_t WatchDir(mx_handle_t* out);
-    mx_status_t WatchDirV2(const vfs_watch_dir_t* cmd);
-    void NotifyAdd(const char* name, size_t len);
+    mx_status_t WatchDirV2(Vnode* vn, const vfs_watch_dir_t* cmd);
+    void Notify(const char* name, size_t len, unsigned event);
 private:
     mxtl::Mutex lock_;
     mxtl::DoublyLinkedList<mxtl::unique_ptr<VnodeWatcher>> watch_list_ __TA_GUARDED(lock_);
@@ -147,7 +151,7 @@ public:
     virtual mx_status_t WatchDirV2(const vfs_watch_dir_t* cmd) {
         return MX_ERR_NOT_SUPPORTED;
     }
-    virtual void NotifyAdd(const char* name, size_t len) {}
+    virtual void Notify(const char* name, size_t len, unsigned event) {}
 
     // Ensure that it is valid to open vn.
     virtual mx_status_t Open(uint32_t flags) = 0;

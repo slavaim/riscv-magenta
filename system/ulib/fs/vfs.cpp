@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <mxio/remoteio.h>
+#include <mxio/watcher.h>
 #include <mxtl/auto_call.h>
 
 #ifdef __Fuchsia__
@@ -130,7 +131,7 @@ mx_status_t Vfs::Open(mxtl::RefPtr<Vnode> vndir, mxtl::RefPtr<Vnode>* out, const
             }
             return r;
         }
-        vndir->NotifyAdd(path, len);
+        vndir->Notify(path, len, VFS_WATCH_EVT_ADDED);
     } else {
     try_open:
         r = vndir->Lookup(&vn, path, len);
@@ -204,7 +205,7 @@ mx_status_t Vfs::Link(mxtl::RefPtr<Vnode> oldparent, mxtl::RefPtr<Vnode> newpare
     if (r != MX_OK) {
         return r;
     }
-    newparent->NotifyAdd(newname, newlen);
+    newparent->Notify(newname, newlen, VFS_WATCH_EVT_ADDED);
     return MX_OK;
 }
 
@@ -227,7 +228,7 @@ mx_status_t Vfs::Rename(mxtl::RefPtr<Vnode> oldparent, mxtl::RefPtr<Vnode> newpa
     if (r != MX_OK) {
         return r;
     }
-    newparent->NotifyAdd(newname, newlen);
+    newparent->Notify(newname, newlen, VFS_WATCH_EVT_ADDED);
     return MX_OK;
 }
 
@@ -235,23 +236,12 @@ ssize_t Vfs::Ioctl(mxtl::RefPtr<Vnode> vn, uint32_t op, const void* in_buf, size
                    void* out_buf, size_t out_len) {
     switch (op) {
 #ifdef __Fuchsia__
-    case IOCTL_VFS_WATCH_DIR: {
-        if ((out_len != sizeof(mx_handle_t)) || (in_len != 0)) {
-            return MX_ERR_INVALID_ARGS;
-        }
-        mx_status_t status = vn->WatchDir(reinterpret_cast<mx_handle_t*>(out_buf));
-        if (status != MX_OK) {
-            return status;
-        }
-        return sizeof(mx_handle_t);
-    }
     case IOCTL_VFS_WATCH_DIR_V2: {
         if (in_len != sizeof(vfs_watch_dir_t)) {
             return MX_ERR_INVALID_ARGS;
         }
         const vfs_watch_dir_t* request = reinterpret_cast<const vfs_watch_dir_t*>(in_buf);
         return vn->WatchDirV2(request);
-
     }
     case IOCTL_VFS_MOUNT_FS: {
         if ((in_len != sizeof(mx_handle_t)) || (out_len != 0)) {

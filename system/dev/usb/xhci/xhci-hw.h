@@ -273,6 +273,8 @@ typedef volatile struct {
 // Interruptor register bits
 #define IMAN_IP         (1 << 0)    // Interrupt Pending
 #define IMAN_IE         (1 << 1)    // Interrupt Enable
+#define IMODI_MASK      0x0000FFFF  // Interrupter Moderation Interval
+#define IMODC_MASK      0xFFFF0000  // Interrupter Moderation Counter
 #define ERSTSZ_MASK     0x0000FFFF
 #define ERDP_DESI_START 0           // First bit of Dequeue ERST Segment Index
 #define ERDP_DESI_BITS  2           // Bit length of Dequeue ERST Segment Index
@@ -552,11 +554,11 @@ typedef volatile struct {
 #define XHCI_ICC_SLOT_FLAG          (1 << 0)
 #define XHCI_ICC_EP_FLAG(ep)        (1 << ((ep) + 1))
 
-inline uint32_t trb_get_type(xhci_trb_t* trb) {
+static inline uint32_t trb_get_type(xhci_trb_t* trb) {
     return XHCI_GET_BITS32(&trb->control, TRB_TYPE_START, TRB_TYPE_BITS);
 }
 
-inline void* trb_get_ptr(xhci_trb_t* trb) {
+static inline void* trb_get_ptr(xhci_trb_t* trb) {
 #if (UINTPTR_MAX == UINT32_MAX)
     return (void *)(uint32_t)XHCI_READ64(&trb->ptr);
 #else
@@ -564,7 +566,7 @@ inline void* trb_get_ptr(xhci_trb_t* trb) {
 #endif
 }
 
-inline void trb_set_ptr(xhci_trb_t* trb, void* ptr) {
+static inline void trb_set_ptr(xhci_trb_t* trb, void* ptr) {
 #if (UINTPTR_MAX == UINT32_MAX)
     XHCI_WRITE64(&trb->ptr, (uint32_t)ptr);
 #else
@@ -572,6 +574,6 @@ inline void trb_set_ptr(xhci_trb_t* trb, void* ptr) {
 #endif
 }
 
-inline void trb_set_control(xhci_trb_t* trb, uint32_t type, uint32_t flags) {
+static inline void trb_set_control(xhci_trb_t* trb, uint32_t type, uint32_t flags) {
     XHCI_WRITE32(&trb->control, ((type << TRB_TYPE_START) & TRB_TYPE_MASK) | flags);
 }

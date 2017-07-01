@@ -22,20 +22,23 @@
 
 #define LOCAL_TRACE 0
 
-static IOP_Packet* MakePacket(uint64_t key, const mx_exception_report_t* report, size_t size) {
-    auto pk = IOP_Packet::Alloc(size + sizeof(mx_packet_header_t));
-    if (!pk)
+static PortPacket* MakePacket(uint64_t key, const mx_exception_report_t* report) {
+    if (!MX_PKT_IS_EXCEPTION(report->header.type))
         return nullptr;
 
-    auto pkt_data = reinterpret_cast<mx_exception_packet_t*>(
-        reinterpret_cast<char*>(pk) + sizeof(IOP_Packet));
+    AllocChecker ac;
+    auto port_packet = new (&ac) PortPacket();
+    if (!ac.check())
+        return nullptr;
 
-    memcpy(&pkt_data->report, report, size);
-    pkt_data->hdr.key = key;
-    pkt_data->hdr.type = MX_PORT_PKT_TYPE_EXCEPTION;
-    pkt_data->hdr.extra = 0; // currently unused
+    port_packet->packet.key = key;
+    port_packet->packet.type = report->header.type | PKT_FLAG_EPHEMERAL;
+    port_packet->packet.exception.pid = report->context.pid;
+    port_packet->packet.exception.tid = report->context.tid;
+    port_packet->packet.exception.reserved0 = 0;
+    port_packet->packet.exception.reserved1 = 0;
 
-    return pk;
+    return port_packet;
 }
 
 // static
@@ -219,11 +222,11 @@ mx_status_t ExceptionPort::SendReport(const mx_exception_report_t* report) {
         return MX_ERR_PEER_CLOSED;
     }
 
-    auto iopk = MakePacket(port_key_, report, sizeof(*report));
+    auto iopk = MakePacket(port_key_, report);
     if (!iopk)
         return MX_ERR_NO_MEMORY;
 
-    return port_->Queue(iopk);
+    return port_->Queue(iopk, 0, 0);
 }
 
 void ExceptionPort::BuildReport(mx_exception_report_t* report, uint32_t type,

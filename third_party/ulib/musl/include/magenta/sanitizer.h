@@ -13,6 +13,7 @@
 // link time, including linking the sanitizer runtime shared libraries).
 
 #include <magenta/compiler.h>
+#include <magenta/types.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -43,6 +44,42 @@ typedef struct {
 } sanitizer_shadow_bounds_t;
 sanitizer_shadow_bounds_t __sanitizer_shadow_bounds(void);
 
+// Write logging information from the sanitizer runtime.  The buffer
+// is expected to be printable text with '\n' ending each line.
+// Timestamps and globally unique identifiers of the calling process
+// and thread (mx_koid_t) are attached to all messages, so there is no
+// need to include those details in the text.  The log of messages
+// written with this call automatically includes address and ELF build
+// ID details of the program and all shared libraries sufficient to
+// translate raw address values into program symbols or source
+// locations via a post-processor that has access to the original ELF
+// files and their debugging information.  The text can contain markup
+// around address values that should be resolved symbolically; see
+// TODO(mcgrathr) for the format and details of the post-processor.
+void __sanitizer_log_write(const char *buffer, size_t len);
+
+// Runtimes that have binary data to publish (e.g. coverage) use this
+// interface.  The name describes the data sink that will receive this
+// blob of data; the string is not used after this call returns.  The
+// caller creates a VMO (e.g. mx_vmo_create) and passes it in; the VMO
+// handle is consumed by this call.  Each particular data sink has its
+// own conventions about both the format of the data in the VMO and the
+// protocol for when data must be written there.  For some sinks, the
+// VMO's data is used immediately.  For other sinks, the caller is
+// expected to have the VMO mapped in and be writing more data there
+// throughout the life of the process, to be analyzed only after the
+// process terminates.  Yet others might use an asynchronous shared
+// memory protocol between producer and consumer.
+void __sanitizer_publish_data(const char* sink_name, mx_handle_t vmo);
+
+// Runtimes that want to read configuration files use this interface.
+// The name is a string from the user (something akin to a file name
+// but not necessarily actually a file name); the string is not used
+// after this call returns.  On success, this yields a read-only VMO
+// handle from which the contents associated with that name can be
+// read; the caller is responsible for closing this handle.
+mx_status_t __sanitizer_get_configuration(const char* config_name,
+                                          mx_handle_t* out_vmo);
 
 // The "hook" interfaces are functions that the sanitizer runtime library
 // can define and libc will call.  There are default definitions in libc

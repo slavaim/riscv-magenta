@@ -10,7 +10,6 @@
 #include <stdint.h>
 
 #include <magenta/handle.h>
-#include <magenta/port_client.h>
 #include <magenta/magenta.h>
 #include <magenta/syscalls/object.h>
 #include <magenta/types.h>
@@ -37,14 +36,12 @@ DECLARE_DISPTAG(InterruptDispatcher, MX_OBJ_TYPE_INTERRUPT)
 DECLARE_DISPTAG(IoMappingDispatcher, MX_OBJ_TYPE_IOMAP)
 DECLARE_DISPTAG(PciDeviceDispatcher, MX_OBJ_TYPE_PCI_DEVICE)
 DECLARE_DISPTAG(LogDispatcher, MX_OBJ_TYPE_LOG)
-DECLARE_DISPTAG(WaitSetDispatcher, MX_OBJ_TYPE_WAIT_SET)
 DECLARE_DISPTAG(SocketDispatcher, MX_OBJ_TYPE_SOCKET)
 DECLARE_DISPTAG(ResourceDispatcher, MX_OBJ_TYPE_RESOURCE)
 DECLARE_DISPTAG(EventPairDispatcher, MX_OBJ_TYPE_EVENT_PAIR)
 DECLARE_DISPTAG(JobDispatcher, MX_OBJ_TYPE_JOB)
 DECLARE_DISPTAG(VmAddressRegionDispatcher, MX_OBJ_TYPE_VMAR)
 DECLARE_DISPTAG(FifoDispatcher, MX_OBJ_TYPE_FIFO)
-DECLARE_DISPTAG(PortDispatcherV2, MX_OBJ_TYPE_IOPORT2)
 DECLARE_DISPTAG(HypervisorDispatcher, MX_OBJ_TYPE_HYPERVISOR)
 DECLARE_DISPTAG(GuestDispatcher, MX_OBJ_TYPE_GUEST)
 DECLARE_DISPTAG(TimerDispatcher, MX_OBJ_TYPE_TIMER)
@@ -75,8 +72,6 @@ public:
     virtual status_t add_observer(StateObserver* observer);
 
     virtual status_t user_signal(uint32_t clear_mask, uint32_t set_mask, bool peer);
-
-    virtual status_t set_port_client(mxtl::unique_ptr<PortClient>) { return MX_ERR_NOT_SUPPORTED; }
 
     virtual void on_zero_handles() { }
 

@@ -33,9 +33,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/pci_device_dispatcher.cpp \
     $(LOCAL_DIR)/pci_interrupt_dispatcher.cpp \
     $(LOCAL_DIR)/policy_manager.cpp \
-    $(LOCAL_DIR)/port_client.cpp \
     $(LOCAL_DIR)/port_dispatcher.cpp \
-    $(LOCAL_DIR)/port_dispatcher_v2.cpp \
     $(LOCAL_DIR)/process_dispatcher.cpp \
     $(LOCAL_DIR)/resource_dispatcher.cpp \
     $(LOCAL_DIR)/semaphore.cpp \
@@ -47,7 +45,6 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/user_thread.cpp \
     $(LOCAL_DIR)/vm_address_region_dispatcher.cpp \
     $(LOCAL_DIR)/vm_object_dispatcher.cpp \
-    $(LOCAL_DIR)/wait_set_dispatcher.cpp \
     $(LOCAL_DIR)/wait_state_observer.cpp \
 
 # Tests

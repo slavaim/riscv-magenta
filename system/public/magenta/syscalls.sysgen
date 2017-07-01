@@ -282,26 +282,6 @@ syscall futex_requeue
         requeue_ptr: mx_futex_t[1] INOUT, requeue_count: uint32_t)
     returns (mx_status_t);
 
-# Wait sets
-
-syscall waitset_create deprecated
-    (options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
-
-syscall waitset_add deprecated
-    (waitset_handle: mx_handle_t, cookie: uint64_t,
-        handle: mx_handle_t, signals: mx_signals_t)
-    returns (mx_status_t);
-
-syscall waitset_remove deprecated
-    (waitset_handle: mx_handle_t, cookie: uint64_t)
-    returns (mx_status_t);
-
-syscall waitset_wait blocking deprecated
-    (waitset_handle: mx_handle_t, deadline: mx_time_t,
-        results: mx_waitset_result_t[count] OUT, count: uint32_t[1] INOUT)
-    returns (mx_status_t);
-
 # Ports
 
 syscall port_create
@@ -314,10 +294,6 @@ syscall port_queue
 
 syscall port_wait blocking
     (handle: mx_handle_t, deadline: mx_time_t, packet: any[size] OUT, size: size_t)
-    returns (mx_status_t);
-
-syscall port_bind
-    (handle: mx_handle_t, key: uint64_t, source: mx_handle_t, signals: mx_signals_t)
     returns (mx_status_t);
 
 syscall port_cancel
@@ -472,12 +448,6 @@ syscall mtrace_control no_wrap
         ptr: any[size] INOUT, size: uint32_t)
     returns (mx_status_t);
 
-# Syscalls to be removed / refactored
-
-syscall debug_transfer_handle
-    (proc: mx_handle_t, handle: mx_handle_t)
-    returns (mx_handle_t);
-
 # Legacy LK debug syscalls
 
 syscall debug_read no_wrap
@@ -555,10 +525,6 @@ syscall pci_get_nth_device
     (handle: mx_handle_t, index: uint32_t)
     returns (mx_handle_t, out_info: mx_pcie_device_info_t);
 
-syscall pci_claim_device
-    (handle: mx_handle_t)
-    returns (mx_status_t);
-
 syscall pci_enable_bus_master
     (handle: mx_handle_t, enable: bool)
     returns (mx_status_t);
@@ -621,28 +587,8 @@ syscall acpi_cache_flush
 # Resources
 
 syscall resource_create
-    (parent_handle: mx_handle_t, records: mx_rrec_t[count] IN, count: uint32_t)
+    (parent_handle: mx_handle_t, kind: uint32_t, low: uint64_t, high: uint64_t)
     returns (mx_status_t, resource_out: mx_handle_t);
-
-syscall resource_destroy
-    (handle: mx_handle_t)
-    returns (mx_status_t);
-
-syscall resource_get_handle
-    (handle: mx_handle_t, index: uint32_t, options: uint32_t)
-    returns (mx_status_t, out: mx_handle_t);
-
-syscall resource_do_action
-    (handle: mx_handle_t, index: uint32_t, action: uint32_t, arg0: uint32_t, arg1: uint32_t)
-    returns (mx_status_t);
-
-syscall resource_connect
-    (handle: mx_handle_t, channel: mx_handle_t)
-    returns (mx_status_t);
-
-syscall resource_accept
-    (handle: mx_handle_t)
-    returns (mx_status_t, channel: mx_handle_t);
 
 # Hypervisor
 

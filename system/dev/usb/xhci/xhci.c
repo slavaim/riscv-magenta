@@ -23,6 +23,12 @@
 
 #define PAGE_ROUNDUP(x) ((x + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 
+// The Interrupter Moderation Interval prevents the controller from sending interrupts too often.
+// According to XHCI Rev 1.1 4.17.2, the default is 4000 (= 1 ms). We set it to 1000 (= 250 us) to
+// get better latency on completions for bulk transfers; setting it too low seems to destabilize the
+// system.
+#define XHCI_IMODI_VAL      1000
+
 uint8_t xhci_endpoint_index(uint8_t ep_address) {
     if (ep_address == 0) return 0;
     uint32_t index = 2 * (ep_address & ~USB_ENDPOINT_DIR_MASK);
@@ -402,6 +408,7 @@ static void xhci_interruptor_init(xhci_t* xhci, int interruptor) {
     xhci_update_erdp(xhci, interruptor);
 
     XHCI_SET32(&intr_regs->iman, IMAN_IE, IMAN_IE);
+    XHCI_SET32(&intr_regs->imod, IMODI_MASK, XHCI_IMODI_VAL);
     XHCI_SET32(&intr_regs->erstsz, ERSTSZ_MASK, ERST_ARRAY_SIZE);
     XHCI_WRITE64(&intr_regs->erstba, xhci->erst_arrays_phys[interruptor]);
 }
@@ -411,6 +418,14 @@ void xhci_wait_bits(volatile uint32_t* ptr, uint32_t bits, uint32_t expected) {
     while ((value & bits) != expected) {
         usleep(1000);
         value = XHCI_READ32(ptr);
+    }
+}
+
+void xhci_wait_bits64(volatile uint64_t* ptr, uint64_t bits, uint64_t expected) {
+    uint64_t value = XHCI_READ64(ptr);
+    while ((value & bits) != expected) {
+        usleep(1000);
+        value = XHCI_READ64(ptr);
     }
 }
 
@@ -433,7 +448,9 @@ void xhci_start(xhci_t* xhci) {
     xhci_op_regs_t* op_regs = xhci->op_regs;
     // initialize command ring
     uint64_t crcr = xhci_transfer_ring_start_phys(&xhci->command_ring);
-    crcr |= CRCR_RCS;
+    if (xhci->command_ring.pcs) {
+        crcr |= CRCR_RCS;
+    }
     XHCI_WRITE64(&op_regs->crcr, crcr);
 
     XHCI_WRITE64(&op_regs->dcbaap, xhci->dcbaa_phys);
@@ -480,6 +497,13 @@ static void xhci_handle_command_complete_event(xhci_t* xhci, xhci_trb_t* event_t
             (event_trb->control >> TRB_SLOT_ID_START), trb_get_type(command_trb), cc);
 
     int index = command_trb - xhci->command_ring.start;
+
+    if (cc == TRB_CC_COMMAND_RING_STOPPED) {
+        // TRB_CC_COMMAND_RING_STOPPED is generated after aborting a command.
+        // Ignore this, since it is unrelated to the next command in the command ring.
+        return;
+    }
+
     mtx_lock(&xhci->command_ring_lock);
     xhci_command_context_t* context = xhci->command_contexts[index];
     xhci->command_contexts[index] = NULL;

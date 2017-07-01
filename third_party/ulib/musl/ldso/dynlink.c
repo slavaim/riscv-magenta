@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <inttypes.h>
@@ -38,6 +39,7 @@
 static void early_init(void);
 static void error(const char*, ...);
 static void debugmsg(const char*, ...);
+static void log_write(const void* buf, size_t len);
 static mx_status_t get_library_vmo(const char* name, mx_handle_t* vmo);
 
 #define MAXP2(a, b) (-(-(a) & -(b)))
@@ -65,6 +67,12 @@ struct dso {
     char* name;
     ElfW(Dyn)* dynv;
     struct dso *next, *prev;
+
+    union {
+        const struct gnu_note* build_id_note; // Written by map_library.
+        struct iovec build_id_log;      // Written by format_build_id_log.
+    };
+    atomic_flag logged;
 
     const char* soname;
     Phdr* phdr;
@@ -103,6 +111,19 @@ struct symdef {
     struct dso* dso;
 };
 
+union gnu_note_name {
+    char name[sizeof("GNU")];
+    uint32_t word;
+};
+#define GNU_NOTE_NAME ((union gnu_note_name){.name = "GNU"})
+_Static_assert(sizeof(GNU_NOTE_NAME.name) == sizeof(GNU_NOTE_NAME.word), "");
+
+struct gnu_note {
+    Elf64_Nhdr nhdr;
+    union gnu_note_name name;
+    alignas(4) uint8_t desc[];
+};
+
 #define MIN_TLS_ALIGN alignof(struct pthread)
 
 #define ADDEND_LIMIT 4096
@@ -110,9 +131,9 @@ static size_t *saved_addends, *apply_addends_to;
 
 static struct dso ldso, vdso;
 static struct dso *head, *tail, *fini_head;
+static struct dso *detached_head;
 static unsigned long long gencnt;
 static int runtime;
-static int ldd_mode;
 static int ldso_fail;
 static jmp_buf* rtld_fail;
 static pthread_rwlock_t lock;
@@ -121,6 +142,8 @@ static struct tls_module* tls_tail;
 static size_t tls_cnt, tls_offset, tls_align = MIN_TLS_ALIGN;
 static size_t static_tls_cnt;
 static pthread_mutex_t init_fini_lock = {._m_type = PTHREAD_MUTEX_RECURSIVE};
+
+static atomic_uintptr_t unlogged_tail;
 
 static mx_handle_t loader_svc = MX_HANDLE_INVALID;
 static mx_handle_t logger = MX_HANDLE_INVALID;
@@ -538,6 +561,113 @@ __NO_SAFESTACK static void unmap_library(struct dso* dso) {
     }
 }
 
+// Locate the build ID note just after mapping the segments in.
+// This is called from dls2, so it cannot use any non-static functions.
+__NO_SAFESTACK NO_ASAN static bool find_buildid_note(struct dso* dso,
+                                                     const Phdr* seg) {
+    const char* end = laddr(dso, seg->p_vaddr + seg->p_filesz);
+    for (const struct gnu_note* n = laddr(dso, seg->p_vaddr);
+         (const char*)n < end;
+         n = (const void*)(n->name.name +
+                           ((n->nhdr.n_namesz + 3) & -4) +
+                           ((n->nhdr.n_descsz + 3) & -4))) {
+        if (n->nhdr.n_type == NT_GNU_BUILD_ID &&
+            n->nhdr.n_namesz == sizeof(GNU_NOTE_NAME) &&
+            n->name.word == GNU_NOTE_NAME.word) {
+            dso->build_id_note = n;
+            return true;
+        }
+    }
+    return false;
+}
+
+// We pre-format the log line for each DSO early so that we can log it
+// without running any nontrivial code.  We use hand-rolled formatting
+// code to avoid using large and complex code like the printf engine.
+// Each line looks like "dso: id=... base=0x... name=...\n".
+#define BUILD_ID_LOG_1 "dso: id="
+#define BUILD_ID_LOG_NONE "none"
+#define BUILD_ID_LOG_2 " base=0x"
+#define BUILD_ID_LOG_3 " name="
+
+__NO_SAFESTACK static size_t build_id_log_size(struct dso* dso,
+                                               size_t namelen) {
+    size_t id_size = (dso->build_id_note == NULL ?
+                      sizeof(BUILD_ID_LOG_NONE) - 1 :
+                      dso->build_id_note->nhdr.n_descsz * 2);
+    return (sizeof(BUILD_ID_LOG_1) - 1 + id_size +
+            sizeof(BUILD_ID_LOG_2) - 1 + (sizeof(size_t) * 2) +
+            sizeof(BUILD_ID_LOG_3) - 1 + namelen + 1);
+}
+
+__NO_SAFESTACK static void format_build_id_log(
+    struct dso* dso, char *buffer, const char *name, size_t namelen) {
+#define HEXDIGITS "0123456789abcdef"
+    const struct gnu_note* note = dso->build_id_note;
+    dso->build_id_log.iov_base = buffer;
+    memcpy(buffer, BUILD_ID_LOG_1, sizeof(BUILD_ID_LOG_1) - 1);
+    char *p = buffer + sizeof(BUILD_ID_LOG_1) - 1;
+    if (note == NULL) {
+        memcpy(p, BUILD_ID_LOG_NONE, sizeof(BUILD_ID_LOG_NONE) - 1);
+        p += sizeof(BUILD_ID_LOG_NONE) - 1;
+    } else {
+        for (Elf64_Word i = 0; i < note->nhdr.n_descsz; ++i) {
+            uint8_t byte = note->desc[i];
+            *p++ = HEXDIGITS[byte >> 4];
+            *p++ = HEXDIGITS[byte & 0xf];
+        }
+    }
+    memcpy(p, BUILD_ID_LOG_2, sizeof(BUILD_ID_LOG_2) - 1);
+    p += sizeof(BUILD_ID_LOG_2) - 1;
+    uintptr_t base = (uintptr_t)dso->base;
+    unsigned int shift = sizeof(uintptr_t) * 8;
+    do {
+        shift -= 4;
+        *p++ = HEXDIGITS[(base >> shift) & 0xf];
+    } while (shift > 0);
+    memcpy(p, BUILD_ID_LOG_3, sizeof(BUILD_ID_LOG_3) - 1);
+    p += sizeof(BUILD_ID_LOG_3) - 1;
+    memcpy(p, name, namelen);
+    p += namelen;
+    *p++ = '\n';
+    dso->build_id_log.iov_len = p - buffer;
+#undef HEXDIGITS
+}
+
+__NO_SAFESTACK static void allocate_and_format_build_id_log(struct dso* dso) {
+    const char* name = dso->name;
+    if (name[0] == '\0')
+        name = dso->soname == NULL ? "<application>" : dso->soname;
+    size_t namelen = strlen(name);
+    char *buffer = dl_alloc(build_id_log_size(dso, namelen));
+    format_build_id_log(dso, buffer, name, namelen);
+}
+
+__NO_SAFESTACK void _dl_log_unlogged(void) {
+    // The first thread to successfully swap in 0 and get an old value
+    // for unlogged_tail is responsible for logging all the unlogged
+    // DSOs up through that pointer.  If dlopen calls move the tail
+    // and another thread then calls into here, we can race with that
+    // thread.  So we use a separate atomic_flag on each 'struct dso'
+    // to ensure only one thread prints each one.
+    uintptr_t last_unlogged =
+        atomic_load_explicit(&unlogged_tail, memory_order_acquire);
+    do {
+        if (last_unlogged == 0)
+            return;
+    } while (!atomic_compare_exchange_weak_explicit(&unlogged_tail,
+                                                    &last_unlogged, 0,
+                                                    memory_order_acq_rel,
+                                                    memory_order_relaxed));
+    for (struct dso* p = head; true; p = p->next) {
+        if (!atomic_flag_test_and_set_explicit(
+                &p->logged, memory_order_relaxed))
+            log_write(p->build_id_log.iov_base, p->build_id_log.iov_len);
+        if ((struct dso*)last_unlogged == p)
+            break;
+    }
+}
+
 __NO_SAFESTACK NO_ASAN static mx_status_t map_library(mx_handle_t vmo,
                                                       struct dso* dso) {
     struct {
@@ -582,26 +712,37 @@ __NO_SAFESTACK NO_ASAN static mx_status_t map_library(mx_handle_t vmo,
     } else {
         ph = ph0 = (void*)((char*)&buf + eh->e_phoff);
     }
+    const Phdr* first_note = NULL;
+    const Phdr* last_note = NULL;
     for (i = eh->e_phnum; i; i--, ph = (void*)((char*)ph + eh->e_phentsize)) {
-        if (ph->p_type == PT_DYNAMIC) {
+        switch (ph->p_type) {
+        case PT_LOAD:
+            nsegs++;
+            if (ph->p_vaddr < addr_min) {
+                addr_min = ph->p_vaddr;
+            }
+            if (ph->p_vaddr + ph->p_memsz > addr_max) {
+                addr_max = ph->p_vaddr + ph->p_memsz;
+            }
+            break;
+        case PT_DYNAMIC:
             dyn = ph->p_vaddr;
-        } else if (ph->p_type == PT_TLS) {
+            break;
+        case PT_TLS:
             tls_image = ph->p_vaddr;
             dso->tls.align = ph->p_align;
             dso->tls.len = ph->p_filesz;
             dso->tls.size = ph->p_memsz;
-        } else if (ph->p_type == PT_GNU_RELRO) {
+            break;
+        case PT_GNU_RELRO:
             dso->relro_start = ph->p_vaddr & -PAGE_SIZE;
             dso->relro_end = (ph->p_vaddr + ph->p_memsz) & -PAGE_SIZE;
-        }
-        if (ph->p_type != PT_LOAD)
-            continue;
-        nsegs++;
-        if (ph->p_vaddr < addr_min) {
-            addr_min = ph->p_vaddr;
-        }
-        if (ph->p_vaddr + ph->p_memsz > addr_max) {
-            addr_max = ph->p_vaddr + ph->p_memsz;
+            break;
+        case PT_NOTE:
+            if (first_note == NULL)
+                first_note = ph;
+            last_note = ph;
+            break;
         }
     }
     if (!dyn)
@@ -731,6 +872,12 @@ __NO_SAFESTACK NO_ASAN static mx_status_t map_library(mx_handle_t vmo,
     dso->dynv = laddr(dso, dyn);
     if (dso->tls.size)
         dso->tls.image = laddr(dso, tls_image);
+
+    for (const Phdr* seg = first_note; seg <= last_note; ++seg) {
+        if (seg->p_type == PT_NOTE && find_buildid_note(dso, seg))
+            break;
+    }
+
     return MX_OK;
 noexec:
     // We overload this to translate into ENOEXEC later.
@@ -794,63 +941,38 @@ __NO_SAFESTACK static struct dso* find_library_in(struct dso* p,
 }
 
 __NO_SAFESTACK static struct dso* find_library(const char* name) {
-    int is_self = 0;
-
-    /* Catch and block attempts to reload the implementation itself */
-    if (name[0] == 'l' && name[1] == 'i' && name[2] == 'b') {
-        static const char *rp, reserved[] = "c\0pthread\0rt\0m\0dl\0util\0xnet\0";
-        char* z = strchr(name, '.');
-        if (z) {
-            size_t l = z - name;
-            for (rp = reserved; *rp && strncmp(name + 3, rp, l - 3); rp += strlen(rp) + 1)
-                ;
-            if (*rp) {
-                if (ldd_mode) {
-                    /* Track which names have been resolved
-                     * and only report each one once. */
-                    static unsigned reported;
-                    unsigned mask = 1U << (rp - reserved);
-                    if (!(reported & mask)) {
-                        reported |= mask;
-                        debugmsg("\t%s => %s (%p)\n",
-                                 name, ldso.name, ldso.base);
-                    }
-                }
-                is_self = 1;
-            }
-        }
-    }
-    if (!strcmp(name, ldso.name))
-        is_self = 1;
-    if (is_self) {
-        if (!ldso.prev) {
-            tail->next = &ldso;
-            ldso.prev = tail;
-            tail = ldso.next ? ldso.next : &ldso;
-        }
-        return &ldso;
-    }
-
     // First see if it's in the general list.
     struct dso* p = find_library_in(head, name);
-    if (p == NULL && ldso.prev == NULL) {
+    if (p == NULL && detached_head != NULL) {
         // ldso is not in the list yet, so the first search didn't notice
         // anything that is only a dependency of ldso, i.e. the vDSO.
         // See if the lookup by name matches ldso or its dependencies.
-        p = find_library_in(&ldso, name);
-        if (p != NULL) {
-            // Take it out of its place in the list rooted at ldso.
+        p = find_library_in(detached_head, name);
+        if (p == &ldso) {
+            // If something depends on libc (&ldso), we actually want
+            // to pull in the entire detached list in its existing
+            // order (&ldso is always last), so that libc stays after
+            // its own dependencies.
+            detached_head->prev = tail;
+            tail->next = detached_head;
+            tail = p;
+            detached_head = NULL;
+        } else if (p != NULL) {
+            // Take it out of its place in the list rooted at detached_head.
             if (p->prev != NULL)
                 p->prev->next = p->next;
-            if (p->next != NULL)
+            else
+                detached_head = p->next;
+            if (p->next != NULL) {
                 p->next->prev = p->prev;
+                p->next = NULL;
+            }
             // Stick it on the main list.
             tail->next = p;
             p->prev = tail;
             tail = p;
         }
     }
-
     return p;
 }
 
@@ -1011,7 +1133,10 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
      * threads to obtain copies of both the new TLS, and an
      * extended DTV capable of storing an additional slot for
      * the newly-loaded DSO. */
-    alloc_size = sizeof *p + ndeps * sizeof(p->deps[0]) + strlen(name) + 1;
+    size_t namelen = strlen(name) + 1;
+    size_t build_id_log_len = build_id_log_size(&temp_dso, namelen - 1);
+    alloc_size = (sizeof *p + ndeps * sizeof(p->deps[0]) +
+                  namelen + build_id_log_len);
     if (runtime && temp_dso.tls.image) {
         size_t per_th = temp_dso.tls.size + temp_dso.tls.align + sizeof(void*) * (tls_cnt + 3);
         n_th = atomic_load(&libc.thread_count);
@@ -1029,7 +1154,9 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
     p->refcnt = 1;
     p->needed_by = needed_by;
     p->name = (void*)&p->buf[ndeps];
-    strcpy(p->name, name);
+    memcpy(p->name, name, namelen);
+    format_build_id_log(p, p->name + namelen, p->name, namelen);
+    char* tls_buffer = p->name + namelen + build_id_log_len;
     if (p->tls.image) {
         p->tls_id = ++tls_cnt;
         tls_align = MAXP2(tls_align, p->tls.align);
@@ -1041,8 +1168,8 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
         tls_offset -= (tls_offset + (uintptr_t)p->tls.image) & (p->tls.align - 1);
         p->tls.offset = tls_offset;
 #endif
-        p->new_dtv =
-            (void*)(-sizeof(size_t) & (uintptr_t)(p->name + strlen(p->name) + sizeof(size_t)));
+        p->new_dtv = (void*)(-sizeof(size_t) &
+                             (uintptr_t)(tls_buffer + sizeof(size_t)));
         p->new_tls = (void*)(p->new_dtv + n_th * (tls_cnt + 1));
         if (tls_tail)
             tls_tail->next = &p->tls;
@@ -1054,9 +1181,6 @@ __NO_SAFESTACK static mx_status_t load_library_vmo(mx_handle_t vmo,
     tail->next = p;
     p->prev = tail;
     tail = p;
-
-    if (ldd_mode)
-        debugmsg("\t%s => %s (%p)\n", p->soname, name, p->base);
 
     *loaded = p;
     return MX_OK;
@@ -1084,11 +1208,9 @@ __NO_SAFESTACK static mx_status_t load_library(const char* name, int rtld_mode,
 
 __NO_SAFESTACK static void load_deps(struct dso* p) {
     for (; p; p = p->next) {
-        // These don't get space allocated for ->deps.
-        if (p == &ldso || p == &vdso)
-            continue;
         struct dso** deps = NULL;
-        if (runtime && p->deps == NULL)
+        // The two preallocated DSOs don't get space allocated for ->deps.
+        if (runtime && p->deps == NULL && p != &ldso && p != &vdso)
             deps = p->deps = p->buf;
         for (size_t i = 0; p->dynv[i].d_tag; i++) {
             if (p->dynv[i].d_tag != DT_NEEDED)
@@ -1198,20 +1320,27 @@ __NO_SAFESTACK NO_ASAN static void reloc_all(struct dso* p) {
 
 __NO_SAFESTACK NO_ASAN static void kernel_mapped_dso(struct dso* p) {
     size_t min_addr = -1, max_addr = 0, cnt;
-    Phdr* ph = p->phdr;
+    const Phdr* ph = p->phdr;
     for (cnt = p->phnum; cnt--; ph = (void*)((char*)ph + p->phentsize)) {
-        if (ph->p_type == PT_DYNAMIC) {
+        switch (ph->p_type) {
+        case PT_LOAD:
+            if (ph->p_vaddr < min_addr)
+                min_addr = ph->p_vaddr;
+            if (ph->p_vaddr + ph->p_memsz > max_addr)
+                max_addr = ph->p_vaddr + ph->p_memsz;
+            break;
+        case PT_DYNAMIC:
             p->dynv = laddr(p, ph->p_vaddr);
-        } else if (ph->p_type == PT_GNU_RELRO) {
+            break;
+        case PT_GNU_RELRO:
             p->relro_start = ph->p_vaddr & -PAGE_SIZE;
             p->relro_end = (ph->p_vaddr + ph->p_memsz) & -PAGE_SIZE;
+            break;
+        case PT_NOTE:
+            if (p->build_id_note == NULL)
+                find_buildid_note(p, ph);
+            break;
         }
-        if (ph->p_type != PT_LOAD)
-            continue;
-        if (ph->p_vaddr < min_addr)
-            min_addr = ph->p_vaddr;
-        if (ph->p_vaddr + ph->p_memsz > max_addr)
-            max_addr = ph->p_vaddr + ph->p_memsz;
     }
     min_addr &= -PAGE_SIZE;
     max_addr = (max_addr + PAGE_SIZE - 1) & -PAGE_SIZE;
@@ -1392,7 +1521,7 @@ dl_start_return_t __dls2(
         decode_dyn(&vdso);
 
         vdso.prev = &ldso;
-        ldso.next = &vdso;
+        tail = ldso.next = &vdso;
     }
 
     /* Prepare storage for to save clobbered REL addends so they
@@ -1431,9 +1560,23 @@ dl_start_return_t __dls2(
  * transfer control to its entry point. */
 
 __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
+    // First load our own dependencies.  Usually this will be just the
+    // vDSO, which is already loaded, so there will be nothing to do.
+    // In a sanitized build, we'll depend on the sanitizer runtime DSO
+    // and load that now (and its dependencies, such as the unwinder).
+    load_deps(&ldso);
+
+    // Now reorder the list so that we appear last, after all our
+    // dependencies.  This ensures that e.g. the sanitizer runtime's
+    // malloc will be chosen over ours, even if the application
+    // doesn't itself depend on the sanitizer runtime SONAME.
+    ldso.next->prev = NULL;
+    detached_head = ldso.next;
+    ldso.prev = tail;
+    ldso.next = NULL;
+    tail->next = &ldso;
+
     static struct dso app;
-    size_t i;
-    char** argv_orig = argv;
 
     if (argc < 1 || argv[0] == NULL) {
         static const char* dummy_argv0 = "";
@@ -1456,48 +1599,6 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
             trace_maps = true;
     }
 
-    if (exec_vmo == MX_HANDLE_INVALID) {
-        char* ldname = argv[0];
-        size_t l = strlen(ldname);
-        if (l >= 3 && !strcmp(ldname + l - 3, "ldd"))
-            ldd_mode = 1;
-        argv++;
-        while (argv[0] && argv[0][0] == '-' && argv[0][1] == '-') {
-            char* opt = argv[0] + 2;
-            *argv++ = (void*)-1;
-            if (!*opt) {
-                break;
-            } else if (!memcmp(opt, "list", 5)) {
-                ldd_mode = 1;
-            } else if (!memcmp(opt, "preload", 7)) {
-                if (opt[7] == '=')
-                    ld_preload = opt + 8;
-                else if (opt[7])
-                    *argv = 0;
-                else if (*argv)
-                    ld_preload = *argv++;
-            } else {
-                argv[0] = 0;
-            }
-        }
-        argc -= argv - argv_orig;
-        if (!argv[0]) {
-            debugmsg("musl libc (" LDSO_ARCH ")\n"
-                     "Dynamic Program Loader\n"
-                     "Usage: %s [options] [--] pathname%s\n",
-                     ldname, ldd_mode ? "" : " [args]");
-            _exit(1);
-        }
-
-        ldso.name = ldname;
-
-        mx_status_t status = get_library_vmo(argv[0], &exec_vmo);
-        if (status != MX_OK) {
-            debugmsg("%s: cannot load %s: %d\n", ldname, argv[0], status);
-            _exit(1);
-        }
-    }
-
     mx_status_t status = map_library(exec_vmo, &app);
     _mx_handle_close(exec_vmo);
     if (status != MX_OK) {
@@ -1507,16 +1608,6 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     }
 
     app.name = argv[0];
-
-    /* Find the name that would have been used for the dynamic
-     * linker had ldd not taken its place. */
-    if (ldd_mode) {
-        for (i = 0; i < app.phnum; i++) {
-            if (app.phdr[i].p_type == PT_INTERP)
-                ldso.name = laddr(&app, app.phdr[i].p_vaddr);
-        }
-        debugmsg("\t%s (%p)\n", ldso.name, ldso.base);
-    }
 
     if (app.tls.size) {
         libc.tls_head = tls_tail = &app.tls;
@@ -1535,6 +1626,11 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     app.global = 1;
     decode_dyn(&app);
 
+    // Format the build ID log lines for the three special cases.
+    allocate_and_format_build_id_log(&ldso);
+    allocate_and_format_build_id_log(&vdso);
+    allocate_and_format_build_id_log(&app);
+
     /* Initial dso chain consists only of the app. */
     head = tail = &app;
 
@@ -1545,7 +1641,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
     load_deps(&app);
     make_global(&app);
 
-    for (i = 0; app.dynv[i].d_tag; i++) {
+    for (size_t i = 0; app.dynv[i].d_tag; i++) {
         if (!DT_DEBUG_INDIRECT && app.dynv[i].d_tag == DT_DEBUG)
             app.dynv[i].d_un.d_ptr = (size_t)&debug;
         if (DT_DEBUG_INDIRECT && app.dynv[i].d_tag == DT_DEBUG_INDIRECT) {
@@ -1564,13 +1660,13 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
 
     if (ldso_fail)
         _exit(127);
-    if (ldd_mode)
-        _exit(0);
 
     /* Switch to runtime mode: any further failures in the dynamic
      * linker are a reportable failure rather than a fatal startup
      * error. */
     runtime = 1;
+
+    atomic_init(&unlogged_tail, (uintptr_t)tail);
 
     debug.ver = 1;
     debug.bp = dl_debug_state;
@@ -1591,25 +1687,8 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
 
     _dl_debug_state();
 
-    if (log_libs) {
-        for (struct dso* p = &app; p != NULL; p = p->next) {
-            const char* name = p->name[0] == '\0' ? "<application>" : p->name;
-            const char* a = "";
-            const char* b = "";
-            const char* c = "";
-            if (p->soname != NULL && strcmp(name, p->soname)) {
-                a = " (";
-                b = p->soname;
-                c = ")";
-            }
-            if (p->base == p->map)
-                debugmsg("Loaded at [%p,%p): %s%s%s%s\n",
-                         p->map, p->map + p->map_len, name, a, b, c);
-            else
-                debugmsg("Loaded at [%p,%p) bias %p: %s%s%s%s\n",
-                         p->map, p->map + p->map_len, p->base, name, a, b, c);
-        }
-    }
+    if (log_libs)
+        _dl_log_unlogged();
 
     if (trace_maps) {
         for (struct dso* p = &app; p != NULL; p = p->next) {
@@ -1623,7 +1702,7 @@ __NO_SAFESTACK static void* dls3(mx_handle_t exec_vmo, int argc, char** argv) {
 
     // Check for a PT_GNU_STACK header requesting a main thread stack size.
     libc.stack_size = DEFAULT_PTHREAD_ATTR._a_stacksize;
-    for (i = 0; i < app.phnum; i++) {
+    for (size_t i = 0; i < app.phnum; i++) {
         if (app.phdr[i].p_type == PT_GNU_STACK) {
             size_t size = app.phdr[i].p_memsz;
             if (size > 0)
@@ -1866,6 +1945,11 @@ static void* dlopen_internal(mx_handle_t vmo, const char* file, int mode) {
     // starts with the first object we just added.
     struct dso* new_tail = tail;
 
+    // The next _dl_log_unlogged can safely read the 'struct dso' list from
+    // head up through new_tail.  Most fields will never change again.
+    atomic_store_explicit(&unlogged_tail, (uintptr_t)new_tail,
+                          memory_order_release);
+
     pthread_rwlock_unlock(&lock);
 
     do_init_fini(new_tail);
@@ -2057,16 +2141,21 @@ static mx_txid_t loader_svc_txid;
 
 __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
                                                  const void* data, size_t len,
+                                                 mx_handle_t request_handle,
                                                  mx_handle_t* result) {
-    mx_status_t status;
-    struct {
+    // Use a static buffer rather than one on the stack to avoid growing
+    // the stack size too much.  Calls to this function are always
+    // serialized anyway, so there is no danger of collision.
+    static struct {
         mx_loader_svc_msg_t header;
         uint8_t data[LOADER_SVC_MSG_MAX - sizeof(mx_loader_svc_msg_t)];
     } msg;
 
     loader_svc_rpc_in_progress = true;
 
+    mx_status_t status;
     if (len >= sizeof msg.data) {
+        _mx_handle_close(request_handle);
         error("message of %zu bytes too large for loader service protocol",
               len);
         status = MX_ERR_OUT_OF_RANGE;
@@ -2087,6 +2176,8 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
     mx_channel_call_args_t call = {
         .wr_bytes = &msg,
         .wr_num_bytes = sizeof(msg.header) + len + 1,
+        .wr_handles = &request_handle,
+        .wr_num_handles = request_handle == MX_HANDLE_INVALID ? 0 : 1,
         .rd_bytes = &msg,
         .rd_num_bytes = sizeof(msg),
         .rd_handles = result,
@@ -2104,7 +2195,9 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
               "%d (%s), read %d (%s)",
               call.wr_num_bytes, status, _mx_status_get_string(status),
               read_status, _mx_status_get_string(read_status));
-        if (status == MX_ERR_CALL_FAILED && read_status != MX_OK)
+        if (status != MX_ERR_CALL_FAILED)
+            _mx_handle_close(request_handle);
+        else if (read_status != MX_OK)
             status = read_status;
         goto out;
     }
@@ -2116,6 +2209,10 @@ __NO_SAFESTACK static mx_status_t loader_svc_rpc(uint32_t opcode,
         goto out;
     }
     if (msg.header.opcode != LOADER_SVC_OP_STATUS) {
+        if (handle_count > 0) {
+            _mx_handle_close(*result);
+            *result = MX_HANDLE_INVALID;
+        }
         error("loader service reply opcode %u != %u",
               msg.header.opcode, LOADER_SVC_OP_STATUS);
         status = MX_ERR_INVALID_ARGS;
@@ -2145,7 +2242,7 @@ __NO_SAFESTACK static mx_status_t get_library_vmo(const char* name,
         return MX_ERR_UNAVAILABLE;
     }
     return loader_svc_rpc(LOADER_SVC_OP_LOAD_OBJECT, name, strlen(name),
-                          result);
+                          MX_HANDLE_INVALID, result);
 }
 
 __NO_SAFESTACK static void log_write(const void* buf, size_t len) {
@@ -2158,7 +2255,8 @@ __NO_SAFESTACK static void log_write(const void* buf, size_t len) {
     if (logger != MX_HANDLE_INVALID)
         status = _mx_log_write(logger, len, buf, 0);
     else if (!loader_svc_rpc_in_progress && loader_svc != MX_HANDLE_INVALID)
-        status = loader_svc_rpc(LOADER_SVC_OP_DEBUG_PRINT, buf, len, NULL);
+        status = loader_svc_rpc(LOADER_SVC_OP_DEBUG_PRINT, buf, len,
+                                MX_HANDLE_INVALID, NULL);
     else {
         int n = _mx_debug_write(buf, len);
         status = n < 0 ? n : MX_OK;
@@ -2213,4 +2311,34 @@ __NO_SAFESTACK static void error(const char* fmt, ...) {
     }
     __dl_vseterr(fmt, ap);
     va_end(ap);
+}
+
+// We piggy-back on the loader service to publish data from sanitizers.
+void __sanitizer_publish_data(const char* sink_name, mx_handle_t vmo) {
+    pthread_rwlock_rdlock(&lock);
+    mx_status_t status = loader_svc_rpc(LOADER_SVC_OP_PUBLISH_DATA_SINK,
+                                        sink_name, strlen(sink_name),
+                                        vmo, NULL);
+    if (status != MX_OK) {
+        // TODO(mcgrathr): Send this whereever sanitizer logging goes.
+        debugmsg("Failed to publish data sink \"%s\" (%s): %s\n",
+                 sink_name, _mx_status_get_string(status), dlerror());
+    }
+    pthread_rwlock_unlock(&lock);
+}
+
+// ... and to get configuration files for them.
+mx_status_t __sanitizer_get_configuration(const char* name,
+                                          mx_handle_t *out_vmo) {
+    pthread_rwlock_rdlock(&lock);
+    mx_status_t status = loader_svc_rpc(LOADER_SVC_OP_LOAD_DEBUG_CONFIG,
+                                        name, strlen(name),
+                                        MX_HANDLE_INVALID, out_vmo);
+    if (status != MX_OK) {
+        // TODO(mcgrathr): Send this whereever sanitizer logging goes.
+        debugmsg("Failed to get configuration file \"%s\" (%s): %s\n",
+                 name, _mx_status_get_string(status), dlerror());
+    }
+    pthread_rwlock_unlock(&lock);
+    return status;
 }

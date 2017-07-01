@@ -10,6 +10,7 @@
 
 #include <magenta/process.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/exception.h>
 #include <magenta/syscalls/object.h>
 #include <magenta/syscalls/port.h>
 #include <mxtl/limits.h>
@@ -75,7 +76,7 @@ mx_status_t test_local_address(uintptr_t address, bool write, bool* success) {
 
     alignas(16) static uint8_t thread_stack[PAGE_SIZE];
 
-    mx_exception_packet_t packet;
+    mx_port_packet_t packet;
     bool saw_page_fault = false;
 
     mx_handle_t thread = MX_HANDLE_INVALID;
@@ -112,21 +113,21 @@ mx_status_t test_local_address(uintptr_t address, bool write, bool* success) {
     do {
         mx_status_t s;
 
-        s = mx_port_wait(port, MX_TIME_INFINITE, &packet, sizeof(packet));
+        s = mx_port_wait(port, MX_TIME_INFINITE, &packet, 0);
         if (s != MX_OK && status != MX_OK) {
             status = s;
             break;
         }
-        if (packet.hdr.type != MX_PORT_PKT_TYPE_EXCEPTION) {
+        if (!MX_PKT_IS_EXCEPTION(packet.type)) {
             status = MX_ERR_BAD_STATE;
             break;
         }
-        if (packet.report.header.type == MX_EXCP_FATAL_PAGE_FAULT) {
+        if (packet.type == MX_EXCP_FATAL_PAGE_FAULT) {
             mx_task_kill(thread);
             saw_page_fault = true;
             // Leave status as is.
         }
-        else if (packet.report.header.type == MX_EXCP_GONE) {
+        else if (packet.type == MX_EXCP_GONE) {
             // Leave status as is.
         }
         else {
@@ -134,7 +135,7 @@ mx_status_t test_local_address(uintptr_t address, bool write, bool* success) {
             if (status != MX_OK)
                 status = MX_ERR_BAD_STATE;
         }
-    } while (packet.report.header.type != MX_EXCP_GONE);
+    } while (packet.type != MX_EXCP_GONE);
 
     if (status == MX_OK && !saw_page_fault)
         *success = true;

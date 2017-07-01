@@ -13,6 +13,7 @@
 #include <magenta/process.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
+#include <magenta/syscalls/exception.h>
 #include <magenta/syscalls/port.h>
 #include <unittest/unittest.h>
 
@@ -155,9 +156,9 @@ static bool bad_channel_call_contract_violation(void) {
     ASSERT_EQ(mx_task_suspend(thread), MX_OK, "");
 
     // Wait for the thread to suspend
-    mx_exception_packet_t packet;
-    ASSERT_EQ(mx_port_wait(eport, MX_TIME_INFINITE, &packet, sizeof(packet)), MX_OK, "");
-    ASSERT_EQ(packet.report.header.type, (uint32_t) MX_EXCP_THREAD_SUSPENDED, "");
+    mx_port_packet_t packet;
+    ASSERT_EQ(mx_port_wait(eport, MX_TIME_INFINITE, &packet, 0), MX_OK, "");
+    ASSERT_EQ(packet.type, (uint32_t) MX_EXCP_THREAD_SUSPENDED, "");
     ASSERT_EQ(mx_handle_close(eport), MX_OK, "");
 
     // Resume the thread

@@ -118,20 +118,10 @@ typedef uint32_t mx_signals_t;
 // Port
 #define MX_PORT_READABLE            __MX_OBJECT_READABLE
 
-// Resource
-#define MX_RESOURCE_DESTROYED       __MX_OBJECT_SIGNALED
-#define MX_RESOURCE_READABLE        __MX_OBJECT_READABLE
-#define MX_RESOURCE_WRITABLE        __MX_OBJECT_WRITABLE
-#define MX_RESOURCE_CHILD_ADDED     __MX_OBJECT_SIGNAL_4
-
 // Fifo
 #define MX_FIFO_READABLE            __MX_OBJECT_READABLE
 #define MX_FIFO_WRITABLE            __MX_OBJECT_WRITABLE
 #define MX_FIFO_PEER_CLOSED         __MX_OBJECT_PEER_CLOSED
-
-// Waitset
-#define MX_WAITSET_READABLE         __MX_OBJECT_READABLE
-#define MX_WAITSET_PEER_CLOSED      __MX_OBJECT_PEER_CLOSED
 
 // Task signals (process, thread, job)
 #define MX_TASK_TERMINATED          __MX_OBJECT_SIGNALED
@@ -152,11 +142,6 @@ typedef uint32_t mx_signals_t;
 
 // Timer
 #define MX_TIMER_SIGNALED           __MX_OBJECT_SIGNALED
-
-// Compatibility Definitions
-// TODO: remove when safe. Magenta should not be using them.
-#define MX_PROCESS_SIGNALED         MX_PROCESS_TERMINATED
-#define MX_THREAD_SIGNALED          MX_THREAD_TERMINATED
 
 // global kernel object id.
 typedef uint64_t mx_koid_t;
@@ -183,13 +168,6 @@ typedef struct {
     mx_signals_t waitfor;
     mx_signals_t pending;
 } mx_wait_item_t;
-
-// Structure for mx_waitset_*():
-typedef struct mx_waitset_result {
-    uint64_t cookie;
-    mx_status_t status;
-    mx_signals_t observed;
-} mx_waitset_result_t;
 
 typedef uint32_t mx_rights_t;
 #define MX_RIGHT_NONE             ((mx_rights_t)0u)

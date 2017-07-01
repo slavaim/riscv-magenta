@@ -93,7 +93,7 @@ static mx_status_t launch_shell(vc_t* vc, int fd) {
     launchpad_load_from_file(lp, args[0]);
     launchpad_set_args(lp, 1, args);
     launchpad_transfer_fd(lp, fd, MXIO_FLAG_USE_FOR_STDIO | 0);
-    launchpad_clone(lp, LP_CLONE_MXIO_ROOT | LP_CLONE_ENVIRON | LP_CLONE_DEFAULT_JOB);
+    launchpad_clone(lp, LP_CLONE_MXIO_NAMESPACE | LP_CLONE_ENVIRON | LP_CLONE_DEFAULT_JOB);
 
     const char* errmsg;
     mx_status_t r;
@@ -377,7 +377,7 @@ int main(int argc, char** argv) {
         wd.mask = VFS_WATCH_MASK_ALL;
         wd.options = 0;
         if (mx_channel_create(0, &wd.channel, &input_ph.handle) == MX_OK) {
-            if ((ioctl_vfs_watch_dir_v2(input_dir_fd, &wd)) == MX_OK) {
+            if ((ioctl_vfs_watch_dir(input_dir_fd, &wd)) == MX_OK) {
                 input_ph.waitfor = MX_CHANNEL_READABLE | MX_CHANNEL_PEER_CLOSED;
                 input_ph.func = input_cb;
                 port_wait(&port, &input_ph);

@@ -23,6 +23,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/test-directory.c \
     $(LOCAL_DIR)/test-dot-dot.c \
     $(LOCAL_DIR)/test-link.c \
+    $(LOCAL_DIR)/test-fcntl.cpp \
     $(LOCAL_DIR)/test-maxfile.c \
     $(LOCAL_DIR)/test-overflow.c \
     $(LOCAL_DIR)/test-persist.cpp \
@@ -34,7 +35,7 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/test-sync.c \
     $(LOCAL_DIR)/test-truncate.cpp \
     $(LOCAL_DIR)/test-unlink.c \
-    $(LOCAL_DIR)/test-watcher.c \
+    $(LOCAL_DIR)/test-watcher.cpp \
 
 MODULE_LDFLAGS := --wrap open --wrap unlink --wrap stat --wrap mkdir
 MODULE_LDFLAGS += --wrap rename --wrap truncate --wrap opendir

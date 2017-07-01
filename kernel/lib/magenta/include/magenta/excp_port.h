@@ -5,6 +5,7 @@
 #include <kernel/mutex.h>
 
 #include <magenta/dispatcher.h>
+#include <magenta/syscalls/exception.h>
 #include <magenta/syscalls/port.h>
 
 #include <mxtl/canary.h>
@@ -14,7 +15,7 @@
 
 class UserThread;
 class ProcessDispatcher;
-class PortDispatcher;
+class PortDispatcherV2;
 
 // Represents the binding of an exception port to a specific target
 // (system/process/thread). Multiple ExceptionPorts may exist for a

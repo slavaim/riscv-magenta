@@ -58,8 +58,8 @@ void vfs_rpc_open(mxrio_msg_t* msg, mx_handle_t rh, mxtl::RefPtr<Vnode> vn, cons
     // The pipeline directive instructs the VFS layer to open the vnode
     // immediately, rather than describing the VFS object to the caller.
     // We check it early so we can throw away the protocol part of flags.
-    bool pipeline = flags & MXRIO_OFLAG_PIPELINE;
-    uint32_t open_flags = flags & (~MXRIO_OFLAG_MASK);
+    bool pipeline = flags & O_PIPELINE;
+    uint32_t open_flags = flags & (~O_PIPELINE);
 
     {
         mxtl::AutoLock lock(&vfs_lock);
@@ -137,7 +137,7 @@ mx_status_t Vnode::Serve(mx_handle_t h, uint32_t flags) {
     ios->vn = mxtl::RefPtr<Vnode>(this);
     ios->io_flags = flags;
 
-    if ((r = GetDispatcher()->AddVFSHandler(h, reinterpret_cast<void*>(vfs_handler), ios)) < 0) {
+    if ((r = GetDispatcher()->AddVFSHandler(h, vfs_handler, ios)) < 0) {
         mx_handle_close(h);
         free(ios);
         return r;
@@ -193,6 +193,8 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate
         char* path = (char*)msg->data;
         if ((len < 1) || (len > PATH_MAX)) {
             fs::mxrio_reply_channel_status(msg->handle[0], MX_ERR_INVALID_ARGS);
+        } else if ((arg & O_ADMIN) && !(ios->io_flags & O_ADMIN)) {
+            fs::mxrio_reply_channel_status(msg->handle[0], MX_ERR_ACCESS_DENIED);
         } else {
             path[len] = 0;
             xprintf("vfs: open name='%s' flags=%d mode=%u\n", path, arg, msg->arg2.mode);
@@ -226,7 +228,7 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate
         return status;
     }
     case MXRIO_CLONE: {
-        if (!(arg & MXRIO_OFLAG_PIPELINE)) {
+        if (!(arg & O_PIPELINE)) {
             mxrio_object_t obj;
             memset(&obj, 0, MXRIO_OBJECT_MINSIZE);
             obj.type = MXIO_PROTOCOL_REMOTE;
@@ -342,6 +344,20 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate
         mx_status_t r = vn->Setattr((vnattr_t*)msg->data);
         return r;
     }
+    case MXRIO_FCNTL: {
+        uint32_t cmd = msg->arg;
+        constexpr uint32_t kStatusFlags = O_APPEND;
+        switch (cmd) {
+        case F_GETFL:
+            msg->arg2.mode = ios->io_flags & (kStatusFlags | O_ACCMODE);
+            return MX_OK;
+        case F_SETFL:
+            ios->io_flags = (ios->io_flags & ~kStatusFlags) | (msg->arg2.mode & kStatusFlags);
+            return MX_OK;
+        default:
+            return MX_ERR_NOT_SUPPORTED;
+        }
+    }
     case MXRIO_READDIR: {
         if (arg > MXIO_CHUNK_SIZE) {
             return MX_ERR_INVALID_ARGS;
@@ -379,6 +395,16 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate
         memcpy(in_buf + sizeof(mx_handle_t), msg->data + sizeof(mx_handle_t),
                len - sizeof(mx_handle_t));
 
+        switch (msg->arg2.op) {
+        case IOCTL_VFS_MOUNT_FS:
+            // Mounting requires iostate privileges
+            if (!(ios->io_flags & O_ADMIN)) {
+                vfs_unmount_handle(msg->handle[0], 0);
+                mx_handle_close(msg->handle[0]);
+                return MX_ERR_ACCESS_DENIED;
+            }
+            // If our permissions validate, fall through to the VFS ioctl
+        }
         ssize_t r = fs::Vfs::Ioctl(mxtl::move(vn), msg->arg2.op, in_buf, len, msg->data, arg);
 
         if (r == MX_ERR_NOT_SUPPORTED) {
@@ -398,8 +424,8 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate
 
         ssize_t r;
         switch (msg->arg2.op) {
-        // Ioctls which act on iostate
         case IOCTL_VFS_GET_TOKEN: {
+            // Ioctls which act on iostate
             if (arg != sizeof(mx_handle_t)) {
                 r = MX_ERR_INVALID_ARGS;
             } else {
@@ -408,6 +434,14 @@ mx_status_t vfs_handler_vn(mxrio_msg_t* msg, mxtl::RefPtr<Vnode> vn, vfs_iostate
             }
             break;
         }
+        case IOCTL_VFS_UNMOUNT_NODE:
+        case IOCTL_VFS_UNMOUNT_FS:
+            // Unmounting ioctls require iostate privileges
+            if (!(ios->io_flags & O_ADMIN)) {
+                r = MX_ERR_ACCESS_DENIED;
+                break;
+            }
+            // If our permissions validate, fall through to the VFS ioctl
         default:
             r = fs::Vfs::Ioctl(mxtl::move(vn), msg->arg2.op, in_buf, len, msg->data, arg);
         }
@@ -530,7 +564,7 @@ mx_handle_t vfs_rpc_server(mx_handle_t h, mxtl::RefPtr<Vnode> vn) {
     if ((ios = (vfs_iostate_t*)calloc(1, sizeof(vfs_iostate_t))) == NULL)
         return MX_ERR_NO_MEMORY;
     ios->vn = mxtl::move(vn);  // reference passed in by caller
-    ios->io_flags = 0;
+    ios->io_flags = O_ADMIN;
 
     mxio_dispatcher_t* vfs_dispatcher;
     if ((r = mxio_dispatcher_create(&vfs_dispatcher, mxrio_handler)) < 0) {

@@ -134,17 +134,12 @@ struct mx_proc_args {
 // Used by libmxio for passing fdtable, fsroot, etc
 
 // Handle types the mxio library uses
-#define PA_MXIO_ROOT             0x30
 #define PA_MXIO_CWD              0x31
 #define PA_MXIO_REMOTE           0x32
 #define PA_MXIO_PIPE             0x33
 #define PA_MXIO_EVENT            0x34
 #define PA_MXIO_LOGGER           0x35
 #define PA_MXIO_SOCKET           0x36
-
-// Client endpoint for remoteio "/svc" directory provided
-// to enable outbound connections to services.
-#define PA_SERVICE_ROOT          0x3A
 
 // Server endpoint for remoteio "/svc" directory provided
 // to enable handling of inbound connections to services
@@ -194,6 +189,14 @@ struct mx_loader_svc_msg {
 // arg=0, data[] object name (asciiz)
 // reply includes vmo handle on success
 
+#define LOADER_SVC_OP_PUBLISH_DATA_SINK 5
+// arg=0, data[] sink name (asciiz)
+// Request includes a VMO handle.
+
+#define LOADER_SVC_OP_LOAD_DEBUG_CONFIG 6
+// arg=0, data[] configuration (file) name (asciiz)
+// reply includes vmo handle on success
+
 
 // --- Compatibility Defines ---
 // TODO: remove once Fuchsia deps are resolved
@@ -203,7 +206,6 @@ struct mx_loader_svc_msg {
 #define MX_HND_TYPE_USER1 PA_USER1
 #define MX_HND_TYPE_MXIO_PIPE PA_MXIO_PIPE
 #define MX_HND_TYPE_JOB PA_JOB_DEFAULT
-#define MX_HND_TYPE_MXIO_ROOT PA_MXIO_ROOT
 #define MX_HND_TYPE_MXIO_LOGGER PA_MXIO_LOGGER
 
 #ifdef __cplusplus

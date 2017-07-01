@@ -1,4 +1,4 @@
-// Copyright 2016 The Fuchsia Authors
+// Copyright 2017 The Fuchsia Authors
 //
 // Use of this source code is governed by a MIT-style
 // license that can be found in the LICENSE file or at
@@ -8,145 +8,170 @@
 
 #include <assert.h>
 #include <err.h>
-
-#include <arch/ops.h>
-#include <arch/user_copy.h>
-
-#include <kernel/auto_lock.h>
-#include <lib/user_copy.h>
 #include <platform.h>
+#include <pow2.h>
 
+#include <magenta/compiler.h>
 #include <magenta/excp_port.h>
 #include <magenta/rights.h>
 #include <magenta/state_tracker.h>
-#include <magenta/user_copy.h>
+#include <magenta/syscalls/port.h>
 
 #include <mxalloc/new.h>
-#include <mxcpp/new.h>
 
-IOP_Packet* IOP_Packet::Alloc(size_t size) {
-    AllocChecker ac;
-    auto mem = new (&ac) char [sizeof(IOP_Packet) + size];
-    if (!ac.check())
-        return nullptr;
-    return new (mem) IOP_Packet(size);
+#include <kernel/auto_lock.h>
+
+PortPacket::PortPacket() : packet{}, observer(nullptr) {
+    // Note that packet is initialized to zeros.
 }
 
-IOP_Packet* IOP_Packet::Make(const void* data, size_t size) {
-    auto pk = Alloc(size);
-    if (!pk)
-        return nullptr;
-    memcpy(reinterpret_cast<char*>(pk) + sizeof(IOP_Packet), data, size);
-    return pk;
+PortObserver::PortObserver(uint32_t type, Handle* handle, mxtl::RefPtr<PortDispatcher> port,
+                           uint64_t key, mx_signals_t signals)
+    : type_(type),
+      key_(key),
+      trigger_(signals),
+      handle_(handle),
+      port_(mxtl::move(port)) {
+
+    auto& packet = packet_.packet;
+    packet.status = MX_OK;
+    packet.key = key_;
+    packet.type = type_;
+    packet.signal.trigger = trigger_;
 }
 
-IOP_Packet* IOP_Packet::MakeFromUser(const void* data, size_t size) {
-    auto pk = Alloc(size);
-    if (!pk)
-        return nullptr;
+StateObserver::Flags PortObserver::OnInitialize(mx_signals_t initial_state,
+                                                const StateObserver::CountInfo* cinfo) {
+    uint64_t count = 1u;
 
-    auto header = reinterpret_cast<mx_packet_header_t*>(
-        reinterpret_cast<char*>(pk) + sizeof(IOP_Packet));
-
-    auto status = magenta_copy_from_user(data, header, size);
-    header->type = MX_PORT_PKT_TYPE_USER;
-
-    return (status == MX_OK) ? pk : nullptr;
+    if (cinfo) {
+        for (const auto& entry : cinfo->entry) {
+            if ((entry.signal & trigger_) && (entry.count > 0u)) {
+                count = entry.count;
+                break;
+            }
+        }
+    }
+    return MaybeQueue(initial_state, count);
 }
 
-void IOP_Packet::Delete(IOP_Packet* packet) {
-    if (!packet || packet->is_signal)
-        return;
-    packet->~IOP_Packet();
-    delete [] reinterpret_cast<char*>(packet);
+StateObserver::Flags PortObserver::OnStateChange(mx_signals_t new_state) {
+    return MaybeQueue(new_state, 1u);
 }
 
-bool IOP_Packet::CopyToUser(void* data, size_t* size) {
-    if (*size < data_size)
-        return MX_ERR_BUFFER_TOO_SMALL;
-    *size = data_size;
-    return copy_to_user_unsafe(
-        data, reinterpret_cast<char*>(this) + sizeof(IOP_Packet), data_size) == MX_OK;
+StateObserver::Flags PortObserver::OnCancel(Handle* handle) {
+    if (handle_ == handle) {
+        return kHandled | kNeedRemoval;
+    } else {
+        return 0;
+    }
 }
 
-IOP_Signal::IOP_Signal(uint64_t key, mx_signals_t signal)
-    : IOP_Packet(sizeof(payload), true),
-      payload {{key, MX_PORT_PKT_TYPE_IOSN, 0u}, 0u, 0u, signal, 0u},
-      count(1u) {
+StateObserver::Flags PortObserver::OnCancelByKey(Handle* handle, const void* port, uint64_t key) {
+    if ((key_ != key) || (handle_ != handle) || (port_.get() != port))
+        return 0;
+    return kHandled | kNeedRemoval;
 }
+
+void PortObserver::OnRemoved() {
+    if (port_->CanReap(this, &packet_))
+        delete this;
+}
+
+StateObserver::Flags PortObserver::MaybeQueue(mx_signals_t new_state, uint64_t count) {
+    // Always called with the object state lock being held.
+    if ((trigger_ & new_state) == 0u)
+        return 0;
+
+    auto status = port_->Queue(&packet_, new_state, count);
+
+    if ((type_ == MX_PKT_TYPE_SIGNAL_ONE) || (status < 0))
+        return kNeedRemoval;
+
+    return 0;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
 
 mx_status_t PortDispatcher::Create(uint32_t options,
-                                   mxtl::RefPtr<Dispatcher>* dispatcher,
-                                   mx_rights_t* rights) {
+                                     mxtl::RefPtr<Dispatcher>* dispatcher,
+                                     mx_rights_t* rights) {
+    DEBUG_ASSERT(options == 0);
     AllocChecker ac;
     auto disp = new (&ac) PortDispatcher(options);
     if (!ac.check())
         return MX_ERR_NO_MEMORY;
 
-    *rights = MX_DEFAULT_IO_PORT_RIGHTS;
+    *rights = MX_DEFAULT_IO_PORT_V2_RIGHTS;
     *dispatcher = mxtl::AdoptRef<Dispatcher>(disp);
     return MX_OK;
 }
 
 PortDispatcher::PortDispatcher(uint32_t /*options*/)
-    : no_clients_(false) {
-    event_init(&event_, false, 0);
+    : zero_handles_(false) {
 }
 
 PortDispatcher::~PortDispatcher() {
-    FreePacketsLocked();
-    DEBUG_ASSERT(packets_.is_empty());
-    DEBUG_ASSERT(eports_.is_empty());
-    event_destroy(&event_);
-}
-
-void PortDispatcher::FreePacketsLocked() {
-    while (!packets_.is_empty()) {
-        IOP_Packet::Delete(packets_.pop_front());
-    }
-    while (!at_zero_.is_empty()) {
-        auto signal = at_zero_.pop_front();
-        signal->is_signal = false;
-        IOP_Packet::Delete(signal);
-    }
+    DEBUG_ASSERT(zero_handles_);
 }
 
 void PortDispatcher::on_zero_handles() {
     canary_.Assert();
 
-    AutoLock al(&lock_);
-    no_clients_ = true;
-    FreePacketsLocked();
+    {
+        AutoLock al(&lock_);
+        zero_handles_ = true;
 
-    // Unlink and unbind exception ports.
-    while (!eports_.is_empty()) {
-        auto eport = eports_.pop_back();
+        // Unlink and unbind exception ports.
+        while (!eports_.is_empty()) {
+            auto eport = eports_.pop_back();
 
-        // Tell the eport to unbind itself, then drop our ref to it.
-        lock_.Release();  // The eport may call our ::UnlinkExceptionPort
-        eport->OnPortZeroHandles();
-        lock_.Acquire();
+            // Tell the eport to unbind itself, then drop our ref to it.
+            lock_.Release();  // The eport may call our ::UnlinkExceptionPort
+            eport->OnPortZeroHandles();
+            lock_.Acquire();
+        }
     }
+    while (DeQueue(0ull, nullptr) == MX_OK) {}
 }
 
-mx_status_t PortDispatcher::Queue(IOP_Packet* packet) {
+mx_status_t PortDispatcher::QueueUser(const mx_port_packet_t& packet) {
+    canary_.Assert();
+
+    AllocChecker ac;
+    auto port_packet = new (&ac) PortPacket();
+    if (!ac.check())
+        return MX_ERR_NO_MEMORY;
+
+    port_packet->packet = packet;
+    port_packet->packet.type = MX_PKT_TYPE_USER | PKT_FLAG_EPHEMERAL;
+
+    auto status = Queue(port_packet, 0u, 0u);
+    if (status < 0)
+        delete port_packet;
+    return status;
+}
+
+mx_status_t PortDispatcher::Queue(PortPacket* port_packet,
+                                    mx_signals_t observed,
+                                    uint64_t count) {
     canary_.Assert();
 
     int wake_count = 0;
-    mx_status_t status = MX_OK;
     {
         AutoLock al(&lock_);
-        if (no_clients_) {
-            status = MX_ERR_UNAVAILABLE;
-        } else {
-            packets_.push_back(packet);
-            wake_count = event_signal_etc(&event_, false, status);
-        }
-    }
+        if (zero_handles_)
+            return MX_ERR_BAD_STATE;
 
-    if (status != MX_OK) {
-        IOP_Packet::Delete(packet);
-        return status;
+        if (observed) {
+            if (port_packet->InContainer())
+                return MX_OK;
+            port_packet->packet.signal.observed = observed;
+            port_packet->packet.signal.count = count;
+        }
+
+        packets_.push_back(port_packet);
+        wake_count = sema_.Post();
     }
 
     if (wake_count)
@@ -155,91 +180,126 @@ mx_status_t PortDispatcher::Queue(IOP_Packet* packet) {
     return MX_OK;
 }
 
-void* PortDispatcher::Signal(void* cookie, uint64_t key, mx_signals_t signal) {
+mx_status_t PortDispatcher::DeQueue(mx_time_t deadline, mx_port_packet_t* packet) {
     canary_.Assert();
 
-    IOP_Signal* node;
-    int prev_count;
-
-    if (!cookie) {
-        DEBUG_ASSERT(signal);
-        AllocChecker ac;
-        node = new (&ac) IOP_Signal(key, signal);
-        if (!ac.check())
-            return nullptr;
-
-        DEBUG_ASSERT(node->count == 1);
-        prev_count = 0;
-    } else {
-        node = reinterpret_cast<IOP_Signal*>(cookie);
-        prev_count = atomic_add(&node->count, 1);
-        DEBUG_ASSERT(node->is_signal);
-        DEBUG_ASSERT(node->payload.signals == signal);
-        DEBUG_ASSERT(node->payload.hdr.key == key);
-        DEBUG_ASSERT(node->payload.hdr.type == MX_PORT_PKT_TYPE_IOSN);
-    }
-
-    DEBUG_ASSERT(prev_count >= 0);
-
-    int wake_count = 0;
-    {
-        AutoLock al(&lock_);
-
-        if (prev_count == 0) {
-            if (node->InContainer())
-                at_zero_.erase(*node);
-            packets_.push_back(node);
-        }
-
-        wake_count = event_signal_etc(&event_, false, MX_OK);
-    }
-
-    if (wake_count)
-        thread_reschedule();
-
-    return node;
-}
-
-mx_status_t PortDispatcher::Wait(mx_time_t deadline, IOP_Packet** packet) {
-    canary_.Assert();
+    PortPacket* port_packet = nullptr;
+    PortObserver* observer = nullptr;
 
     while (true) {
         {
             AutoLock al(&lock_);
-            if (!packets_.is_empty()) {
-                auto pk = packets_.pop_front();
-                ASSERT(pk);
+            if (packets_.is_empty())
+                goto wait;
 
-                if (!pk->is_signal) {
-                    *packet = pk;
-                } else {
-                    auto signal = static_cast<IOP_Signal*>(pk);
-                    auto prev = atomic_add(&signal->count, -1);
-
-                    // sketchy assert below. Trying to get an early warning
-                    // of unexpected values in the case of MG-520.
-                    DEBUG_ASSERT((prev > 0) && (prev < 1000));
-                    DEBUG_ASSERT(signal->payload.hdr.type == MX_PORT_PKT_TYPE_IOSN);
-
-                    if (prev == 1)
-                        at_zero_.push_back(signal);
-                    else
-                        packets_.push_back(signal);
-                    *packet = signal;
-                }
-
-                return MX_OK;
-            } else {
-                // it's empty, unsignal the event
-                event_unsignal(&event_);
-            }
+            port_packet = packets_.pop_front();
+            observer = CopyLocked(port_packet, packet);
         }
 
-        status_t st = event_wait_deadline(&event_, deadline, true);
+        if (observer)
+            delete observer;
+        else if (packet && (packet->type & PKT_FLAG_EPHEMERAL))
+            delete port_packet;
+        return MX_OK;
+
+wait:
+        status_t st = sema_.Wait(deadline);
         if (st != MX_OK)
             return st;
     }
 }
+
+PortObserver* PortDispatcher::CopyLocked(PortPacket* port_packet, mx_port_packet_t* packet) {
+    if (packet)
+        *packet = port_packet->packet;
+
+    return (port_packet->type() & PKT_FLAG_EPHEMERAL) ? nullptr : port_packet->observer;
+}
+
+bool PortDispatcher::CanReap(PortObserver* observer, PortPacket* port_packet) {
+    canary_.Assert();
+
+    AutoLock al(&lock_);
+    if (!port_packet->InContainer())
+        return true;
+    // The destruction will happen when the packet is dequeued or in CancelQueued()
+    DEBUG_ASSERT(port_packet->observer == nullptr);
+    port_packet->observer = observer;
+    return false;
+}
+
+mx_status_t PortDispatcher::MakeObservers(uint32_t options, Handle* handle,
+                                            uint64_t key, mx_signals_t signals) {
+    canary_.Assert();
+
+    // Called under the handle table lock.
+
+    auto dispatcher = handle->dispatcher();
+    if (!dispatcher->get_state_tracker())
+        return MX_ERR_NOT_SUPPORTED;
+
+    AllocChecker ac;
+    auto type = (options == MX_WAIT_ASYNC_ONCE) ?
+        MX_PKT_TYPE_SIGNAL_ONE : MX_PKT_TYPE_SIGNAL_REP;
+
+    auto observer = new (&ac) PortObserver(type,
+            handle, mxtl::RefPtr<PortDispatcher>(this), key, signals);
+    if (!ac.check())
+        return MX_ERR_NO_MEMORY;
+
+    dispatcher->add_observer(observer);
+    return MX_OK;
+}
+
+bool PortDispatcher::CancelQueued(const void* handle, uint64_t key) {
+    canary_.Assert();
+
+    AutoLock al(&lock_);
+
+    // This loop can take a while if there are many items.
+    // In practice, the number of pending signal packets is
+    // approximately the number of signaled _and_ watched
+    // objects plus the number of pending user-queued
+    // packets.
+    //
+    // There are two strategies to deal with too much
+    // looping here if that is seen in practice.
+    //
+    // 1. Swap the |packets_| list for an empty list and
+    //    release the lock. New arriving packets are
+    //    added to the empty list while the loop happens.
+    //    Readers will be blocked but the watched objects
+    //    will be fully operational. Once processing
+    //    is done the lists are appended.
+    //
+    // 2. Segregate user packets from signal packets
+    //    and deliver them in order via timestamps or
+    //    a side structure.
+
+    bool packet_removed = false;
+
+    for (auto it = packets_.begin(); it != packets_.end();) {
+        if (it->observer == nullptr) {
+            ++it;
+            continue;
+        }
+
+        auto ob_handle = it->observer->handle();
+        auto ob_key = it->observer->key();
+
+        if ((ob_handle == handle) && (ob_key == key)) {
+            auto to_remove = it;
+            ++it;
+            delete packets_.erase(to_remove)->observer;
+            packet_removed = true;
+        } else {
+            ++it;
+        }
+    }
+
+    return packet_removed;
+}
+
 
 void PortDispatcher::LinkExceptionPort(ExceptionPort* eport) {
     canary_.Assert();

@@ -12,10 +12,13 @@
 
 #define IOCTL_VFS_MOUNT_FS \
     IOCTL(IOCTL_KIND_SET_HANDLE, IOCTL_FAMILY_VFS, 0)
-// Unmount the filesystem which 'fd' belongs to.
+// Unmount the filesystem which 'fd' belongs to. Requires O_ADMIN,
+// which is only provided with the original iostate from the
+// root Vnode of a mounted filesystem.
 #define IOCTL_VFS_UNMOUNT_FS \
     IOCTL(IOCTL_KIND_DEFAULT, IOCTL_FAMILY_VFS, 1)
-// If a filesystem is mounted on the node represented by 'fd', unmount it.
+// If a filesystem is mounted on the node represented by 'fd', detach
+// the connection to the filesystem and return it.
 #define IOCTL_VFS_UNMOUNT_NODE \
     IOCTL(IOCTL_KIND_GET_HANDLE, IOCTL_FAMILY_VFS, 2)
 // Add a bootfs vmo to the system fs.
@@ -28,13 +31,6 @@
     IOCTL(IOCTL_KIND_GET_HANDLE, IOCTL_FAMILY_VFS, 5)
 #define IOCTL_VFS_MOUNT_MKDIR_FS \
     IOCTL(IOCTL_KIND_SET_HANDLE, IOCTL_FAMILY_VFS, 6)
-// Watch a directory for changes
-//   in: none
-//   out: handle to channel to get notified on.
-//        Notification messages are as for V2 but only
-//        ever have a single event per message.
-#define IOCTL_VFS_WATCH_DIR \
-    IOCTL(IOCTL_KIND_GET_HANDLE, IOCTL_FAMILY_VFS, 7)
 
 // Watch a directory for changes
 // in: vfs_watch_dir_t
@@ -43,10 +39,11 @@
 // { uint8_t event; uint8_t namelen; uint8_t name[namelen]; }
 // Multiple events may arrive in one message, one after another.
 // Names do not include a terminating null.
-//
-// TODO: Once fully deployed, remove IOCTL_VFS_WATCH_DIR
-#define IOCTL_VFS_WATCH_DIR_V2 \
+#define IOCTL_VFS_WATCH_DIR \
     IOCTL(IOCTL_KIND_SET_HANDLE, IOCTL_FAMILY_VFS, 8)
+
+// TODO: Remove this when the renaming deprecation is complete.
+#define IOCTL_VFS_WATCH_DIR_V2 IOCTL_VFS_WATCH_DIR
 
 typedef struct {
     mx_handle_t channel; // Channel to which watch events will be sent
@@ -82,11 +79,12 @@ typedef struct {
 
 // clang-format off
 
-#define VFS_WATCH_MASK_DELETED  (1u << VFS_WATCH_EVT_DELETED)
-#define VFS_WATCH_MASK_ADDED    (1u << VFS_WATCH_EVT_ADDED)
-#define VFS_WATCH_MASK_REMOVED  (1u << VFS_WATCH_EVT_REMOVED)
-#define VFS_WATCH_MASK_EXISTING (1u << VFS_WATCH_EVT_EXISTING)
-#define VFS_WATCH_MASK_IDLE     (1u << VFS_WATCH_EVT_IDLE)
+#define VFS_WATCH_EVT_MASK(e)   (1u << (e))
+#define VFS_WATCH_MASK_DELETED  VFS_WATCH_EVT_MASK(VFS_WATCH_EVT_DELETED)
+#define VFS_WATCH_MASK_ADDED    VFS_WATCH_EVT_MASK(VFS_WATCH_EVT_ADDED)
+#define VFS_WATCH_MASK_REMOVED  VFS_WATCH_EVT_MASK(VFS_WATCH_EVT_REMOVED)
+#define VFS_WATCH_MASK_EXISTING VFS_WATCH_EVT_MASK(VFS_WATCH_EVT_EXISTING)
+#define VFS_WATCH_MASK_IDLE     VFS_WATCH_EVT_MASK(VFS_WATCH_EVT_IDLE)
 #define VFS_WATCH_MASK_ALL      (0x1Fu)
 
 // clang-format on
@@ -121,10 +119,11 @@ IOCTL_WRAPPER_VAROUT(ioctl_vfs_query_fs, IOCTL_VFS_QUERY_FS, vfs_query_info_t);
 // ssize_t ioctl_vfs_get_token(int fd, mx_handle_t* out);
 IOCTL_WRAPPER_OUT(ioctl_vfs_get_token, IOCTL_VFS_GET_TOKEN, mx_handle_t);
 
-// ssize_t ioctl_vfs_watch_dir(int fd, mx_handle_t* out);
-IOCTL_WRAPPER_OUT(ioctl_vfs_watch_dir, IOCTL_VFS_WATCH_DIR, mx_handle_t);
+// ssize_t ioctl_vfs_watch_dir(int fd, vfs_watch_dir_t* in);
+IOCTL_WRAPPER_IN(ioctl_vfs_watch_dir, IOCTL_VFS_WATCH_DIR_V2, vfs_watch_dir_t);
 
-// ssize_t ioctl_vfs_watch_dir_v2(int fd, vfs_watch_dir_t* in;
+// ssize_t ioctl_vfs_watch_dir_v2(int fd, vfs_watch_dir_t* in);
+__attribute__((deprecated("This has been renamed to ioctl_vfs_watch_dir")))
 IOCTL_WRAPPER_IN(ioctl_vfs_watch_dir_v2, IOCTL_VFS_WATCH_DIR_V2, vfs_watch_dir_t);
 
 #define MOUNT_MKDIR_FLAG_REPLACE 1

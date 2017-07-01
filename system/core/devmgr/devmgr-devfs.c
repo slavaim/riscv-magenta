@@ -14,6 +14,7 @@
 
 #include <mxio/remoteio.h>
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -462,7 +463,7 @@ static void devfs_open(devnode_t* dirdn, mx_handle_t h, char* path, uint32_t fla
     devnode_t* dn = dirdn;
     mx_status_t r = devfs_walk(&dn, path, &path);
 
-    bool pipeline = flags & MXRIO_OFLAG_PIPELINE;
+    bool pipeline = flags & O_PIPELINE;
 
     if (r == MX_ERR_NEXT) {
         // we only partially matched -- there's more path to walk
@@ -662,15 +663,6 @@ static mx_status_t devfs_rio_handler(mxrio_msg_t* msg, void* cookie) {
         }
         break;
     case MXRIO_IOCTL:
-        if (msg->arg2.op == IOCTL_VFS_WATCH_DIR) {
-            mx_status_t r = devfs_watch(dn, msg->handle);
-            if (r == MX_OK) {
-                msg->datalen = sizeof(mx_handle_t);
-                msg->hcount = 1;
-                return msg->datalen;
-            }
-            return r;
-        }
         break;
     }
 

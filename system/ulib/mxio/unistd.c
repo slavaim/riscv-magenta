@@ -12,7 +12,6 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
@@ -297,7 +296,7 @@ mx_status_t __mxio_cleanpath(const char* in, char* out, size_t* outlen, bool* is
     return MX_OK;
 }
 
-static mx_status_t __mxio_open_at(mxio_t** io, int dirfd, const char* path, int flags, uint32_t mode) {
+mx_status_t __mxio_open_at(mxio_t** io, int dirfd, const char* path, int flags, uint32_t mode) {
     if (path == NULL) {
         return MX_ERR_INVALID_ARGS;
     }
@@ -484,9 +483,6 @@ void __libc_extensions_init(uint32_t handle_count,
         }
 
         switch (PA_HND_TYPE(handle_info[n])) {
-        case PA_MXIO_ROOT:
-            mxio_root_handle = mxio_remote_create(h, 0);
-            break;
         case PA_MXIO_CWD:
             mxio_cwd_handle = mxio_remote_create(h, 0);
             break;
@@ -521,11 +517,6 @@ void __libc_extensions_init(uint32_t handle_count,
                 mx_handle_close(h);
             }
             break;
-        case PA_SERVICE_ROOT:
-            mxio_svc_root = h;
-            // do not remove handle, so it is available
-            // to higher level service connection code
-            continue;
         case PA_NS_DIR:
             // we always contine here to not steal the
             // handles from higher level code that may
@@ -606,7 +597,7 @@ mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types) {
     // in normal operation
     mx_status_t r = mxio_root_handle->ops->clone(mxio_root_handle, handles, types);
     if (r > 0) {
-        *types = PA_MXIO_ROOT;
+        *types = PA_MXIO_REMOTE;
     }
     return r;
 }
@@ -865,7 +856,7 @@ ssize_t read(int fd, void* buf, size_t count) {
         if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_READABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_READABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
     return STATUS(status);
@@ -886,7 +877,7 @@ ssize_t write(int fd, const void* buf, size_t count) {
         if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_WRITABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_WRITABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
     return STATUS(status);
@@ -928,7 +919,7 @@ ssize_t pread(int fd, void* buf, size_t size, off_t ofs) {
         if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_READABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_READABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
     return STATUS(status);
@@ -970,7 +961,7 @@ ssize_t pwrite(int fd, const void* buf, size_t size, off_t ofs) {
         if (status != MX_ERR_SHOULD_WAIT || io->flags & MXIO_FLAG_NONBLOCK) {
             break;
         }
-        mxio_wait_fd(fd, MXIO_EVT_WRITABLE, NULL, MX_TIME_INFINITE);
+        mxio_wait_fd(fd, MXIO_EVT_WRITABLE | MXIO_EVT_PEER_CLOSED, NULL, MX_TIME_INFINITE);
     }
     mxio_release(io);
     return STATUS(status);
@@ -1075,29 +1066,34 @@ int fcntl(int fd, int cmd, ...) {
         return 0;
     }
     case F_GETFL: {
-        // TODO(kulakowski) File status flags and access modes.
         mxio_t* io = fd_to_io(fd);
         if (io == NULL) {
             return ERRNO(EBADF);
         }
-        int status = 0;
-        if (io->flags & MXIO_FLAG_NONBLOCK) {
-            status |= O_NONBLOCK;
+        uint32_t flags = 0;
+        int status = STATUS(io->ops->misc(io, MXRIO_FCNTL, 0, F_GETFL, &flags, 0));
+        if (status == 0) {
+            status |= flags;
+            if (io->flags & MXIO_FLAG_NONBLOCK) {
+                status |= O_NONBLOCK;
+            }
         }
         mxio_release(io);
         return status;
     }
     case F_SETFL: {
-        // TODO(kulakowski) File status flags and access modes.
         mxio_t* io = fd_to_io(fd);
         if (io == NULL) {
             return ERRNO(EBADF);
         }
         GET_INT_ARG(status);
-        if (status & O_NONBLOCK) {
-            io->flags |= MXIO_FLAG_NONBLOCK;
-        } else {
-            io->flags &= ~MXIO_FLAG_NONBLOCK;
+        int r = STATUS(io->ops->misc(io, MXRIO_FCNTL, status, F_SETFL, NULL, 0));
+        if (r == 0) {
+            if (status & O_NONBLOCK) {
+                io->flags |= MXIO_FLAG_NONBLOCK;
+            } else {
+                io->flags &= ~MXIO_FLAG_NONBLOCK;
+            }
         }
         mxio_release(io);
         return 0;
@@ -1791,7 +1787,7 @@ int poll(struct pollfd* fds, nfds_t n, int timeout) {
                     uint32_t events = 0;
                     io->ops->wait_end(io, items[j].pending, &events);
                     // mask unrequested events except HUP/ERR
-                    pfd->revents = events & (pfd->events | EPOLLHUP | EPOLLERR);
+                    pfd->revents = events & (pfd->events | POLLHUP | POLLERR);
                     if (pfd->revents != 0) {
                         nfds++;
                     }
@@ -1829,11 +1825,11 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
 
         uint32_t events = 0;
         if (rfds && FD_ISSET(fd, rfds))
-            events |= EPOLLIN;
+            events |= POLLIN;
         if (wfds && FD_ISSET(fd, wfds))
-            events |= EPOLLOUT;
+            events |= POLLOUT;
         if (efds && FD_ISSET(fd, efds))
-            events |= EPOLLERR;
+            events |= POLLERR;
         if (events == 0) {
             continue;
         }
@@ -1878,21 +1874,21 @@ int select(int n, fd_set* restrict rfds, fd_set* restrict wfds, fd_set* restrict
                     uint32_t events = 0;
                     io->ops->wait_end(io, items[j].pending, &events);
                     if (rfds && FD_ISSET(fd, rfds)) {
-                        if (events & EPOLLIN) {
+                        if (events & POLLIN) {
                             nfds++;
                         } else {
                             FD_CLR(fd, rfds);
                         }
                     }
                     if (wfds && FD_ISSET(fd, wfds)) {
-                        if (events & EPOLLOUT) {
+                        if (events & POLLOUT) {
                             nfds++;
                         } else {
                             FD_CLR(fd, wfds);
                         }
                     }
                     if (efds && FD_ISSET(fd, efds)) {
-                        if (events & EPOLLERR) {
+                        if (events & POLLERR) {
                             nfds++;
                         } else {
                             FD_CLR(fd, efds);

@@ -4,6 +4,7 @@
 
 #include <svcfs/svcfs.h>
 
+#include <fcntl.h>
 #include <string.h>
 
 #include <fs/dispatcher.h>
@@ -132,9 +133,11 @@ mx_status_t VnodeDir::Getattr(vnattr_t* attr) {
     return MX_OK;
 }
 
-void VnodeDir::NotifyAdd(const char* name, size_t len) { watcher_.NotifyAdd(name, len); }
+void VnodeDir::Notify(const char* name, size_t len, unsigned event) { watcher_.Notify(name, len, event); }
 mx_status_t VnodeDir::WatchDir(mx_handle_t* out) { return watcher_.WatchDir(out); }
-mx_status_t VnodeDir::WatchDirV2(const vfs_watch_dir_t* cmd) { return watcher_.WatchDirV2(cmd); }
+mx_status_t VnodeDir::WatchDirV2(const vfs_watch_dir_t* cmd) {
+    return watcher_.WatchDirV2(this, cmd);
+}
 
 mx_status_t VnodeDir::Readdir(void* cookie, void* data, size_t len) {
     dircookie_t* c = static_cast<dircookie_t*>(cookie);
@@ -174,7 +177,7 @@ bool VnodeDir::AddService(const char* name, size_t len, ServiceProvider* provide
         dispatcher_, next_node_id_++, mxtl::move(array), provider));
 
     services_.push_back(mxtl::move(vn));
-    NotifyAdd(name, len);
+    Notify(name, len, VFS_WATCH_EVT_ADDED);
     return true;
 }
 

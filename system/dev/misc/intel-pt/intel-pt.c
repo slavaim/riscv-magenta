@@ -156,7 +156,7 @@ static void x86_pt_init(void)
 
     max_leaf = __get_cpuid_max(0, NULL);
     if (max_leaf < 0x14) {
-        xprintf("IPT: No PT support\n");
+        xprintf("IntelPT: No PT support\n");
         return;
     }
 
@@ -171,7 +171,7 @@ static void x86_pt_init(void)
 
     __cpuid_count(0x07, 0, a, b, c, d);
     if (!BIT(b, 25)) {
-        xprintf("IPT: No PT support\n");
+        xprintf("IntelPT: No PT support\n");
         return;
     }
 
@@ -186,7 +186,7 @@ static void x86_pt_init(void)
         ipt_config_mtc_freq_mask = (a1 >> 16) & 0xffff;
         ipt_config_cyc_thresh_mask = b1 & 0xffff;
         ipt_config_psb_freq_mask = (b1 >> 16) & 0xffff;
-        ipt_config_num_addr_ranges = a1 & 0x3;
+        ipt_config_num_addr_ranges = a1 & 0x7;
     }
 
     if (max_leaf >= 0x15) {
@@ -208,6 +208,13 @@ static void x86_pt_init(void)
     ipt_config_output_single = !!BIT(c, 2);
     ipt_config_output_transport = !!BIT(c, 3);
     ipt_config_lip = !!BIT(c, 31);
+
+    xprintf("Intel Processor Trace configuration for this chipset:\n");
+    // No need to print everything, but these are useful.
+    xprintf("mtc_freq_mask:   0x%x\n", ipt_config_mtc_freq_mask);
+    xprintf("cyc_thresh_mask: 0x%x\n", ipt_config_cyc_thresh_mask);
+    xprintf("psb_freq_mask:   0x%x\n", ipt_config_psb_freq_mask);
+    xprintf("num addr ranges: %u\n", ipt_config_num_addr_ranges);
 }
 
 // Set the tracing mode to one of cpus or threads.
@@ -462,32 +469,56 @@ static mx_status_t x86_pt_alloc_buffer(ipt_device_t* ipt_dev,
         return MX_ERR_INVALID_ARGS;
 
     uint64_t settable_ctl_mask = (
-        IPT_CTL_OS_ALLOWED |
-        IPT_CTL_USER_ALLOWED |
-        IPT_CTL_TSC_EN |
-        IPT_CTL_DIS_RETC |
-        IPT_CTL_BRANCH_EN
+        IPT_CTL_OS_ALLOWED_MASK |
+        IPT_CTL_USER_ALLOWED_MASK |
+        IPT_CTL_TSC_EN_MASK |
+        IPT_CTL_DIS_RETC_MASK |
+        IPT_CTL_BRANCH_EN_MASK
         );
     if (ipt_config_ptwrite)
-        settable_ctl_mask |= IPT_CTL_PTW_EN | IPT_CTL_FUP_ON_PTW;
+        settable_ctl_mask |= IPT_CTL_PTW_EN_MASK | IPT_CTL_FUP_ON_PTW_MASK;
     if (ipt_config_cr3_filtering)
-        settable_ctl_mask |= IPT_CTL_CR3_FILTER;
+        settable_ctl_mask |= IPT_CTL_CR3_FILTER_MASK;
     if (ipt_config_mtc)
-        settable_ctl_mask |= IPT_CTL_MTC_EN | IPT_CTL_MTC_FREQ;
+        settable_ctl_mask |= IPT_CTL_MTC_EN_MASK | IPT_CTL_MTC_FREQ_MASK;
     if (ipt_config_power_events)
-        settable_ctl_mask |= IPT_CTL_POWER_EVENT_EN;
-    if (ipt_config_ip_filtering)
-        settable_ctl_mask |= (IPT_CTL_ADDR0 |
-                              IPT_CTL_ADDR1 |
-                              IPT_CTL_ADDR2 |
-                              IPT_CTL_ADDR3);
+        settable_ctl_mask |= IPT_CTL_POWER_EVENT_EN_MASK;
+    if (ipt_config_ip_filtering) {
+        if (ipt_config_num_addr_ranges >= 1)
+            settable_ctl_mask |= IPT_CTL_ADDR0_MASK;
+        if (ipt_config_num_addr_ranges >= 2)
+            settable_ctl_mask |= IPT_CTL_ADDR1_MASK;
+        if (ipt_config_num_addr_ranges >= 3)
+            settable_ctl_mask |= IPT_CTL_ADDR2_MASK;
+        if (ipt_config_num_addr_ranges >= 4)
+            settable_ctl_mask |= IPT_CTL_ADDR3_MASK;
+    }
     if (ipt_config_psb)
-        settable_ctl_mask |= (IPT_CTL_CYC_EN |
-                              IPT_CTL_PSB_FREQ |
-                              IPT_CTL_CYC_THRESH);
+        settable_ctl_mask |= (IPT_CTL_CYC_EN_MASK |
+                              IPT_CTL_PSB_FREQ_MASK |
+                              IPT_CTL_CYC_THRESH_MASK);
     if ((config->ctl & ~settable_ctl_mask) != 0) {
         xprintf("bad ctl, requested 0x%" PRIx64 ", valid 0x%" PRIx64 "\n",
                 config->ctl, settable_ctl_mask);
+        return MX_ERR_INVALID_ARGS;
+    }
+
+    uint32_t mtc_freq = (uint32_t) ((config->ctl & IPT_CTL_MTC_FREQ_MASK) >> IPT_CTL_MTC_FREQ_SHIFT);
+    if (mtc_freq != 0 && ((1 << mtc_freq) & ipt_config_mtc_freq_mask) == 0) {
+        xprintf("bad mtc_freq value, requested 0x%x, valid mask 0x%x\n",
+                mtc_freq, ipt_config_mtc_freq_mask);
+        return MX_ERR_INVALID_ARGS;
+    }
+    uint32_t cyc_thresh = (uint32_t) ((config->ctl & IPT_CTL_CYC_THRESH_MASK) >> IPT_CTL_CYC_THRESH_SHIFT);
+    if (cyc_thresh != 0 && ((1 << cyc_thresh) & ipt_config_cyc_thresh_mask) == 0) {
+        xprintf("bad cyc_thresh value, requested 0x%x, valid mask 0x%x\n",
+                cyc_thresh, ipt_config_cyc_thresh_mask);
+        return MX_ERR_INVALID_ARGS;
+    }
+    uint32_t psb_freq = (uint32_t) ((config->ctl & IPT_CTL_PSB_FREQ_MASK) >> IPT_CTL_PSB_FREQ_SHIFT);
+    if (psb_freq != 0 && ((1 << psb_freq) & ipt_config_psb_freq_mask) == 0) {
+        xprintf("bad psb_freq value, requested 0x%x, valid mask 0x%x\n",
+                psb_freq, ipt_config_psb_freq_mask);
         return MX_ERR_INVALID_ARGS;
     }
 
@@ -581,7 +612,7 @@ static mx_status_t x86_pt_cpu_mode_start(ipt_device_t* ipt_dev) {
 
         mx_x86_pt_regs_t regs;
         regs.ctl = per_trace->ctl;
-        regs.ctl |= IPT_CTL_TOPA | IPT_CTL_TRACE_EN;
+        regs.ctl |= IPT_CTL_TOPA_MASK | IPT_CTL_TRACE_EN_MASK;
         regs.status = per_trace->status;
         regs.output_base = per_trace->output_base;
         regs.output_mask_ptrs = per_trace->output_mask_ptrs;

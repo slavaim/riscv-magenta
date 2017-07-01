@@ -73,7 +73,7 @@ static char StateChar(const ProcessDispatcher& pd) {
 }
 
 static const char* ObjectTypeToString(mx_obj_type_t type) {
-    static_assert(MX_OBJ_TYPE_LAST == 24, "need to update switch below");
+    static_assert(MX_OBJ_TYPE_LAST == 23, "need to update switch below");
 
     switch (type) {
         case MX_OBJ_TYPE_PROCESS: return "process";
@@ -86,14 +86,12 @@ static const char* ObjectTypeToString(mx_obj_type_t type) {
         case MX_OBJ_TYPE_IOMAP: return "io-map";
         case MX_OBJ_TYPE_PCI_DEVICE: return "pci-device";
         case MX_OBJ_TYPE_LOG: return "log";
-        case MX_OBJ_TYPE_WAIT_SET: return "wait-set";
         case MX_OBJ_TYPE_SOCKET: return "socket";
         case MX_OBJ_TYPE_RESOURCE: return "resource";
         case MX_OBJ_TYPE_EVENT_PAIR: return "event-pair";
         case MX_OBJ_TYPE_JOB: return "job";
         case MX_OBJ_TYPE_VMAR: return "vmar";
         case MX_OBJ_TYPE_FIFO: return "fifo";
-        case MX_OBJ_TYPE_IOPORT2: return "portv2";
         case MX_OBJ_TYPE_HYPERVISOR: return "hypervisor";
         case MX_OBJ_TYPE_GUEST: return "guest";
         case MX_OBJ_TYPE_TIMER: return "timer";
@@ -147,7 +145,7 @@ static void FormatHandleTypeCount(const ProcessDispatcher& pd,
              types[MX_OBJ_TYPE_CHANNEL],
              // Events and event pairs:
              types[MX_OBJ_TYPE_EVENT] + types[MX_OBJ_TYPE_EVENT_PAIR],
-             types[MX_OBJ_TYPE_IOPORT2]
+             types[MX_OBJ_TYPE_IOPORT]
              );
 }
 

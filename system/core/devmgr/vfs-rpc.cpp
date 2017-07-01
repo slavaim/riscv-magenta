@@ -33,9 +33,11 @@ namespace memfs {
 
 static VnodeMemfs* global_vfs_root;
 
-void VnodeDir::NotifyAdd(const char* name, size_t len) { watcher_.NotifyAdd(name, len); }
+void VnodeDir::Notify(const char* name, size_t len, unsigned event) { watcher_.Notify(name, len, event); }
 mx_status_t VnodeDir::WatchDir(mx_handle_t* out) { return watcher_.WatchDir(out); }
-mx_status_t VnodeDir::WatchDirV2(const vfs_watch_dir_t* cmd) { return watcher_.WatchDirV2(cmd); }
+mx_status_t VnodeDir::WatchDirV2(const vfs_watch_dir_t* cmd) {
+    return watcher_.WatchDirV2(this, cmd);
+}
 
 } // namespace memfs
 
@@ -54,7 +56,7 @@ mx_handle_t vfs_create_root_handle(VnodeMemfs* vn) {
         return r;
     }
 
-    if ((r = vn->Serve(h1, 0)) < 0) { // Consumes 'h1'
+    if ((r = vn->Serve(h1, O_ADMIN)) < 0) { // Consumes 'h1'
         vn->Close();
         mx_handle_close(h2);
         return r;

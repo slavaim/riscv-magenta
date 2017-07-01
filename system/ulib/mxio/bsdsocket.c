@@ -4,11 +4,12 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <threads.h>
 #include <unistd.h>
@@ -28,14 +29,26 @@ static mx_status_t mxio_getsockopt(mxio_t* io, int level, int optname,
                                    void* restrict optval,
                                    socklen_t* restrict optlen);
 
+static mtx_t netstack_lock = MTX_INIT;
+static int netstack = INT_MIN;
+
+int get_netstack(void) {
+    mtx_lock(&netstack_lock);
+    if (netstack == INT_MIN)
+        netstack = open("/svc/net.Netstack", O_PIPELINE | O_RDWR);
+    int result = netstack;
+    mtx_unlock(&netstack_lock);
+    return result;
+}
+
 int socket(int domain, int type, int protocol) {
+
     mxio_t* io = NULL;
     mx_status_t r;
 
     char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/%s/%d/%d/%d", MXRIO_SOCKET_ROOT,
-                     MXRIO_SOCKET_DIR_SOCKET, domain, type & ~SOCK_NONBLOCK,
-                     protocol);
+    int n = snprintf(path, sizeof(path), "%s/%d/%d/%d", MXRIO_SOCKET_DIR_SOCKET,
+                     domain, type & ~SOCK_NONBLOCK, protocol);
     if (n < 0 || n >= (int)sizeof(path)) {
         return ERRNO(EINVAL);
     }
@@ -44,7 +57,7 @@ int socket(int domain, int type, int protocol) {
     // if necessary.
     // TODO: move to a better mechanism when available.
     unsigned retry = 0;
-    while ((r = __mxio_open(&io, path, 0, 0)) == MX_ERR_NOT_FOUND) {
+    while ((r = __mxio_open_at(&io, get_netstack(), path, 0, 0)) == MX_ERR_NOT_FOUND) {
         if (retry >= 24) {
             // 10-second timeout
             return ERRNO(EIO);
@@ -98,13 +111,13 @@ int connect(int fd, const struct sockaddr* addr, socklen_t len) {
     }
 
     // wait for the completion
-    uint32_t events = EPOLLOUT;
+    uint32_t events = POLLOUT;
     mx_handle_t h;
     mx_signals_t sigs;
     io->ops->wait_begin(io, events, &h, &sigs);
     r = mx_object_wait_one(h, sigs, MX_TIME_INFINITE, &sigs);
     io->ops->wait_end(io, sigs, &events);
-    if (!(events & EPOLLOUT)) {
+    if (!(events & POLLOUT)) {
         mxio_release(io);
         return ERRNO(EIO);
     }
@@ -176,13 +189,13 @@ int accept4(int fd, struct sockaddr* restrict addr, socklen_t* restrict len,
                 return EWOULDBLOCK;
             }
             // wait for an incoming connection
-            uint32_t events = EPOLLIN;
+            uint32_t events = POLLIN;
             mx_handle_t h;
             mx_signals_t sigs;
             io->ops->wait_begin(io, events, &h, &sigs);
             r = mx_object_wait_one(h, sigs, MX_TIME_INFINITE, &sigs);
             io->ops->wait_end(io, sigs, &events);
-            if (!(events & EPOLLIN)) {
+            if (!(events & POLLIN)) {
                 mxio_release(io);
                 return ERRNO(EIO);
             }
@@ -240,8 +253,8 @@ int getaddrinfo(const char* __restrict node,
     // if necessary.
     // TODO: move to a better mechanism when available.
     unsigned retry = 0;
-    while ((r = __mxio_open(&io, MXRIO_SOCKET_ROOT "/" MXRIO_SOCKET_DIR_NONE,
-                            0, 0)) == MX_ERR_NOT_FOUND) {
+    while ((r = __mxio_open_at(&io, get_netstack(), MXRIO_SOCKET_DIR_NONE,
+                               0, 0)) == MX_ERR_NOT_FOUND) {
         if (retry >= 24) {
             // 10-second timeout
             return EAI_AGAIN;

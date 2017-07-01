@@ -19,7 +19,7 @@
 static bool basic_test() {
     BEGIN_TEST;
     mx::handle timer;
-    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.get_address()), MX_OK, "");
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_OK, "");
 
     mx_signals_t pending;
     EXPECT_EQ(timer.wait_one(MX_TIMER_SIGNALED, 0u, &pending), MX_ERR_TIMED_OUT, "");
@@ -39,7 +39,7 @@ static bool basic_test() {
 static bool restart_test() {
     BEGIN_TEST;
     mx::handle timer;
-    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.get_address()), MX_OK, "");
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_OK, "");
 
     mx_signals_t pending;
     for (int ix = 0; ix != 10; ++ix) {
@@ -57,10 +57,10 @@ static bool invalid_calls() {
     BEGIN_TEST;
 
     mx::handle timer;
-    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_UTC, timer.get_address()), MX_ERR_INVALID_ARGS, "");
-    ASSERT_EQ(mx_timer_create(1, MX_CLOCK_MONOTONIC, timer.get_address()), MX_ERR_INVALID_ARGS, "");
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_UTC, timer.reset_and_get_address()), MX_ERR_INVALID_ARGS, "");
+    ASSERT_EQ(mx_timer_create(1, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_ERR_INVALID_ARGS, "");
 
-    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.get_address()), MX_OK, "");
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_OK, "");
     ASSERT_EQ(mx_timer_start(timer.get(), 0u, 0u, 0u), MX_ERR_INVALID_ARGS, "");
     ASSERT_EQ(mx_timer_start(timer.get(), MX_TIMER_MIN_DEADLINE - 1, 0u, 0u), MX_ERR_INVALID_ARGS, "");
 
@@ -74,7 +74,7 @@ static bool edge_cases() {
     BEGIN_TEST;
 
     mx::handle timer;
-    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.get_address()), MX_OK, "");
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_OK, "");
     ASSERT_EQ(mx_timer_start(timer.get(), MX_TIMER_MIN_DEADLINE, 0u, 0u), MX_OK, "");
     ASSERT_EQ(mx_timer_start(timer.get(), MX_TIMER_MIN_DEADLINE, MX_TIMER_MIN_PERIOD, 0u), MX_OK, "");
 
@@ -85,7 +85,7 @@ static bool periodic() {
     BEGIN_TEST;
 
     mx::handle timer;
-    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.get_address()), MX_OK, "");
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_OK, "");
 
     const auto deadline_timer = mx_deadline_after(MX_MSEC(1));
     const auto period = MX_USEC(500);
@@ -107,12 +107,32 @@ static bool periodic() {
     END_TEST;
 }
 
+// furiously spin resetting the timer, trying to race with it going off to look for
+// race conditions.
+static bool restart_race() {
+    BEGIN_TEST;
+
+    const mx_time_t kTestDuration = MX_SEC(5);
+    auto start = mx_time_get(MX_CLOCK_MONOTONIC);
+
+    mx::handle timer;
+    ASSERT_EQ(mx_timer_create(0, MX_CLOCK_MONOTONIC, timer.reset_and_get_address()), MX_OK, "");
+    while (mx_time_get(MX_CLOCK_MONOTONIC) - start < kTestDuration) {
+        ASSERT_EQ(mx_timer_start(timer.get(), MX_TIMER_MIN_DEADLINE, MX_TIMER_MIN_PERIOD, 0u), MX_OK, "");
+    }
+
+    EXPECT_EQ(mx_timer_cancel(timer.get()), MX_OK, "");
+
+    END_TEST;
+}
+
 BEGIN_TEST_CASE(timers_test)
 RUN_TEST(basic_test)
 RUN_TEST(restart_test)
 RUN_TEST(invalid_calls)
 RUN_TEST(edge_cases)
 RUN_TEST(periodic)
+RUN_TEST(restart_race)
 END_TEST_CASE(timers_test)
 
 int main(int argc, char** argv) {

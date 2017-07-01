@@ -12,13 +12,13 @@ MODULE := $(LOCAL_DIR)
 MODULE_DEPS := \
 	kernel/lib/debug \
 	kernel/lib/dpc \
+	kernel/lib/explicit-memory \
 	kernel/lib/heap \
 	kernel/lib/libc \
 	kernel/lib/mxtl \
 	kernel/lib/crypto \
 	third_party/lib/safeint \
 	kernel/app/tests \
-
 
 MODULE_SRCS := \
 	$(LOCAL_DIR)/debug.c \
