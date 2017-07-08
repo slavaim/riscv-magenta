@@ -156,13 +156,13 @@ x86_64_syscall_result unknown_syscall(uint64_t syscall_num, uint64_t ip) {
 
 void riscv_syscall(struct pt_regs*  regs)
 {
-    uint64_t syscall_num = regs->t0;
+    uint64_t syscall_num = regs->t0 & 0xFFFFFFFFLL;
     uint64_t syscall_imm = regs->t0 >> 32;
 
     ktrace_tiny(TAG_SYSCALL_ENTER, ((uint32_t)syscall_num << 8) | arch_curr_cpu_num());
 
     /* check for magic value to differentiate our syscalls */
-    if (unlikely(syscall_imm != 0xf0f)) {
+    if (unlikely(syscall_imm != 0xff00ff)) {
         LTRACEF("syscall does not have magenta magic, %#" PRIx64
                 " @ PC %#" PRIx64 "\n", syscall_num, regs->sepc);
         regs->a0 = MX_ERR_BAD_SYSCALL;

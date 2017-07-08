@@ -37,6 +37,9 @@ MODULE_COMPILEFLAGS += -Ithird_party/ulib/musl/src/internal
 # Make sure there are never any PLT entries generated.
 MODULE_COMPILEFLAGS += -fvisibility=hidden
 
+# RISCV debug build
+MODULE_COMPILEFLAGS += -g
+
 # We don't have normal setup, so safe-stack is a non-starter.
 MODULE_COMPILEFLAGS += $(NO_SAFESTACK)
 
