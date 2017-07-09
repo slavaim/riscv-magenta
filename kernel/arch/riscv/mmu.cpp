@@ -52,9 +52,9 @@ void* allocate_pt(paddr_t* _pa)
 
 static
 inline
-void free_pt(void* va, size_t count)
+void free_pt(void* va)
 {
-    pmm_free_kpages(va, count);
+    pmm_free_kpages(va, 1);
 }
 
 /* initialize per address space */
@@ -335,6 +335,291 @@ arch_mmu_map(
 }
 
 static
+void
+riscv64_mmu_pte_gc(
+    vaddr_t vaddr_in,
+    size_t  size_in,
+    pgd_t*  top_table
+)
+{
+    vaddr_t  vaddr = vaddr_in;
+    size_t   size  = size_in;
+
+    //
+    // Free the PTE tables, for the kernel keep
+    // the page tables. In case of the kernel at least
+    // PMD ( or PUD if exist ) should be keept
+    // as it is not possible to invalidate PGD
+    // entries for all processes
+    //
+    if (kernel_init_pgd == top_table){
+
+        //
+        // kernel space page table is not subject to Garbage Collection
+        //
+        return;
+    }
+
+    //
+    // an exhaustive search is a very ugly solution,
+    // the better one is to keep the number of valid PTEs
+    // in the corresponding vm_page_t , TO_DO_RISCV
+    //
+
+    while (size) {
+
+        size_t   chunk_size;
+
+        //
+        // get a PGD entry
+        //
+        pgd_t* pgd = pgd_offset(top_table, vaddr);
+        if (pgd_present(*pgd)) {
+
+            //
+            // get a PUD entry
+            //
+            pud_t *pud = pud_offset(pgd, vaddr);
+            DEBUG_ASSERT(!pud_huge(*pud));
+            if (pud_huge(*pud))
+                panic("pdu_huge(*pud) in riscv64_mmu_map");
+
+            if (pud_present(*pud)) {
+
+                //
+                // get a PMD entry
+                //
+                pmd_t *pmd = pmd_offset(pud, vaddr);
+                DEBUG_ASSERT(!pmd_huge(*pmd));
+                if (pmd_huge(*pmd))
+                    panic("pmd_huge(*pmd) in riscv64_mmu_map");
+
+                if (pmd_present(*pmd)) {
+
+                    uint none_count = 0;
+                    uint max_entries = PMD_PAGE_SIZE / PTE_PAGE_SIZE;
+
+                    assert(max_entries >= 1);
+
+                    for (; none_count<max_entries; ++none_count) {
+
+                        pte_t *pte = pte_offset(pmd, vaddr + none_count * PTE_PAGE_SIZE);
+                        if (!pte_none(*pte))
+                            break;
+                    }
+
+                    if (none_count == max_entries) {
+
+                        free_pt(paddr_to_kvaddr(pmd_to_phys(*pmd)));
+
+                        //
+                        // invalidate the PMD entry
+                        //
+                        pte_set_none(reinterpret_cast<pte_t*>(pmd));
+                    }
+                } // end if (pmd_present(*pmd)) 
+
+                chunk_size = min(size, PMD_PAGE_SIZE);
+
+            } else {
+                 chunk_size = min(size, PUD_PAGE_SIZE);
+            }
+        } else {
+            chunk_size = min(size, PGD_PAGE_SIZE);
+        }
+
+        //
+        // move to the next page
+        //
+        vaddr += chunk_size;
+        size  -= chunk_size;
+    } // end while
+}
+
+static
+void
+riscv64_mmu_pmd_gc(
+    vaddr_t vaddr_in,
+    size_t  size_in,
+    pgd_t*  top_table
+)
+{
+    vaddr_t  vaddr = vaddr_in;
+    size_t   size  = size_in;
+
+    //
+    // Free the PMD tables, for the kernel keep
+    // the page tables. In case of the kernel at least
+    // PMD ( or PUD if exist ) should be keept
+    // as it is not possible to invalidate PGD
+    // entries for all processes
+    //
+    if (kernel_init_pgd == top_table){
+
+        //
+        // kernel space page table is not subject to Garbage Collection
+        //
+        return;
+    }
+
+    //
+    // an exhaustive search is a very ugly solution,
+    // the better one is to keep the number of valid PTEs
+    // in the corresponding vm_page_t , TO_DO_RISCV
+    //
+
+    while (size) {
+
+        size_t   chunk_size;
+
+        //
+        // get a PGD entry
+        //
+        pgd_t* pgd = pgd_offset(top_table, vaddr);
+        if (pgd_present(*pgd)) {
+
+            //
+            // get a PUD entry
+            //
+            pud_t *pud = pud_offset(pgd, vaddr);
+            DEBUG_ASSERT(!pud_huge(*pud));
+            if (pud_huge(*pud))
+                panic("pdu_huge(*pud) in riscv64_mmu_map");
+
+            if (pud_present(*pud)) {
+
+                uint none_count = 0;
+                uint max_entries = PUD_PAGE_SIZE / PMD_PAGE_SIZE;
+
+                assert(max_entries >= 1);
+
+                for (; none_count < max_entries; ++none_count) {
+
+                    pmd_t* pmd = pmd_offset(pud, vaddr + none_count * PUD_PAGE_SIZE);
+                    if (!pte_none(*reinterpret_cast<pte_t*>(pmd)))
+                        break;
+                }
+
+                if (none_count == max_entries) {
+
+                    free_pt(paddr_to_kvaddr(pud_to_phys(*pud)));
+
+                    //
+                    // invalidate the PUD entry
+                    //
+                    pte_set_none(reinterpret_cast<pte_t*>(pud));
+                }
+            } // end if (pud_present(*pud))
+
+            chunk_size = min(size, PUD_PAGE_SIZE);
+
+        } else {
+            chunk_size = min(size, PGD_PAGE_SIZE);
+        }
+
+        //
+        // move to the next area
+        //
+        vaddr += chunk_size;
+        size  -= chunk_size;
+    } // end while
+}
+
+static
+void
+riscv64_mmu_pud_gc(
+    vaddr_t vaddr_in,
+    size_t  size_in,
+    pgd_t*  top_table
+)
+{
+    vaddr_t  vaddr = vaddr_in;
+    size_t   size  = size_in;
+
+    //
+    // Free the PUD tables, for the kernel keep
+    // the page tables. In case of the kernel at least
+    // PMD ( or PUD if exist ) should be keept
+    // as it is not possible to invalidate PGD
+    // entries for all processes
+    //
+    if (kernel_init_pgd == top_table){
+
+        //
+        // kernel space page table is not subject to Garbage Collection
+        //
+        return;
+    }
+
+    //
+    // an exhaustive search is a very ugly solution,
+    // the better one is to keep the number of valid PTEs
+    // in the corresponding vm_page_t , TO_DO_RISCV
+    //
+
+    while (size) {
+
+        size_t   chunk_size;
+
+        //
+        // get a PGD entry
+        //
+        pgd_t* pgd = pgd_offset(top_table, vaddr);
+        if (pgd_present(*pgd)) {
+
+            uint none_count = 0;
+            uint max_entries = PGD_PAGE_SIZE / PUD_PAGE_SIZE;
+
+            assert(max_entries >= 1);
+
+            for (; none_count < max_entries; ++none_count) {
+
+                pud_t* pud = pud_offset(pgd, vaddr + none_count * PUD_PAGE_SIZE);
+                if (!pte_none(*reinterpret_cast<pte_t*>(pud)))
+                    break;
+            }
+
+            if (none_count == max_entries) {
+
+                free_pt(paddr_to_kvaddr(pgd_to_phys(*pgd)));
+
+                //
+                // invalidate the PGD entry
+                //
+                pte_set_none(reinterpret_cast<pte_t*>(pgd));
+            }
+        }
+
+        chunk_size = min(size, PGD_PAGE_SIZE);
+
+        //
+        // move to the next area
+        //
+        vaddr += chunk_size;
+        size -= chunk_size;
+    } // end while
+}
+
+static
+void
+riscv64_mmu_pt_gc(
+    vaddr_t vaddr_in,
+    size_t  size_in,
+    pgd_t*  top_table
+)
+{    
+    if ((vaddr_in & PAGE_MASK_LOW) ||
+        (size_in & PAGE_MASK_LOW)) {
+        panic("An unaligned address range in riscv64_mmu_pt_gc");
+        return;
+    }
+
+    riscv64_mmu_pte_gc(vaddr_in, size_in, top_table);
+    riscv64_mmu_pmd_gc(vaddr_in, size_in, top_table);
+    riscv64_mmu_pud_gc(vaddr_in, size_in, top_table);
+}
+
+static
 ssize_t
 riscv64_mmu_unmap(
     vaddr_t vaddr_in,
@@ -344,18 +629,16 @@ riscv64_mmu_unmap(
 {
     vaddr_t  vaddr = vaddr_in;
     size_t   size  = size_in;
-    size_t   chunk_size;
-    size_t   unmapped_size;
+    size_t   unmapped_size = 0;
 
     if ((vaddr & PAGE_MASK_LOW) ||
         (size & PAGE_MASK_LOW)) {
         return MX_ERR_INVALID_ARGS;
     }
 
-    unmapped_size = 0;
-    chunk_size = PAGE_SIZE;
-
     while (size) {
+
+        size_t   chunk_size;
 
         //
         // get a PGD entry
@@ -419,21 +702,11 @@ riscv64_mmu_unmap(
         unmapped_size += chunk_size;
     } // end while
 
-    //
-    // Free the page tables, for the kernel keep
-    // the page tables. In case of the kernel at least
-    // PMD ( or PUD if exist ) should be keept
-    // as it is not possible to invalidate PGD
-    // entries for all processes
-    //
-    if (kernel_init_pgd != top_table && unmapped_size > 0) {
-
+    if (unmapped_size > 0) {
         //
-        // an exhaustive search is a very ugly solution,
-        // the better one is to keep the number of valid PTEs
-        // in the corresponding vm_page_t , TO_DO_RISCV
+        // invoke garbage collection for the page table
         //
-        PANIC_UNIMPLEMENTED;
+        riscv64_mmu_pt_gc(vaddr_in, unmapped_size, top_table);
     }
 
     return unmapped_size;

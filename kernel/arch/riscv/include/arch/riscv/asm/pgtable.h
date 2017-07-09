@@ -24,7 +24,7 @@
     #define PGLEVEL_BITS    (9)
 
     #define PTE_PAGE_SIZE   PAGE_SIZE
-    #define PMD_PAGE_SIZE   (PAGE_SIZE << PGLEVEL_BITS)
+    #define PMD_PAGE_SIZE   (PTE_PAGE_SIZE << PGLEVEL_BITS)
     #define PUD_PAGE_SIZE   PGD_PAGE_SIZE /* no pud, pud == pgd */
     #define PGD_PAGE_SIZE   (PMD_PAGE_SIZE << PGLEVEL_BITS)
 
