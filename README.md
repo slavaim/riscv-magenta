@@ -168,7 +168,7 @@ pmm arenas
 [00636.274] 00000.00000> 		mmu          0                (0 bytes)
 ```
  
-A system booting with a user process that does some chores and terminates.
+A system booting with a user process that does some chores and terminates. The system panics as the last user process terminated.
 
 ```
 [1266874889.709] 00000.00000> Available physical memory: 2032dMB
