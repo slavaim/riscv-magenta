@@ -406,10 +406,10 @@ status_t VmObjectPaged::CommitRange(uint64_t offset, uint64_t len, uint64_t* com
                 return MX_ERR_NEXT;
             }, expected_next_off, end);
 
-    // If expected_next_off didn't advance, then no pages were present.
-    if (expected_next_off == offset) {
-        count = (end - offset) / PAGE_SIZE;
-    }
+    // If expected_next_off isn't at the end of the range, there was a gap at
+    // the end.  Add it back in
+    DEBUG_ASSERT(end >= expected_next_off);
+    count += (end - expected_next_off) / PAGE_SIZE;
     if (count == 0)
         return MX_OK;
 
@@ -890,19 +890,17 @@ status_t VmObjectPaged::Lookup(uint64_t offset, uint64_t len, uint pf_flags,
         return status;
     }
 
-    // If expected_next_off didn't advance, no page was present.
-    if (expected_next_off == start_page_offset) {
-        for (uint64_t off = start_page_offset; off < end_page_offset; off += PAGE_SIZE) {
-            paddr_t pa;
-            status_t status = GetPageLocked(off, pf_flags, nullptr, &pa);
-            if (status != MX_OK) {
-                return MX_ERR_NO_MEMORY;
-            }
-            const size_t index = (off - start_page_offset) / PAGE_SIZE;
-            status = lookup_fn(context, off, index, pa);
-            if (status != MX_OK) {
-                return status;
-            }
+    // If expected_next_off isn't at the end, there's a gap to process
+    for (uint64_t off = expected_next_off; off < end_page_offset; off += PAGE_SIZE) {
+        paddr_t pa;
+        status_t status = GetPageLocked(off, pf_flags, nullptr, &pa);
+        if (status != MX_OK) {
+            return MX_ERR_NO_MEMORY;
+        }
+        const size_t index = (off - start_page_offset) / PAGE_SIZE;
+        status = lookup_fn(context, off, index, pa);
+        if (status != MX_OK) {
+            return status;
         }
     }
 

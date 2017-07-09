@@ -89,10 +89,7 @@ void ChannelDispatcher::RemoveWaiter(MessageWaiter* waiter) {
     waiters_.erase(*waiter);
 }
 
-// Thread safety analysis disabled as this accesses guarded member variables without holding
-// |lock_| after it knows there are no other references from other threads. See comment on last
-// statement.
-void ChannelDispatcher::on_zero_handles() TA_NO_THREAD_SAFETY_ANALYSIS {
+void ChannelDispatcher::on_zero_handles() {
     canary_.Assert();
 
     // Detach other endpoint
@@ -233,7 +230,7 @@ status_t ChannelDispatcher::ResumeInterruptedCall(mx_time_t deadline,
     // (2) Wait for notification via waiter's event or for the
     // deadline to hit.
     mx_status_t status = waiter->Wait(deadline);
-    if (status == MX_ERR_INTERRUPTED_RETRY) {
+    if (status == MX_ERR_INTERNAL_INTR_RETRY) {
         // If we got interrupted, return out to usermode, but
         // do not clear the waiter.
         return status;

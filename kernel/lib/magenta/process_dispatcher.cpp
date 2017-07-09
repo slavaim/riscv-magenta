@@ -278,16 +278,8 @@ void ProcessDispatcher::RemoveThread(UserThread* t) {
         job_->RemoveChildProcess(this);
 }
 
-void ProcessDispatcher::on_zero_handles() TA_NO_THREAD_SAFETY_ANALYSIS {
+void ProcessDispatcher::on_zero_handles() {
     LTRACE_ENTRY_OBJ;
-
-    // check that we're not already entering a dead state
-    // note this is checked outside of a mutex to avoid a reentrant case where the
-    // process is already being destroyed, the handle table is being cleaned up, and
-    // the last ref to itself is being dropped. In that case it recurses into this function
-    // and would wedge up if Kill() is called
-    if (state_ == State::DYING || state_ == State::DEAD)
-        return;
 
     // last handle going away acts as a kill to the process object
     Kill();
@@ -405,9 +397,15 @@ mx_handle_t ProcessDispatcher::MapHandleToValue(const HandleOwner& handle) const
 
 Handle* ProcessDispatcher::GetHandleLocked(mx_handle_t handle_value) {
     auto handle = map_value_to_handle(handle_value, handle_rand_);
-    if (!handle)
-        return nullptr;
-    return (handle->process_id() == get_koid()) ? handle : nullptr;
+    if (handle && handle->process_id() == get_koid())
+        return handle;
+
+    // Handle lookup failed.  We potentially generate an exception,
+    // depending on the job policy.  Note that we don't use the return
+    // value from QueryPolicy() here: MX_POL_ACTION_ALLOW and
+    // MX_POL_ACTION_DENY are equivalent for MX_POL_BAD_HANDLE.
+    QueryPolicy(MX_POL_BAD_HANDLE);
+    return nullptr;
 }
 
 void ProcessDispatcher::AddHandle(HandleOwner handle) {

@@ -9,9 +9,11 @@ MODULE := $(LOCAL_DIR)
 MODULE_TYPE := driver
 
 MODULE_SRCS += \
-    $(LOCAL_DIR)/sdmmc.c
+    $(LOCAL_DIR)/mmc.c \
+    $(LOCAL_DIR)/sd.c \
+    $(LOCAL_DIR)/sdmmc.c \
 
-MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync
+MODULE_STATIC_LIBS := system/ulib/ddk system/ulib/sync system/ulib/pretty
 
 MODULE_LIBS := system/ulib/driver system/ulib/c system/ulib/magenta system/ulib/mxio
 

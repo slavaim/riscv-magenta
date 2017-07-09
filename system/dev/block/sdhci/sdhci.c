@@ -24,6 +24,7 @@
 #include <ddk/iotxn.h>
 #include <ddk/protocol/sdmmc.h>
 #include <ddk/protocol/sdhci.h>
+#include <hw/sdmmc.h>
 
 // Magenta Includes
 #include <mxio/watcher.h>
@@ -32,6 +33,16 @@
 #include <sync/completion.h>
 
 #define SD_FREQ_SETUP_HZ  400000
+
+#define TRACE 0
+
+#if TRACE
+#define xprintf(fmt...) printf(fmt)
+#else
+#define xprintf(fmt...) \
+    do {                \
+    } while (0)
+#endif
 
 typedef struct sdhci_device {
     // Interrupts mapped here.
@@ -49,6 +60,9 @@ typedef struct sdhci_device {
     // Device heirarchy
     mx_device_t* mxdev;
     mx_device_t* parent;
+
+    // Protocol ops
+    sdhci_protocol_t sdhci;
 
     // Held when a command or action is in progress.
     mtx_t mtx;
@@ -87,6 +101,35 @@ static const uint32_t normal_interrupts = (
     SDHCI_IRQ_BUFF_WRITE_READY
 );
 
+static mx_status_t sdhci_wait_for_reset(sdhci_device_t* dev, const uint32_t mask, mx_time_t timeout) {
+    mx_time_t deadline = mx_time_get(MX_CLOCK_MONOTONIC) + timeout;
+    while (true) {
+        if (((dev->regs->ctrl1) & mask) == 0) {
+            break;
+        }
+        if (mx_time_get(MX_CLOCK_MONOTONIC) > deadline) {
+            printf("sdhci: timed out while waiting for reset\n");
+            return MX_ERR_TIMED_OUT;
+        }
+    }
+    return MX_OK;
+}
+
+static void sdhci_error_recovery(sdhci_device_t* dev) {
+    uint32_t irq = dev->regs->irq;
+    // Clear error status
+    irq &= error_interrupts;
+    dev->regs->irq = irq;
+
+    // Reset internal state machines
+    dev->regs->ctrl1 |= SDHCI_SOFTWARE_RESET_CMD;
+    sdhci_wait_for_reset(dev, SDHCI_SOFTWARE_RESET_CMD, MX_SEC(1));
+    dev->regs->ctrl1 |= SDHCI_SOFTWARE_RESET_DAT;
+    sdhci_wait_for_reset(dev, SDHCI_SOFTWARE_RESET_DAT, MX_SEC(1));
+
+    // TODO data stage abort
+}
+
 static uint32_t get_clock_divider(const uint32_t base_clock,
                                   const uint32_t target_rate) {
     if (target_rate >= base_clock) {
@@ -104,8 +147,6 @@ static uint32_t get_clock_divider(const uint32_t base_clock,
 }
 
 static int sdhci_irq_thread(void *arg) {
-    printf("sdhci: entering irq thread\n");
-
     mx_status_t wait_res;
     sdhci_device_t* dev = (sdhci_device_t*)arg;
     volatile struct sdhci_regs* regs = dev->regs;
@@ -135,8 +176,6 @@ static int sdhci_irq_thread(void *arg) {
         // Signal that an IRQ happened.
         completion_signal(&dev->irq_completion);
     }
-
-    printf("sdhci: irq_thread exit\n");
     return 0;
 }
 
@@ -153,7 +192,7 @@ static mx_status_t sdhci_await_irq(sdhci_device_t* dev) {
 
     // Was the IRQ triggered by an error interrupt?
     if (dev->irq & error_interrupts) {
-        printf("sdhci: interrupt error = 0x%08x\n", (dev->irq & error_interrupts));
+        sdhci_error_recovery(dev);
         return MX_ERR_IO;
     }
 
@@ -236,13 +275,18 @@ static void sdhci_iotxn_queue(void* ctx, iotxn_t* txn) {
     }
 
     // Read the response data.
-    if ((cmd & SDMMC_RESP_LEN_136) && (dev->quirks & SDHCI_QUIRK_STRIP_RESPONSE_CRC)) {
-        pdata->response[0] = (regs->resp3 << 8) | ((regs->resp2 >> 24) & 0xFF);
-        pdata->response[1] = (regs->resp2 << 8) | ((regs->resp1 >> 24) & 0xFF);
-        pdata->response[2] = (regs->resp1 << 8) | ((regs->resp0 >> 24) & 0xFF);
-        pdata->response[3] = (regs->resp0 << 8);
-
-
+    if (cmd & SDMMC_RESP_LEN_136) {
+        if (dev->quirks & SDHCI_QUIRK_STRIP_RESPONSE_CRC) {
+            pdata->response[0] = (regs->resp3 << 8) | ((regs->resp2 >> 24) & 0xFF);
+            pdata->response[1] = (regs->resp2 << 8) | ((regs->resp1 >> 24) & 0xFF);
+            pdata->response[2] = (regs->resp1 << 8) | ((regs->resp0 >> 24) & 0xFF);
+            pdata->response[3] = (regs->resp0 << 8);
+        } else {
+            pdata->response[0] = regs->resp0;
+            pdata->response[1] = regs->resp1;
+            pdata->response[2] = regs->resp2;
+            pdata->response[3] = regs->resp3;
+        }
     } else if (cmd & (SDMMC_RESP_LEN_48 | SDMMC_RESP_LEN_48B)) {
         pdata->response[0] = regs->resp0;
         pdata->response[1] = regs->resp1;
@@ -331,27 +375,69 @@ static mx_status_t sdhci_set_bus_frequency(sdhci_device_t* dev, uint32_t target_
     return MX_OK;
 }
 
+static mx_status_t sdhci_set_timing(sdhci_device_t* dev, uint32_t timing) {
+    // Toggle high-speed
+    if (timing != SDMMC_TIMING_LEGACY) {
+        dev->regs->ctrl0 |= SDHCI_HOSTCTRL_HIGHSPEED_ENABLE;
+    } else {
+        dev->regs->ctrl0 &= ~SDHCI_HOSTCTRL_HIGHSPEED_ENABLE;
+    }
+
+    // Disable SD clock before changing UHS timing
+    dev->regs->ctrl1 &= ~SDHCI_SD_CLOCK_ENABLE;
+    mx_nanosleep(mx_deadline_after(MX_MSEC(2)));
+
+    uint32_t ctrl2 = dev->regs->ctrl2 & ~SDHCI_HOSTCTRL2_UHS_MODE_SELECT_MASK;
+    if (timing == SDMMC_TIMING_HS200) {
+        ctrl2 |= SDHCI_HOSTCTRL2_UHS_MODE_SELECT_SDR104;
+    } else if (timing == SDMMC_TIMING_HS400) {
+        ctrl2 |= SDHCI_HOSTCTRL2_UHS_MODE_SELECT_HS400;
+    }
+    dev->regs->ctrl2 = ctrl2;
+
+    // Turn the SD clock back on.
+    dev->regs->ctrl1 |= SDHCI_SD_CLOCK_ENABLE;
+    mx_nanosleep(mx_deadline_after(MX_MSEC(2)));
+
+    return MX_OK;
+}
+
+static void sdhci_hw_reset(sdhci_device_t* dev) {
+    if (dev->sdhci.ops->hw_reset) {
+        dev->sdhci.ops->hw_reset(dev->sdhci.ctx);
+    }
+}
+
 static mx_status_t sdhci_set_bus_width(sdhci_device_t* dev, const uint32_t new_bus_width) {
+    if ((new_bus_width == SDMMC_BUS_WIDTH_8) &&
+        !(dev->regs->caps0 & SDHCI_CORECFG_8_BIT_SUPPORT)) {
+        return MX_ERR_NOT_SUPPORTED;
+    }
+
     switch (new_bus_width) {
-        case 1:
-            dev->regs->ctrl0 &= ~SDHCI_HOSTCTRL_FOUR_BIT_BUS_WIDTH;
-            break;
-        case 4:
-            dev->regs->ctrl0 |= SDHCI_HOSTCTRL_FOUR_BIT_BUS_WIDTH;
-            break;
-        default:
-            return MX_ERR_INVALID_ARGS;
+    case SDMMC_BUS_WIDTH_1:
+        dev->regs->ctrl0 &= ~SDHCI_HOSTCTRL_EXT_DATA_WIDTH;
+        dev->regs->ctrl0 &= ~SDHCI_HOSTCTRL_FOUR_BIT_BUS_WIDTH;
+        break;
+    case SDMMC_BUS_WIDTH_4:
+        dev->regs->ctrl0 &= ~SDHCI_HOSTCTRL_EXT_DATA_WIDTH;
+        dev->regs->ctrl0 |= SDHCI_HOSTCTRL_FOUR_BIT_BUS_WIDTH;
+        break;
+    case SDMMC_BUS_WIDTH_8:
+        dev->regs->ctrl0 |= SDHCI_HOSTCTRL_EXT_DATA_WIDTH;
+        break;
+    default:
+        return MX_ERR_INVALID_ARGS;
     }
 
     return MX_OK;
 }
 
-static mx_status_t sdhci_set_voltage(sdhci_device_t* dev, uint32_t new_voltage) {
+static mx_status_t sdhci_set_signal_voltage(sdhci_device_t* dev, uint32_t new_voltage) {
 
     switch (new_voltage) {
-        case SDMMC_VOLTAGE_33:
-        case SDMMC_VOLTAGE_30:
-        case SDMMC_VOLTAGE_18:
+        case SDMMC_SIGNAL_VOLTAGE_330:
+        case SDMMC_SIGNAL_VOLTAGE_180:
             break;
         default:
             return MX_ERR_INVALID_ARGS;
@@ -363,31 +449,37 @@ static mx_status_t sdhci_set_voltage(sdhci_device_t* dev, uint32_t new_voltage) 
     regs->ctrl1 &= ~SDHCI_SD_CLOCK_ENABLE;
     mx_nanosleep(mx_deadline_after(MX_MSEC(2)));
 
-    // Wait for the DAT lines to settle
-    const mx_time_t deadline = mx_time_get(MX_CLOCK_MONOTONIC) + MX_SEC(1);
-    while (true) {
-        printf("Waiting for dat lines to go to 0\n");
-        if (mx_time_get(MX_CLOCK_MONOTONIC) > deadline) {
-            return MX_ERR_TIMED_OUT;
+    if (new_voltage == SDMMC_SIGNAL_VOLTAGE_180) {
+        regs->ctrl2 |= SDHCI_HOSTCTRL2_1P8V_SIGNALLING_ENA;
+        // 1.8V regulator out should be stable within 5ms
+        mx_nanosleep(mx_deadline_after(MX_MSEC(5)));
+#if TRACE
+        if (!(regs->ctrl2 & SDHCI_HOSTCTRL2_1P8V_SIGNALLING_ENA)) {
+            xprintf("sdhci: 1.8V regulator output did not become stable\n");
         }
-
-        uint8_t dat_lines = ((regs->state) >> 20) & 0xf;
-        if (dat_lines == 0) break;
-
-        mx_nanosleep(mx_deadline_after(MX_MSEC(10)));
+#endif
+    } else {
+        regs->ctrl2 &= ~SDHCI_HOSTCTRL2_1P8V_SIGNALLING_ENA;
+        // 3.3V regulator out should be stable within 5ms
+        mx_nanosleep(mx_deadline_after(MX_MSEC(5)));
+#if TRACE
+        if (regs->ctrl2 & SDHCI_HOSTCTRL2_1P8V_SIGNALLING_ENA) {
+            xprintf("sdhci: 3.3V regulator output did not become stable\n");
+        }
+#endif
     }
 
-    // Cut voltage to the card
-    regs->ctrl0 &= ~SDHCI_PWRCTRL_SD_BUS_POWER;
-
-    regs->ctrl0 |= new_voltage;
-
-    // Restore voltage to the card.
-    regs->ctrl0 |= SDHCI_PWRCTRL_SD_BUS_POWER;
-
     // Make sure our changes are acknolwedged.
-    const uint32_t expected_mask = (SDHCI_PWRCTRL_SD_BUS_POWER) | (new_voltage);
-    if ((regs->ctrl0 & expected_mask) != expected_mask) return MX_ERR_INTERNAL;
+    uint32_t expected_mask = SDHCI_PWRCTRL_SD_BUS_POWER;
+    if (new_voltage == SDMMC_SIGNAL_VOLTAGE_180) {
+        expected_mask |= SDHCI_PWRCTRL_SD_BUS_VOLTAGE_1P8V;
+    } else {
+        expected_mask |= SDHCI_PWRCTRL_SD_BUS_VOLTAGE_3P3V;
+    }
+    if ((regs->ctrl0 & expected_mask) != expected_mask) {
+        xprintf("sdhci: after voltage switch ctrl0=0x%08x, expected=0x%08x\n", regs->ctrl0, expected_mask);
+        return MX_ERR_INTERNAL;
+    }
 
     // Turn the clock back on
     regs->ctrl1 |= SDHCI_SD_CLOCK_ENABLE;
@@ -400,21 +492,36 @@ static mx_status_t sdhci_ioctl(void* ctx, uint32_t op,
                           const void* in_buf, size_t in_len,
                           void* out_buf, size_t out_len, size_t* out_actual) {
     sdhci_device_t* dev = ctx;
-    uint32_t* arg;
-    arg = (uint32_t*)in_buf;
-    if (in_len < sizeof(*arg))
-        return MX_ERR_INVALID_ARGS;
+    uint32_t* arg = (uint32_t*)in_buf;
 
     switch (op) {
-    case IOCTL_SDMMC_SET_VOLTAGE:
-        return sdhci_set_voltage(dev, *arg);
-    case IOCTL_SDMMC_SET_BUS_WIDTH:
-        if ((*arg != 4) && (*arg != 1))
+    case IOCTL_SDMMC_SET_SIGNAL_VOLTAGE:
+        if (in_len < sizeof(*arg)) {
             return MX_ERR_INVALID_ARGS;
-        return sdhci_set_bus_width(dev, *arg);
+        } else {
+            return sdhci_set_signal_voltage(dev, *arg);
+        }
+    case IOCTL_SDMMC_SET_BUS_WIDTH:
+        if (in_len < sizeof(*arg)) {
+            return MX_ERR_INVALID_ARGS;
+        } else {
+            return sdhci_set_bus_width(dev, *arg);
+        }
     case IOCTL_SDMMC_SET_BUS_FREQ:
-        printf("sdhci: ioctl set bus frequency to %u\n", *arg);
-        return sdhci_set_bus_frequency(dev, *arg);
+        if (in_len < sizeof(*arg)) {
+            return MX_ERR_INVALID_ARGS;
+        } else {
+            return sdhci_set_bus_frequency(dev, *arg);
+        }
+    case IOCTL_SDMMC_SET_TIMING:
+        if (in_len < sizeof(*arg)) {
+            return MX_ERR_INVALID_ARGS;
+        } else {
+            return sdhci_set_timing(dev, *arg);
+        }
+    case IOCTL_SDMMC_HW_RESET:
+        sdhci_hw_reset(dev);
+        return MX_OK;
     }
 
     return MX_ERR_NOT_SUPPORTED;
@@ -451,24 +558,14 @@ static mx_status_t sdhci_controller_init(sdhci_device_t* dev) {
     // Write the register back to the device.
     dev->regs->ctrl1 = ctrl1;
 
-    // Wait for th reset to take place. The reset is comleted when all three
+    // Wait for reset to take place. The reset is comleted when all three
     // of the following flags are reset.
     const uint32_t target_mask = (SDHCI_SOFTWARE_RESET_ALL |
                                   SDHCI_SOFTWARE_RESET_CMD |
                                   SDHCI_SOFTWARE_RESET_DAT);
-    mx_time_t deadline =
-        mx_time_get(MX_CLOCK_MONOTONIC) + MX_SEC(1);
-
     mx_status_t status = MX_OK;
-    while (true) {
-        if (((dev->regs->ctrl1) & target_mask) == 0)
-            break;
-
-        if (mx_time_get(MX_CLOCK_MONOTONIC) > deadline) {
-            printf("sdhci: timed out while waiting for reset\n");
-            status = MX_ERR_TIMED_OUT;
-            goto fail;
-        }
+    if ((status = sdhci_wait_for_reset(dev, target_mask, MX_SEC(1))) != MX_OK) {
+        goto fail;
     }
 
     // Configure the clock.
@@ -493,13 +590,13 @@ static mx_status_t sdhci_controller_init(sdhci_device_t* dev) {
     dev->regs->ctrl1 = ctrl1;
 
     // Wait for the clock to stabilize.
-    deadline = mx_time_get(MX_CLOCK_MONOTONIC) + MX_SEC(1);
+    mx_time_t deadline = mx_time_get(MX_CLOCK_MONOTONIC) + MX_SEC(1);
     while (true) {
         if (((dev->regs->ctrl1) & SDHCI_INTERNAL_CLOCK_STABLE) != 0)
             break;
 
         if (mx_time_get(MX_CLOCK_MONOTONIC) > deadline) {
-            printf("sdhci: Clock did not stabilize in time\n");
+            xprintf("sdhci: Clock did not stabilize in time\n");
             status = MX_ERR_TIMED_OUT;
             goto fail;
         }
@@ -512,6 +609,24 @@ static mx_status_t sdhci_controller_init(sdhci_device_t* dev) {
     dev->regs->ctrl1 = ctrl1;
     mx_nanosleep(mx_deadline_after(MX_MSEC(2)));
 
+    // Cut voltage to the card
+    dev->regs->ctrl0 &= ~SDHCI_PWRCTRL_SD_BUS_POWER;
+
+    // Set SD bus voltage to maximum supported by the host controller
+    const uint32_t caps = dev->regs->caps0;
+    uint32_t ctrl0 = dev->regs->ctrl0 & ~SDHCI_PWRCTRL_SD_BUS_VOLTAGE_MASK;
+    if (caps & SDHCI_CORECFG_3P3_VOLT_SUPPORT) {
+        ctrl0 |= SDHCI_PWRCTRL_SD_BUS_VOLTAGE_3P3V;
+    } else if (caps & SDHCI_CORECFG_3P0_VOLT_SUPPORT) {
+        ctrl0 |= SDHCI_PWRCTRL_SD_BUS_VOLTAGE_3P0V;
+    } else {
+        ctrl0 |= SDHCI_PWRCTRL_SD_BUS_VOLTAGE_1P8V;
+    }
+    dev->regs->ctrl0 = ctrl0;
+
+    // Restore voltage to the card.
+    dev->regs->ctrl0 |= SDHCI_PWRCTRL_SD_BUS_POWER;
+
     // Disable all interrupts
     dev->regs->irqen = 0;
     dev->regs->irq = 0xffffffff;
@@ -522,33 +637,34 @@ fail:
 }
 
 static mx_status_t sdhci_bind(void* ctx, mx_device_t* parent, void** cookie) {
-    sdhci_protocol_t sdhci;
-    if (device_get_protocol(parent, MX_PROTOCOL_SDHCI, (void*)&sdhci)) {
-        return MX_ERR_NOT_SUPPORTED;
-    }
-
     sdhci_device_t* dev = calloc(1, sizeof(sdhci_device_t));
     if (!dev) {
         return MX_ERR_NO_MEMORY;
     }
 
-    // Map the Device Registers so that we can perform MMIO against the device.
-    mx_status_t status = sdhci.ops->get_mmio(sdhci.ctx, &dev->regs);
-    if (status != MX_OK) {
-        printf("sdhci: error %d in get_mmio\n", status);
+    mx_status_t status = MX_OK;
+    if (device_get_protocol(parent, MX_PROTOCOL_SDHCI, (void*)&dev->sdhci)) {
+        status = MX_ERR_NOT_SUPPORTED;
         goto fail;
     }
 
-    dev->irq_handle = sdhci.ops->get_interrupt(sdhci.ctx);
+    // Map the Device Registers so that we can perform MMIO against the device.
+    status = dev->sdhci.ops->get_mmio(dev->sdhci.ctx, &dev->regs);
+    if (status != MX_OK) {
+        xprintf("sdhci: error %d in get_mmio\n", status);
+        goto fail;
+    }
+
+    dev->irq_handle = dev->sdhci.ops->get_interrupt(dev->sdhci.ctx);
     if (dev->irq_handle < 0) {
-        printf("sdhci: error %d in get_interrupt\n", status);
+        xprintf("sdhci: error %d in get_interrupt\n", status);
         status = dev->irq_handle;
         goto fail;
     }
 
     thrd_t irq_thread;
     if (thrd_create_with_name(&irq_thread, sdhci_irq_thread, dev, "sdhci_irq_thread") != thrd_success) {
-        printf("sdhci: failed to create irq thread\n");
+        xprintf("sdhci: failed to create irq thread\n");
         goto fail;
     }
     thrd_detach(irq_thread);
@@ -559,20 +675,25 @@ static mx_status_t sdhci_bind(void* ctx, mx_device_t* parent, void** cookie) {
     // Ensure that we're SDv3 or above.
     const uint16_t vrsn = (dev->regs->slotirqversion >> 16) & 0xff;
     if (vrsn < SDHCI_VERSION_3) {
-        printf("sdhci: SD version is %u, only version %u and above are "
+        xprintf("sdhci: SD version is %u, only version %u and above are "
                 "supported\n", vrsn, SDHCI_VERSION_3);
         status = MX_ERR_NOT_SUPPORTED;
         goto fail;
     }
 
-    dev->base_clock = sdhci.ops->get_base_clock(sdhci.ctx);
+    dev->base_clock = ((dev->regs->caps0 >> 8) & 0xff) * 1000000; /* mhz */
     if (dev->base_clock == 0) {
-        printf("sdhci: base clock is 0!\n");
+        // try to get controller specific base clock
+        dev->base_clock = dev->sdhci.ops->get_base_clock(dev->sdhci.ctx);
+    }
+    if (dev->base_clock == 0) {
+        xprintf("sdhci: base clock is 0!\n");
         status = MX_ERR_INTERNAL;
         goto fail;
     }
-    dev->dma_offset = sdhci.ops->get_dma_offset(sdhci.ctx);
-    dev->quirks = sdhci.ops->get_quirks(sdhci.ctx);
+    xprintf("sdhci: base clock %u\n", dev->base_clock);
+    dev->dma_offset = dev->sdhci.ops->get_dma_offset(dev->sdhci.ctx);
+    dev->quirks = dev->sdhci.ops->get_quirks(dev->sdhci.ctx);
 
     // initialize the controller
     status = sdhci_controller_init(dev);
