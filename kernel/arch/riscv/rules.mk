@@ -152,6 +152,8 @@ KERNEL_COMPILEFLAGS += -I$(SUBARCH_BUILDDIR)/$(DIR_INCLUDE_GENERATED)
 MODULE_SRCS += \
 	$(SUBARCH_DIR)/start.S \
 	$(SUBARCH_DIR)/sbi.S \
+	$(SUBARCH_DIR)/exception.S \
+	$(SUBARCH_DIR)/user_copy.S \
 \
 	$(LOCAL_DIR)/setup.c \
 	$(LOCAL_DIR)/arch.c \
@@ -170,9 +172,6 @@ MODULE_SRCS += \
 	$(LOCAL_DIR)/traps.c \
 	$(LOCAL_DIR)/irq.c \
 	$(LOCAL_DIR)/lib/memset.S \
-	$(SUBARCH_DIR)/exception.S \
-	#$(LOCAL_DIR)/lib/clz_ctz.c \
-	#$(SUBARCH_DIR)/exception.S \
 
 $(info MODULE_SRCS = $(MODULE_SRCS))
 

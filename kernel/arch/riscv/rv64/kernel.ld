@@ -3,7 +3,7 @@
 // Copyright (c) 2009 Corey Tabaka
 // Copyright (c) 2013 Travis Geiselbrecht
 // Copyright (c) 2015 Intel Corporation
-// Copyright (c) 2017 Slava Imameev
+// Copyright (c) 2017 Slava Imameev (RISC-V porting)
 //
 // Use of this source code is governed by a MIT-style
 // license that can be found in the LICENSE file or at

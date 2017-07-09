@@ -7,7 +7,15 @@
 
 #include <magenta/errors.h>
 #include <arch/user_copy.h>
+#include <kernel/thread.h>
+#include <kernel/vm.h>
+
 #include <debug.h>
+
+extern status_t _riscv_copy_user(void *dst,
+                                 const void *src,
+                                 size_t len,
+                                 void **fault_return);
 
 /*
  * @brief Copy data from userspace into kernelspace
@@ -23,8 +31,16 @@
  */
 status_t arch_copy_from_user(void *dst, const void *src, size_t len)
 {
-    PANIC_UNIMPLEMENTED;
-    return MX_ERR_NOT_SUPPORTED;
+    if (!is_user_address_range((vaddr_t)src, len)) {
+        return MX_ERR_INVALID_ARGS;
+    }
+
+    thread_t *thr = get_current_thread();
+    status_t status = _riscv_copy_user(dst,
+                                       src,
+                                       len,
+                                       &thr->arch.data_fault_resume);
+    return status;
 }
 
 /*
@@ -41,7 +57,15 @@ status_t arch_copy_from_user(void *dst, const void *src, size_t len)
  */
 status_t arch_copy_to_user(void *dst, const void *src, size_t len)
 {
-    PANIC_UNIMPLEMENTED;
-    return MX_ERR_NOT_SUPPORTED;
+    if (!is_user_address_range((vaddr_t)dst, len)) {
+        return MX_ERR_INVALID_ARGS;
+    }
+
+    thread_t *thr = get_current_thread();
+    status_t status = _riscv_copy_user(dst,
+                                       src,
+                                       len,
+                                       &thr->arch.data_fault_resume);
+    return status;
 }
 
