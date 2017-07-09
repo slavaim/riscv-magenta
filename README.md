@@ -167,7 +167,71 @@ pmm arenas
 [00636.272] 00000.00000> 		object       8205             (33607680 bytes)
 [00636.274] 00000.00000> 		mmu          0                (0 bytes)
 ```
-  
+ 
+A system booting with a user process that does some chores and terminates.
+
+```
+[1266874889.709] 00000.00000> Available physical memory: 2032dMB
+[1266874889.709] 00000.00000> 
+[1266874889.709] 00000.00000> welcome to lk/MP
+[1266874889.709] 00000.00000> 
+[1266874889.709] 00000.00000> INIT: cpu 0, calling hook 0xffffffff8007008c (global_prng_seed) at level 0x30000, flags 0x1
+[1266874889.709] 00000.00000> WARNING: System has insufficient randomness.  It is completely unsafe to use this system for any cryptographic applications.
+[1266874889.709] 00000.00000> INIT: cpu 0, calling hook 0xffffffff800360bc (elf_build_id) at level 0x3fffe, flags 0x1
+[1266874889.709] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80035ffc (version) at level 0x3ffff, flags 0x1
+[1266874889.709] 00000.00000> version:
+[1266874889.709] 00000.00000> 	arch:     RISCV
+[1266874889.709] 00000.00000> 	platform: RISCV_RV64
+[1266874889.709] 00000.00000> 	target:   QEMU_RISCV_RV64
+[1266874889.709] 00000.00000> 	project:  MAGENTA_QEMU_RISCV_RV64
+[1266874889.709] 00000.00000> 	buildid:  GIT_239943EB6C16214D09EDEDA538FF5DC8162F7A80_DIRTY
+[1266874889.709] 00000.00000> 	ELF build ID: 41da32cc48d7aaa3896d8d22423b462035957430
+[1266874889.709] 00000.00000> INIT: cpu 0, calling hook 0xffffffff800409c0 (vm_preheap) at level 0x3ffff, flags 0x1
+[1266874889.709] 00000.00000> initializing heap
+[1266874889.709] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80040b10 (vm) at level 0x50000, flags 0x1
+[1266874889.709] 00000.00000> VM: reserving kernel region [ffffffff80000000, ffffffff800ed000) flags 0x28 name 'kernel_code'
+[1266874889.709] 00000.00000> VM: reserving kernel region [ffffffff800ed000, ffffffff8012e000) flags 0x8 name 'kernel_rodata'
+[1266874889.709] 00000.00000> VM: reserving kernel region [ffffffff8012e000, ffffffff80131000) flags 0x18 name 'kernel_data'
+[1266874889.709] 00000.00000> VM: reserving kernel region [ffffffff80131000, ffffffff8015b000) flags 0x18 name 'kernel_bss'
+[1266874889.709] 00000.00000> VM: reserving kernel region [ffffffff8015f000, ffffffff81140000) flags 0x18 name 'kernel_bootalloc'
+[1266874889.709] 00000.00000> INIT: cpu 0, calling hook 0xffffffff800017f8 (timer) at level 0x50003, flags 0x1
+[00004.759] 00000.00000> initializing mp
+[00004.760] 00000.00000> initializing threads
+[00004.760] 00000.00000> initializing timers
+[00004.760] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80013bf8 (debuglog) at level 0x6ffff, flags 0x1
+[00004.763] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80070200 (global_prng_thread_safe) at level 0x6ffff, flags 0x1
+[00004.763] 00000.00000> creating bootstrap completion thread
+[00004.851] 00000.00000> top of bootstrap2()
+[00004.851] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80072990 (dpc) at level 0x70000, flags 0x1
+[00004.858] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80093de8 (magenta) at level 0x70000, flags 0x1
+[00004.870] 00000.00000> initializing platform
+[00004.870] 00000.00000> initializing target
+[00004.870] 00000.00000> calling apps_init()
+[00004.871] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80014d8c (ktrace) at level 0xaffff, flags 0x1
+[00005.914] 00000.00000> ktrace: buffer at 0xffffffc000e01000 (33554432 bytes)
+[00005.918] 00000.00000> INIT: cpu 0, calling hook 0xffffffff80035eb8 (userboot) at level 0xaffff, flags 0x1
+[00005.918] 00000.00000> userboot: console init
+[00005.991] 00000.00000> userboot: userboot rodata       0 @ [0x292f043000,0x292f045000)
+[00005.996] 00000.00000> userboot: userboot code    0x2000 @ [0x292f045000,0x292f05a000)
+[00005.997] 00000.00000> userboot: vdso/full rodata       0 @ [0x292f05a000,0x292f05f000)
+[00005.999] 00000.00000> userboot: vdso/full code    0x5000 @ [0x292f05f000,0x292f061000)
+[00006.017] 00000.00000> userboot: entry point             @ 0x292f046da0
+[00006.068] 01029.01036> userboot: short read on bootdata VMO
+
+MAGENTA KERNEL PANIC
+
+UPTIME: 6099ms
+BUILDID GIT_239943EB6C16214D09EDEDA538FF5DC8162F7A80_DIRTY
+
+dso: id=41da32cc48d7aaa3896d8d22423b462035957430 base=0xffffffff80000000 name=magenta.elf
+panic (caller 0xffffffff800900e8 frame 0xffffffc002e03bf8): No user processes left!
+platform_halt suggested_action 0d reason 9d
+Halting...
+bt#00: 0xffffffff80100508
+bt#01: 0xffffffc002e03b90
+bt#02: end
+Rebooting...
+```
 Some notes on Magents RISC-V porting can be found here https://github.com/slavaim/riscv-notes/tree/master/magenta 
 
 Below is the original Magenta's README.md  
