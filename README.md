@@ -10,6 +10,7 @@ Milestones:
   - 14 June 2017 some pagefault facilities are implemented
   - 21 June 2017 user mode entry
   - 23 June 2017 libc (musl) was ported to RISC-V
+  - 09 July 2017 a rudimentary user process can run
   
 Below is a RISC-V kernel log output on load in QEMU
 ```
