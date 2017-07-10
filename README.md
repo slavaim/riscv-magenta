@@ -1,8 +1,8 @@
 # RISC-V port for Magenta kernel
 
-This is an initiative to port Magenta kernel to RISC-V architecture. The canonical Google's Magenta kernel supports x86-64 and arm64 architectures only.
+This is an initiative to port Magenta kernel to RISC-V architecture. Magenta is a kernel for Fuchsia OS https://fuchsia.googlesource.com The canonical Google's Magenta kernel supports x86-64 and arm64 architectures only.
 
-This repository will be periodically merged with the canonical Magenta repository to keep it up-to-date.  
+This repository will be periodically merged with the canonical Magenta repository https://fuchsia.googlesource.com/magenta to keep it up-to-date.  
 
 Milestones:
   - 20 May 2017 the kernel is running in QEMU and switching between kernel threads
