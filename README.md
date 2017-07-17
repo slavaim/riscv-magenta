@@ -2,7 +2,9 @@
 
 This is an initiative to port Magenta kernel to RISC-V architecture. Magenta is a kernel for Fuchsia OS https://fuchsia.googlesource.com . The canonical Google's Magenta kernel supports x86-64 and arm64 architectures only.
 
-This repository will be periodically merged with the canonical Magenta repository https://fuchsia.googlesource.com/magenta to keep it up-to-date.  
+This repository will be periodically merged with the canonical Magenta repository https://fuchsia.googlesource.com/magenta to keep it up-to-date.
+
+Most of the RISC-V specific code can be found here https://github.com/slavaim/riscv-magenta/tree/riscv/kernel/arch/riscv . Beside that some user mode components have been ported, e.g. the musl library.
 
 Milestones:
   - 20 May 2017 the kernel is running in QEMU and switching between kernel threads
